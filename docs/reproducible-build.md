@@ -15,11 +15,17 @@ wasm-pack build --release --target web --out-dir ../../lij-pwa/frontend/pkg lij-
 
 Crate sources are vendored under `lij/vendor` and `lij/.cargo/config.toml` points Cargo at them (`replace-with = "vendored-sources"`), so the build does not fetch from crates.io. The `lightning` crate comes from `lij/patches/lightning` — see [ldk-patches.md](ldk-patches.md) for the full diff against upstream 0.0.123. `wasm-opt -Oz` runs as part of `wasm-pack build` (`lij/lij-wasm/Cargo.toml`).
 
-## What is pinned and what is not (honest list)
+## What is pinned (all of it, since page v710's workflow)
 
-Pinned: the Rust toolchain (`rust-toolchain.toml`), every crate (vendored, `Cargo.lock`), the `lightning` patch set (in-tree).
+- The Rust toolchain: `lij/rust-toolchain.toml` (nightly-2025-01-01, `rustc 1.85.0-nightly (d117b7f21 2024-12-31)` — that string is in the binary's `producers` section).
+- Every crate: vendored under `lij/vendor`, `Cargo.lock` checksums; `wasm-bindgen` 0.2.116 (crate and CLI).
+- The `lightning` patch set: in-tree.
+- `wasm-pack` v0.15.0: the release tarball is downloaded from GitHub and refused unless its sha256 is `c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a`.
+- `wasm-opt` (binaryen) version_117 — the version wasm-pack v0.15.0 would fetch itself, now downloaded explicitly and refused unless its sha256 is `3dc677006555b355ea2da5e82602065a161d5e83eaefd3f759afa00b96e83212`; it is put on PATH first, which is what wasm-pack uses when present.
 
-Not pinned today: the `wasm-pack` version (the installer fetches the latest) and the `wasm-opt`/binaryen version that `wasm-pack` downloads. Two builds on different days can therefore differ in the optimizer's output even from identical source. Pinning both is a one-line change each in the workflow and is on the list; until then, treat the hashes below as "this is what CI produced from this commit", verifiable by re-running the same workflow on a fork, not yet as a bit-for-bit promise from an arbitrary machine.
+Before v710 the workflow installed the latest wasm-pack from its installer script and let it fetch binaryen itself; the engine phase11-v239 row below was built that way (with v0.15.0 / version_117 — the versions current on 2026-09-06). The row after it is the first built under the pins.
+
+The remaining variable is the runner image (`ubuntu-latest`: its clang is recorded in the `producers` section too, `Ubuntu clang 18.1.3`). The workflow's `cargo clean -p lij-wasm` before each build keeps the crate's own objects fresh; the vendored dependencies come from the runner's cargo cache.
 
 ## Checking what you are served
 

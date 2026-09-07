@@ -42,8 +42,20 @@ jobs:
           set -o pipefail
           cargo test -p lij-core --locked --lib 2>&1 | tee /tmp/cargo-test.log
 
-      - name: Install wasm-pack (house method, BUILD.md step 4)
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - name: Install wasm-pack v0.15.0 + binaryen version_117 (pinned, tarballs hash-gated; see docs/reproducible-build.md)
+        run: |
+          set -e
+          curl -sSL -o /tmp/wp.tgz https://github.com/wasm-bindgen/wasm-pack/releases/download/v0.15.0/wasm-pack-v0.15.0-x86_64-unknown-linux-musl.tar.gz
+          echo "c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a  /tmp/wp.tgz" | sha256sum -c -
+          tar xzf /tmp/wp.tgz -C /tmp
+          sudo install -m 0755 /tmp/wasm-pack-v0.15.0-x86_64-unknown-linux-musl/wasm-pack /usr/local/bin/wasm-pack
+          curl -sSL -o /tmp/bn.tgz https://github.com/WebAssembly/binaryen/releases/download/version_117/binaryen-version_117-x86_64-linux.tar.gz
+          echo "3dc677006555b355ea2da5e82602065a161d5e83eaefd3f759afa00b96e83212  /tmp/bn.tgz" | sha256sum -c -
+          sudo tar xzf /tmp/bn.tgz -C /opt
+          echo "/opt/binaryen-version_117/bin" >> "$GITHUB_PATH"
+          export PATH="/opt/binaryen-version_117/bin:$PATH"
+          wasm-pack --version
+          wasm-opt --version
 
       - name: Build engine (house command, BUILD.md)
         working-directory: lij

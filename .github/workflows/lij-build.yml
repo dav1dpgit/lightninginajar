@@ -26,10 +26,21 @@ jobs:
         with:
           workspaces: lij
 
-      - name: toolchain
+      - name: toolchain (pinned — wasm-pack v0.15.0 and binaryen version_117, tarballs hash-gated; the Rust toolchain is pinned by lij/rust-toolchain.toml; see docs/reproducible-build.md)
         run: |
+          set -e
           rustup target add wasm32-unknown-unknown
-          curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+          curl -sSL -o /tmp/wp.tgz https://github.com/wasm-bindgen/wasm-pack/releases/download/v0.15.0/wasm-pack-v0.15.0-x86_64-unknown-linux-musl.tar.gz
+          echo "c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a  /tmp/wp.tgz" | sha256sum -c -
+          tar xzf /tmp/wp.tgz -C /tmp
+          sudo install -m 0755 /tmp/wasm-pack-v0.15.0-x86_64-unknown-linux-musl/wasm-pack /usr/local/bin/wasm-pack
+          curl -sSL -o /tmp/bn.tgz https://github.com/WebAssembly/binaryen/releases/download/version_117/binaryen-version_117-x86_64-linux.tar.gz
+          echo "3dc677006555b355ea2da5e82602065a161d5e83eaefd3f759afa00b96e83212  /tmp/bn.tgz" | sha256sum -c -
+          sudo tar xzf /tmp/bn.tgz -C /opt
+          echo "/opt/binaryen-version_117/bin" >> "$GITHUB_PATH"
+          export PATH="/opt/binaryen-version_117/bin:$PATH"
+          wasm-pack --version
+          wasm-opt --version
 
       - name: build wasm (mirrors Codespace command)
         id: build
@@ -91,6 +102,37 @@ jobs:
           git add -A
           git commit -qm "build ${GITHUB_SHA} ok=$OK"
           git push --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" build-artifacts
+
+      - name: releases row (docs/releases.md here, and in the public repo when PUBLIC_REPO_TOKEN is set)
+        if: steps.build.outputs.code == '0'
+        env:
+          PUBLIC_REPO_TOKEN: ${{ secrets.PUBLIC_REPO_TOKEN }}
+        run: |
+          set -e
+          ENG=$(grep -oP '"phase11-v\K[0-9]+' lij/lij-wasm/src/lib.rs | head -1)
+          PAGE=$(grep -oP "LIJ_FRONTEND_VERSION = 'phase11-v\K[0-9]+" lij-pwa/frontend/wallet/index.html)
+          W=$(sha256sum lij-pwa/frontend/pkg/lij_wasm_bg.wasm | cut -d' ' -f1)
+          G=$(sha256sum lij-pwa/frontend/pkg/lij_wasm.js | cut -d' ' -f1)
+          SW=$(sha256sum lij-pwa/frontend/wallet/sw.js | cut -d' ' -f1)
+          Z=$(sha256sum "$GITHUB_WORKSPACE/$ZIPNAME" | cut -d' ' -f1)
+          ROW="| $(date -u +%F) | phase11-v${PAGE} | phase11-v${ENG} | \`${W}\` | \`${G}\` | \`${SW}\` | commit ${GITHUB_SHA::8}; CI zip \`${ZIPNAME}\` sha256 \`${Z}\` |"
+          append_row () {   # $1 = repo dir
+            f="$1/docs/releases.md"
+            [ -f "$f" ] || { echo "no $f — skipping"; return 0; }
+            if grep -q "phase11-v${PAGE} | phase11-v${ENG} |" "$f"; then echo "row for page v${PAGE} / engine v${ENG} already present in $f"; return 0; fi
+            printf '%s\n' "$ROW" >> "$f"
+            (cd "$1" && git add docs/releases.md && git -c user.name=lij-ci -c user.email=ci@lij.invalid commit -qm "releases: page v${PAGE} / engine v${ENG} (${GITHUB_SHA::8})")
+          }
+          # this repository (commits made with GITHUB_TOKEN do not retrigger workflows)
+          git fetch -q origin main && git checkout -q main
+          append_row "$GITHUB_WORKSPACE" && git push -q "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:main || echo "::warning::could not push the releases row here"
+          # the public repository
+          if [ -n "$PUBLIC_REPO_TOKEN" ]; then
+            git clone -q --depth 1 "https://x-access-token:${PUBLIC_REPO_TOKEN}@github.com/dav1dpgit/lightninginajar.git" /tmp/pubrepo
+            append_row /tmp/pubrepo && (cd /tmp/pubrepo && git push -q origin HEAD:main) || echo "::warning::could not push the releases row to the public repo"
+          else
+            echo "::warning::PUBLIC_REPO_TOKEN not set — the public docs/releases.md was not updated"
+          fi
 
       - name: propagate build result
         if: always()
