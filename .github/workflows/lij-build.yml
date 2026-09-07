@@ -103,10 +103,8 @@ jobs:
           git commit -qm "build ${GITHUB_SHA} ok=$OK"
           git push --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" build-artifacts
 
-      - name: releases row (docs/releases.md here, and in the public repo when PUBLIC_REPO_TOKEN is set)
+      - name: releases row (docs/releases.md in this repository only)
         if: steps.build.outputs.code == '0'
-        env:
-          PUBLIC_REPO_TOKEN: ${{ secrets.PUBLIC_REPO_TOKEN }}
         run: |
           set -e
           ENG=$(grep -oP '"phase11-v\K[0-9]+' lij/lij-wasm/src/lib.rs | head -1)
@@ -126,13 +124,8 @@ jobs:
           # this repository (commits made with GITHUB_TOKEN do not retrigger workflows)
           git fetch -q origin main && git checkout -q main
           append_row "$GITHUB_WORKSPACE" && git push -q "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:main || echo "::warning::could not push the releases row here"
-          # the public repository
-          if [ -n "$PUBLIC_REPO_TOKEN" ]; then
-            git clone -q --depth 1 "https://x-access-token:${PUBLIC_REPO_TOKEN}@github.com/dav1dpgit/lightninginajar.git" /tmp/pubrepo
-            append_row /tmp/pubrepo && (cd /tmp/pubrepo && git push -q origin HEAD:main) || echo "::warning::could not push the releases row to the public repo"
-          else
-            echo "::warning::PUBLIC_REPO_TOKEN not set — the public docs/releases.md was not updated"
-          fi
+          # The public repository is NOT touched by CI (DP, 2026-09-07): public pushes happen
+          # on occasion, confirmed between us, never per build.
 
       - name: propagate build result
         if: always()
