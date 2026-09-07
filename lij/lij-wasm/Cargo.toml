@@ -1,0 +1,55 @@
+[package]
+name = "lij-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "WASM bindings for Lightning-in-a-Jar. This is the npm package your PWA imports."
+
+[lib]
+crate-type = ["cdylib", "rlib"]  # cdylib = WASM output, rlib = for tests
+
+[dependencies]
+lij-core = { path = "../lij-core" }
+hex = "0.4"
+bip39 = { version = "2" }
+sha2 = { version = "0.10", default-features = false }
+lightning = { version = "0.0.123" }
+bitcoin = { version = "0.30" }
+instant = { version = "0.1", features = ["wasm-bindgen"] }
+getrandom = { version = "0.2", features = ["js"] }
+
+# WASM bindings
+wasm-bindgen = { version = "0.2", features = ["serde-serialize"] }
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+wasm-timer = "0.2"
+web-sys = { version = "0.3", features = [
+    "console",
+    "Window",
+    "Storage",
+    "Request",
+    "RequestInit",
+    "RequestMode",
+    "Response",
+    "Headers",
+    "WebSocket",
+    "MessageEvent",
+    "BinaryType",
+    "CloseEvent",
+    "Event",
+    "ErrorEvent",
+] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging to browser console
+console_error_panic_hook = "0.1"
+log = "0.4"
+console_log = { version = "1", features = ["color"] }
+
+# Async
+futures = "0.3"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz"]  # optimize for size

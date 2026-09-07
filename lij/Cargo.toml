@@ -1,0 +1,16 @@
+[workspace]
+members = [
+    "lij-core",
+    "lij-wasm",
+]
+resolver = "2"
+
+# Forked from MutinyWallet/mutiny-node (MIT)
+# Stripped: Nostr, Fedimint, Voltage/Zeus LSP hardcoding, VSS Spiral service
+# Added: configurable LSP registry, Cloudflare KV backup endpoint, open LSP switching
+
+# Patched LDK — applies js_sys::Date fixes for WASM time handling.
+# See patches/lightning/ for the actual source; vendor/lightning/ stays
+# pristine so `cargo vendor` can regenerate vendor/ safely.
+[patch.crates-io]
+lightning = { path = "patches/lightning" }

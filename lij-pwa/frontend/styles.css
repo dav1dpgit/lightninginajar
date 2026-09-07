@@ -1,0 +1,1258 @@
+/* ─────────────────────────────────────────────────────────────────────────
+ * Lightning in a Jar — Design System
+ *
+ * Phase 3 · Step 1 — Synthesis system port (rip-and-replace of prior CSS).
+ *
+ * Design posture: quiet, considered, operator-grade.
+ * Influences: LV (understated luxury), Geist (technical clarity),
+ * Bloomberg/private banking (information density with generous margins).
+ *
+ * Core moves:
+ *   • Single type register: Geist Sans for working copy, Geist Mono for
+ *     numbers, pubkeys, addresses, timestamps, labels. No serif.
+ *   • Cards as architecture — every concern gets its vessel.
+ *   • 2px chamfer on action elements (buttons, inputs) — machined finish.
+ *   • 8px radius on cards — architectural softness without consumer puff.
+ *   • 0 radius where structure needs to be sharp (rules, ceremonial edges).
+ *   • Cognac = structural emphasis; amber = state and signal.
+ *   • Black commits. Cognac accents. Gold whispers.
+ *   • Paper is warm ivory, not clinical white.
+ *
+ * Token names are bare (--bg, --surface, --ink). No prefix.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+
+/* ── Fonts (self-hosted) ────────────────────────────────────────────────── */
+
+@font-face {
+  font-family: "Geist";
+  src: url("/fonts/geist-sans-400.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist";
+  src: url("/fonts/geist-sans-500.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist";
+  src: url("/fonts/geist-sans-600.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist";
+  src: url("/fonts/geist-sans-700.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/fonts/geist-mono-400.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/fonts/geist-mono-500.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+
+/* ── Tokens ─────────────────────────────────────────────────────────────── */
+
+:root {
+  /* Palette — warm ivory paper, espresso ink, cognac structure, gold signal.
+     Cognac = structural emphasis (borders, hover, dividers).
+     Amber  = state and signal (focus rings, status dots, pill states). */
+  --bg:          #f6f1e7;   /* warm ivory — the page */
+  --surface:     #fffdf5;   /* elevated paper — cards */
+  --surface-2:   #f8f0e0;   /* secondary surface — inset panels, action rows */
+  --ink:         #26190f;   /* espresso — primary text, commit buttons */
+  --ink-2:       #665546;   /* aged leather — secondary text */
+  --ink-3:       #9d8e76;   /* warm dust — tertiary text, labels */
+  --rule:        #dccfb1;   /* hairline — card borders, row dividers */
+  --rule-2:      #c5b993;   /* stronger rule — section dividers, input borders */
+  --accent:      #b8895a;   /* cognac — structural emphasis */
+  --accent-2:    #7a4e2d;   /* deep cognac — hover, pressed emphasis */
+  --amber:       #e8a23a;   /* gold — state, status, focus */
+  --amber-soft:  #f0d5a4;   /* gold tint — pill backgrounds, hover fill */
+  --ok:          #3a7a5f;   /* forest — positive states */
+  --warn:        #b8593a;   /* tile red — warnings, destructive */
+  --danger:      #b8593a;   /* alias of --warn for semantic clarity */
+  --success:     #3a7a5f;   /* alias of --ok for semantic clarity */
+
+  /* Shadows — single direction, soft. Elevation is a whisper. */
+  --shadow:     rgba(38,25,15,0.06);
+  --shadow-2:   rgba(38,25,15,0.09);
+  --shadow-sm:  0 1px 0 var(--shadow);
+  --shadow-md:  0 2px 12px var(--shadow-2), 0 1px 0 var(--shadow);
+  --shadow-lg:  0 4px 16px var(--shadow-2), 0 2px 4px var(--shadow);
+
+  /* Focus ring — amber, for state/signal. Used on inputs, buttons, links. */
+  --focus-ring: 0 0 0 3px rgba(232, 169, 79, 0.28);
+
+  /* Typography — Geist only. No serif. */
+  --font-sans:    "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono:    "Geist Mono", "SF Mono", Menlo, Consolas, ui-monospace, monospace;
+
+  --text-xs:   10px;
+  --text-sm:   12px;
+  --text-md:   14px;
+  --seed-ghost-nudge: -0.68px;
+  /* v588 recovery arc: scanbar + rescan overlay live below the token block */  /* v585: DP gauge, third turn of the knob (-2 too high, -1 near, -0.5 requested). Transforms composite subpixel: on 2-3x screens this is 1-1.5 device px. History: three vertical models, two engines, one constant — engine-internal input text placement, unqueryable; calibrated, not theorized. */
+  --text-base: 15px;
+  --text-lg:   16px;
+  --text-xl:   20px;
+  --text-2xl:  24px;
+  --text-3xl:  32px;
+  --text-4xl:  44px;
+
+  /* Spacing — 4px base unit. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+
+  /* Radii — 2px chamfer on actions, 8px on cards, 0 where sharp. */
+  --radius-sharp:   0;       /* ceremonial edges, section dividers */
+  --radius-chamfer: 2px;     /* buttons, inputs — "cut, not rounded" */
+  --radius-card:    8px;     /* cards — architectural softness */
+  --radius-pill:    100px;   /* pills, badges — different class entirely */
+
+  /* Containers */
+  --container-sm: 480px;
+  --container:    720px;
+  --container-lg: 960px;
+
+  /* Motion — fast but not snappy; decisions have weight. */
+  --ease:      cubic-bezier(0.2, 0, 0, 1);
+  --ease-out:  cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast:  120ms;
+  --dur:       180ms;
+  --dur-slow:  320ms;
+}
+
+
+/* ── Base reset ─────────────────────────────────────────────────────────── */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+button, input, textarea, select {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--rule);
+  transition:
+    text-decoration-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+a:hover {
+  text-decoration-color: var(--accent);
+  color: var(--accent-2);
+}
+
+
+/* ── Typography utilities ───────────────────────────────────────────────── */
+
+.t-xs   { font-size: var(--text-xs); }
+.t-sm   { font-size: var(--text-sm); }
+.t-md   { font-size: var(--text-md); }
+.t-lg   { font-size: var(--text-lg); }
+.t-xl   { font-size: var(--text-xl); }
+.t-2xl  { font-size: var(--text-2xl); }
+.t-3xl  { font-size: var(--text-3xl); }
+.t-4xl  { font-size: var(--text-4xl); }
+
+.t-dim   { color: var(--ink-2); }
+.t-faint { color: var(--ink-3); }
+
+.t-mono { font-family: var(--font-mono); }
+.t-sans { font-family: var(--font-sans); }
+
+/* Tabular numerals — every numeric context that isn't prose. */
+.t-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Small-caps label — museum placard voice. Mono, uppercase, tracked, dim. */
+.t-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-weight: 500;
+}
+
+
+/* ── Cards — the default container ──────────────────────────────────────── */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-card);
+  padding: var(--space-6);
+  margin-bottom: var(--space-5);
+  box-shadow: var(--shadow-sm);
+}
+
+.card:last-child {
+  margin-bottom: 0;
+}
+
+/* Primary card — the subject of the screen (balance on Home, invoice on Send).
+   Subtle shadow elevation distinguishes it from context. */
+.card-primary {
+  box-shadow: var(--shadow-md);
+}
+
+/* Secondary card — inset panels, action rows. Flat, on surface-2. */
+.card-secondary {
+  background: var(--surface-2);
+  box-shadow: none;
+}
+
+/* Ceremonial card — centered, framed, ink-bordered, generous vertical padding.
+   Used on seed display, setpass, erase confirm, recovery moments. */
+.card-ceremonial {
+  background: var(--surface);
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-card);
+  padding: var(--space-7) var(--space-6);
+  text-align: center;
+  box-shadow: var(--shadow-md);
+}
+
+/* Card label — tiny uppercase tag at top of a card.
+   Flex row so status pills can sit at the right. */
+.card-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-weight: 500;
+  margin-bottom: var(--space-3);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+
+/* ── Card internals — dividers ──────────────────────────────────────────── */
+
+/* Thin inset rule for grouping concerns within one card. Breaks out of
+   card padding by -space-2 each side to feel proper, not pastiche. */
+.card-divider {
+  height: 1px;
+  background: var(--rule);
+  margin: var(--space-5) calc(var(--space-2) * -1) var(--space-4);
+  border: 0;
+}
+
+/* Page-level horizontal rule with a faint cognac wash. Used sparingly. */
+.divline {
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(184, 137, 90, 0.35),
+    transparent
+  );
+  margin: var(--space-4) 0;
+  border: 0;
+}
+
+
+/* ── Buttons ────────────────────────────────────────────────────────────── */
+
+/* Shared base. 2px chamfer signals machined tool. 48px min-height for
+   thumb-target comfort. No shadow by default — text and color carry
+   action, not ornament. */
+.btn, .btn-ghost, .btn-amber, .btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 48px;
+  padding: 14px var(--space-5);
+  border: 1px solid transparent;
+  border-radius: var(--radius-chamfer);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: -0.005em;
+  cursor: pointer;
+  user-select: none;
+  text-decoration: none;
+  transition:
+    background-color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease),
+    transform var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+.btn:disabled,
+.btn-ghost:disabled,
+.btn-amber:disabled,
+.btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Primary — espresso ink. The commit. */
+.btn {
+  background: var(--ink);
+  color: var(--surface);
+  border-color: var(--ink);
+}
+.btn:hover:not(:disabled) {
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+  color: var(--on-accent-2, var(--surface)); /* v532: paired with its fill */
+}
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+/* Secondary — outlined ink. Alternative path with equal weight. */
+.btn-secondary {
+  background: var(--surface);
+  color: var(--ink);
+  border-color: var(--ink);
+}
+.btn-secondary:hover:not(:disabled) {
+  background: var(--ink);
+  color: var(--surface);
+}
+
+/* Ghost — quiet outline. Demoted actions, Back links, cancel paths. */
+.btn-ghost {
+  background: transparent;
+  color: var(--ink-2);
+  border-color: var(--rule-2);
+}
+.btn-ghost:hover:not(:disabled) {
+  color: var(--accent-2);
+  border-color: var(--accent);
+  background: var(--amber-soft);
+}
+
+/* Amber — reserved for significant moments (unlock, confirm irreversible).
+   Not a default. Used where "this is the one" needs saying. */
+.btn-amber {
+  background: var(--amber);
+  color: var(--ink);
+  border-color: var(--amber);
+}
+.btn-amber:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--surface);
+}
+
+/* Sizes */
+.btn-sm, .btn-ghost.btn-sm, .btn-amber.btn-sm, .btn-secondary.btn-sm {
+  min-height: 36px;
+  padding: 8px var(--space-3);
+  font-size: var(--text-sm);
+}
+.btn-lg, .btn-ghost.btn-lg, .btn-amber.btn-lg, .btn-secondary.btn-lg {
+  min-height: 52px;
+  padding: 16px var(--space-6);
+  font-size: var(--text-base);
+}
+
+.btn-full {
+  width: 100%;
+}
+
+
+/* ── Inputs ─────────────────────────────────────────────────────────────── */
+
+.input {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px var(--space-3);
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--rule-2);
+  border-radius: var(--radius-chamfer);
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: 1.4;
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.input::placeholder {
+  color: var(--ink-3);
+}
+
+.input:disabled {
+  background: var(--surface-2);
+  color: var(--ink-3);
+  cursor: not-allowed;
+}
+
+.input-mono {
+  font-family: var(--font-mono);
+  letter-spacing: -0.01em;
+}
+
+textarea.input {
+  min-height: 88px;
+  padding: var(--space-3);
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.input-error {
+  border-color: var(--warn);
+}
+.input-error:focus {
+  border-color: var(--warn);
+  box-shadow: 0 0 0 3px rgba(184, 89, 58, 0.18);
+}
+
+/* Form field = label + input + optional help */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.field-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--ink-3);
+  font-weight: 500;
+}
+
+.field-help {
+  font-size: var(--text-sm);
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+
+.field-error {
+  font-size: var(--text-sm);
+  color: var(--warn);
+  line-height: 1.5;
+}
+
+
+/* ── Pills (status tags) ────────────────────────────────────────────────── */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  font-family: var(--font-sans);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  border: 1px solid transparent;
+}
+
+.pill-ok      { background: rgba(58, 122, 95, 0.10);  color: var(--ok); }
+.pill-amber   { background: var(--amber-soft);         color: var(--accent-2); }
+.pill-warn    { background: rgba(184, 89, 58, 0.10);   color: var(--warn); }
+.pill-neutral { background: var(--surface-2);          color: var(--ink-2); }
+
+.pill-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+
+/* ── Status dots (standalone) ───────────────────────────────────────────── */
+
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ink-3);
+  flex-shrink: 0;
+}
+.dot-amber { background: var(--amber); }
+.dot-ok    { background: var(--ok); }
+.dot-warn  { background: var(--warn); }
+
+
+/* ── Data display primitives ────────────────────────────────────────────── */
+
+/* Pubkey, hash, address — mono, small. */
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: -0.01em;
+}
+
+/* Truncated mono — for long identifiers in constrained rows. */
+.mono-truncate {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
+}
+.mono-truncate:hover {
+  color: var(--accent-2);
+}
+
+/* Balance — the hero number on Home. Sans for display weight; tabular-nums
+   keeps digit positions stable across re-renders. */
+.balance {
+  font-family: var(--font-sans);
+  font-size: var(--text-4xl);
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+.balance-unit {
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  color: var(--ink-3);
+  font-weight: 500;
+  margin-left: 6px;
+  vertical-align: baseline;
+}
+.balance-alt {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--ink-2);
+  margin-top: var(--space-2);
+}
+
+
+/* ── Layout ─────────────────────────────────────────────────────────────── */
+
+.container {
+  max-width: var(--container-sm);
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-4);
+}
+
+@media (min-width: 600px) {
+  .container {
+    padding: var(--space-7) var(--space-6);
+  }
+}
+
+
+/* ── Page header ────────────────────────────────────────────────────────── */
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-6);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--rule);
+}
+
+.page-title {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+.brand {
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--ink);
+  text-decoration: none;
+}
+.brand-accent {
+  color: var(--accent);
+}
+
+
+/* ── Masthead (top-of-screen identity row) ──────────────────────────────── */
+
+.masthead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: var(--space-6);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--rule);
+}
+.masthead-name {
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--ink);
+}
+.masthead-meta {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--ink-3);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+
+/* ═════════════════════════════════════════════════════════════════════════
+ * GATE SCREENS — passphrase gate system (ported from Phase 2.75)
+ *
+ * Seven gates: seed display, setpass, unlock, forgot-pass, mismatch,
+ * replace-wallet, recover, erase. All re-tokenized to the new warm palette.
+ * ═════════════════════════════════════════════════════════════════════════ */
+
+.gate {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  bottom: 0; /* B1: fixed rendering clips at the viewport edge (probe-proven) */
+  padding-bottom: calc(var(--space-6) + env(safe-area-inset-bottom, 0px));
+  background: var(--bg-motif, var(--bg));  /* v625 (DP GO): main reads as the gate — both ways; offline rooms ride .gate and inherit */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6) var(--space-4);
+  z-index: 200;
+  overflow-y: auto;
+  animation: gate-in var(--dur-slow) var(--ease-out);
+}
+
+@keyframes gate-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.gate-hidden { display: none !important; }
+
+/* Gate card — a ceremonial vessel. Generous padding, elevated shadow. */
+.gate-card {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-md);
+  padding: var(--space-7);
+  max-width: var(--container-sm);
+  width: 100%;
+  margin: auto;
+  font-family: var(--font-sans);
+}
+
+.gate-brand {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--ink-3);
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin-bottom: var(--space-4);
+}
+.gate-brand-accent { color: var(--accent); }
+
+.gate-title {
+  font-family: var(--font-sans);
+  font-size: var(--text-2xl);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0 0 var(--space-4) 0;
+  color: var(--ink);
+}
+
+.gate-body {
+  color: var(--ink-2);
+  font-size: var(--text-md);
+  line-height: 1.6;
+}
+.gate-body strong {
+  color: var(--ink);
+  font-weight: 500;
+}
+.gate-body p {
+  margin: 0 0 var(--space-3) 0;
+}
+.gate-body p:last-child {
+  margin-bottom: 0;
+}
+
+/* #2 — ensure 24px breathing room between the last gate-body paragraph and
+   the first gate-field (e.g. PASSPHRASE label). The gate-field already has
+   margin-bottom; this gives it matching top margin for the first instance. */
+.gate-body + .gate-field {
+  margin-top: var(--space-6);
+}
+
+.gate-actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-6);
+}
+.gate-actions .btn,
+.gate-actions .btn-ghost,
+.gate-actions .btn-amber,
+.gate-actions .btn-secondary {
+  flex: 1;
+}
+
+/* Gate actions stacked vertically — buttons shouldn't flex-grow. */
+.gate-actions[style*="flex-direction: column"] .btn,
+.gate-actions[style*="flex-direction: column"] .btn-ghost,
+.gate-actions[style*="flex-direction: column"] .btn-amber,
+.gate-actions[style*="flex-direction: column"] .btn-secondary {
+  flex: none;
+  width: 100%;
+}
+
+.gate-footnote {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--ink-3);
+  text-align: center;
+  margin-top: var(--space-4);
+  letter-spacing: 0.02em;
+}
+
+.gate-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+.gate-field:last-of-type {
+  margin-bottom: var(--space-2);
+}
+
+.gate-error {
+  color: var(--warn);
+  font-size: var(--text-md);
+  margin-top: var(--space-2);
+  min-height: 20px;
+}
+
+.gate-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-md);
+  color: var(--ink-2);
+}
+
+/* Forgot-passphrase link — demoted, dim, amber-soft hover tint. */
+.gate-link {
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  color: var(--ink-2);
+  text-decoration: none;
+  font-weight: 500;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-chamfer);
+  transition:
+    color var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease);
+}
+.gate-link:hover {
+  color: var(--accent-2);
+  background: var(--amber-soft);
+  text-decoration: none;
+}
+
+#gate-mismatch .gate-title {
+  text-align: center;
+}
+
+/* Replace-gate Back link — demoted from button to link-looking control. */
+#gate-replace-back {
+  display: block;
+  background: transparent;
+  border: none;
+  color: var(--ink-2);
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  font-weight: 500;
+  padding: var(--space-3);
+  margin: var(--space-2) auto 0 auto;
+  cursor: pointer;
+  text-decoration: none;
+  border-radius: var(--radius-chamfer);
+  transition:
+    color var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease);
+  width: auto;
+  height: auto;
+  min-height: 0;
+}
+#gate-replace-back:hover {
+  color: var(--accent-2);
+  background: var(--amber-soft);
+}
+
+
+/* ── Seed word grid — display (read-only, first-time view) ──────────────── */
+
+.seed-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-2);
+  background: var(--surface-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-card);
+  padding: var(--space-4);
+  margin: var(--space-4) 0;
+}
+
+.seed-cell {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-chamfer);
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+}
+
+.seed-cell-num {
+  color: var(--ink-3);
+  font-size: var(--text-xs);
+  min-width: 16px;
+}
+
+.seed-cell-word {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+
+/* ── Seed word grid — entry (ghost-text autocomplete) ───────────────────── */
+
+.seed-entry {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+}
+
+.seed-slot {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 44px;
+  background: var(--surface);
+  border: 1px solid var(--rule-2);
+  border-radius: var(--radius-chamfer);
+  padding: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  overflow: hidden;
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+.seed-slot:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.seed-slot-locked {
+  background: var(--surface-2);
+  border-color: var(--rule-2);
+}
+
+.seed-slot-error {
+  border-color: var(--warn);
+}
+
+.seed-slot-num {
+  color: var(--ink-3);
+  font-size: var(--text-xs);
+  min-width: 40px;
+  padding-left: var(--space-3);
+  user-select: none;
+  flex-shrink: 0;
+  z-index: 3;
+  position: relative;
+}
+
+/* Layered text: user input on top, ghost completion underneath.
+   Both must share font metrics exactly or the overlay drifts. */
+.seed-slot-text {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  padding-left: var(--space-2);
+  padding-right: var(--space-3);
+}
+
+.seed-slot-input {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  line-height: 42px;
+  letter-spacing: normal;
+  color: var(--ink);
+  padding-left: var(--space-2);
+  padding-right: var(--space-3);
+  margin: 0;
+  z-index: 2;
+  caret-color: var(--ink);
+  box-sizing: border-box;
+  /* v579 (DP, IMG_6897): shaping discipline — kerning and ligatures off, UA
+     text-indent zeroed. The ghost suffix is positioned NUMERICALLY (canvas-
+     measured against this element's computed font), so both renderers must
+     shape identically and start at the same x. */
+  font-kerning: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+  text-indent: 0;
+}
+
+/* Defeat browser autofill yellow background on seed inputs. */
+.seed-slot-input:-webkit-autofill {
+  -webkit-text-fill-color: var(--ink);
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+.seed-slot-ghost {
+  position: absolute;
+  left: 0;
+  right: 0;
+  /* v581: vertical alignment by the SAME model every engine applies to input
+     text — center the natural text line (top:50% + translateY(-50%), composed
+     with the X shift in JS) — replacing the 42px line box that iOS inputs
+     ignore (the original ~2px hair). Chrome centers input text in the content
+     box too, so both engines now agree by construction. */
+  top: 50%;
+  transform: translateY(calc(-50% + var(--seed-ghost-nudge, -0.68px)));  /* v584: the calibration — see --seed-ghost-nudge */
+  line-height: normal;
+  pointer-events: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  letter-spacing: normal;
+  padding-left: var(--space-2);
+  padding-right: var(--space-3);
+  margin: 0;
+  z-index: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  box-sizing: border-box;
+  font-kerning: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+  text-indent: 0;
+}
+
+.seed-slot-ghost-typed {
+  color: transparent;
+}
+
+.seed-slot-ghost-suffix {
+  color: var(--ink-3);
+}
+/* v581: the v580 selection experiment is fully reverted — iOS rendered the
+   programmatic selection with native drag handles (unstyleable chrome). The
+   shadow ghost above is the product; its two-axis cure lives in the rule and
+   in SeedEntry's measured transform. */
+
+.seed-slot-locked .seed-slot-input {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+/* Binary-mode indicator (12th slot, typing 0/1 only) */
+.seed-slot-binary .seed-slot-input {
+  color: var(--accent-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  letter-spacing: normal;
+}
+.seed-slot-binary .seed-slot-ghost {
+  display: none;
+}
+
+/* Hint in 12th slot footer when binary-detect is armed */
+.seed-binary-hint {
+  font-size: var(--text-xs);
+  color: var(--accent-2);
+  font-family: var(--font-mono);
+  text-align: right;
+  margin-top: var(--space-1);
+  height: 16px;
+  line-height: 16px;
+  overflow: hidden;
+}
+
+
+/* ── Confirmation checkbox row ──────────────────────────────────────────── */
+
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-chamfer);
+  cursor: pointer;
+  user-select: none;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+.check-row:hover {
+  border-color: var(--accent);
+}
+.check-row input[type="checkbox"] {
+  margin: 2px 0 0 0;
+  cursor: pointer;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+.check-row-label {
+  font-size: var(--text-md);
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+
+/* ── Passphrase strength meter ──────────────────────────────────────────── */
+
+.strength {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  margin-top: var(--space-1);
+}
+
+.strength-bar {
+  flex: 1;
+  height: 4px;
+  background: var(--surface-2);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+
+.strength-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--rule-2);
+  border-radius: var(--radius-pill);
+  transition:
+    width var(--dur) var(--ease),
+    background-color var(--dur) var(--ease);
+}
+
+.strength-level-too-short .strength-fill { width: 15%;  background: var(--warn); }
+.strength-level-ok        .strength-fill { width: 40%;  background: var(--amber); }
+.strength-level-good      .strength-fill { width: 70%;  background: var(--ok); }
+.strength-level-strong    .strength-fill { width: 100%; background: var(--ok); }
+
+.strength-label { color: var(--ink-2); font-weight: 500; }
+.strength-level-too-short .strength-label { color: var(--warn); }
+.strength-level-ok        .strength-label { color: var(--accent-2); }
+.strength-level-good      .strength-label { color: var(--ok); }
+.strength-level-strong    .strength-label { color: var(--ok); font-weight: 600; }
+
+
+/* ── Wrong-passphrase shake ─────────────────────────────────────────────── */
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-6px); }
+  40%, 80% { transform: translateX(6px); }
+}
+.shake {
+  animation: shake 0.4s var(--ease) both;
+}
+
+
+/* ── Loading spinner ────────────────────────────────────────────────────── */
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--rule-2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+
+/* ── ERASE confirmation input ───────────────────────────────────────────── */
+
+.erase-confirm-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  margin-bottom: var(--space-2);
+}
+.erase-confirm-input {
+  display: block;
+  width: 100%;
+  height: 48px;
+  padding: 0 var(--space-3);
+  background: var(--surface);
+  color: var(--warn);
+  border: 2px solid var(--rule-2);
+  border-radius: var(--radius-chamfer);
+  font-family: var(--font-mono);
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-align: center;
+  text-transform: uppercase;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+.erase-confirm-input:focus {
+  outline: none;
+  border-color: var(--warn);
+}
+.erase-confirm-input.confirmed {
+  border-color: var(--warn);
+  background: rgba(184, 89, 58, 0.06);
+}
+
+
+/* ── Focus-visible ring (consistent across interactive elements) ────────── */
+
+.btn:focus-visible,
+.btn-ghost:focus-visible,
+.btn-amber:focus-visible,
+.btn-secondary:focus-visible,
+.input:focus-visible,
+.erase-confirm-input:focus-visible,
+.gate-link:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+
+/* ── Mode system — Basic (default) vs Advanced ──────────────────────────── */
+
+.advanced-only { display: none; }
+body.mode-advanced .advanced-only { display: block; }
+
+.basic-only { display: block; }
+body.mode-advanced .basic-only { display: none; }
+
+/* Advanced mode tightens card padding for information density. */
+body.mode-advanced .card {
+  padding: var(--space-4);
+}
+
+/* Advanced mode slightly larger mono text at info-density. */
+body.mode-advanced .mono,
+body.mode-advanced .mono-truncate {
+  font-size: var(--text-md);
+}
+
+/* Gate screens always stay in Basic mode regardless of body class —
+   these are entry points, not operational surfaces. */
+.gate .card,
+.gate-card {
+  padding: var(--space-7);
+}
+
+
+/* ── Wallet-body flash guard ────────────────────────────────────────────── */
+
+/* Hide everything except gates until gate flow unlocks. Prevents a
+   momentary flash of the wallet body on initial load. */
+body.wallet-hidden > *:not(.gate) {
+  visibility: hidden;
+}
+body.wallet-hidden > .lij-rescan-ov { visibility: visible; }   /* v590: the year picker joins the v531 toast exemption — it must show DURING the restore gate, where the guard's visibility beats any z-index */
+
+
+/* ── v588 RECOVERY ARC: the 5px scan bar (DP design) + shared year picker ── */
+.lij-scanbar { position: absolute; left: 0; right: 0; bottom: 0; height: 5px; overflow: hidden; border-bottom-left-radius: inherit; border-bottom-right-radius: inherit; pointer-events: none; z-index: 3; }
+.lij-scanbar-fill { height: 100%; width: 0; background: linear-gradient(90deg, #7a4b12, #f7931a, #ffd9a0); animation: lijScanPulse 2.4s ease-in-out infinite; transition: width 0.6s ease; }
+@keyframes lijScanPulse { 0%, 100% { filter: brightness(0.92); } 50% { filter: brightness(1.12); } }
+.lij-scantext { position: absolute; left: 10px; right: 10px; bottom: 9px; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.02em; color: var(--ink-3); pointer-events: none; z-index: 3; }   /* v589 (DP): bounded BOTH edges inside the card by constraint, not arithmetic — right-aligned, ellipsis if ever too long; can never poke past either side of any screen */
+.lij-rescan-ov { position: fixed; inset: 0; background: rgba(10, 7, 4, 0.55); display: flex; align-items: center; justify-content: center; z-index: 2147483500; }   /* v590: above the gate (2147483400) and the tour chrome (2147483200) */
+.lij-rescan-card { background: var(--surface); border: 1px solid var(--rule-2); border-radius: 12px; padding: 16px; width: min(330px, 88vw); font-family: var(--font-mono); }
+.lij-rescan-title { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-2); margin-bottom: 8px; }
+.lij-rescan-note { font-size: 12px; color: var(--ink-3); margin-bottom: 12px; line-height: 1.45; }
+.lij-rescan-select { width: 100%; box-sizing: border-box; font-family: var(--font-mono); font-size: 14px; padding: 8px; background: var(--surface-2, transparent); color: var(--ink); border: 1px solid var(--rule-2); border-radius: 8px; margin-bottom: 12px; }
+.lij-rescan-row { display: flex; gap: 8px; }

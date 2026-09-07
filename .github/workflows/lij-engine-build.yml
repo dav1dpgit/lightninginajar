@@ -1,0 +1,135 @@
+name: lij-engine-build
+
+# Session 27: the engine ritual moves into CI. The old world was hand-run
+# Codespaces (BUILD.md) with DP polling; the sandbox has no rust egress. This
+# workflow: pinned-nightly toolchain (rust-toolchain.toml), native lij-core
+# tests, the house wasm-pack command, then the ATOMIC flip — pkg artifacts +
+# busters + LIJ_WASM_EXPECTED + frontend version land in ONE commit, so the
+# deployed page is never expecting an engine that isn't there. That commit
+# touches only lij-pwa/**, which triggers lij-build (Pages deploy) and cannot
+# retrigger this workflow (paths filter) — no loop.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'lij/**'
+      - '.github/workflows/lij-engine-build.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: lij-engine-build
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain per rust-toolchain.toml (auto-installs pinned nightly + wasm target)
+        working-directory: lij
+        run: rustup show
+
+      - name: Native tests — lij-core (always run, always test)
+        working-directory: lij
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test -p lij-core --locked --lib 2>&1 | tee /tmp/cargo-test.log
+
+      - name: Install wasm-pack (house method, BUILD.md step 4)
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build engine (house command, BUILD.md)
+        working-directory: lij
+        shell: bash
+        run: |
+          set -o pipefail
+          wasm-pack build lij-wasm --target web --out-dir pkg 2>&1 | tee /tmp/wasm-build.log
+
+      - name: Flip check + install pkg + guarded seds (version-agnostic, idempotent)
+        run: |
+          set -e
+          W=lij-pwa/frontend/wallet/index.html
+          ENG=$(grep -oE 'phase11-v[0-9]+' lij/lij-wasm/src/lib.rs | head -1)
+          ENGN=${ENG#phase11-v}
+          CURE=$(grep -oE "LIJ_WASM_EXPECTED = 'phase11-v[0-9]+'" "$W" | grep -oE 'v[0-9]+' | head -1)
+          CUREN=${CURE#v}
+          echo "engine source: $ENG | page expects: phase11-v$CUREN"
+          if [ "$ENGN" = "$CUREN" ]; then
+            echo "flip: page already expects $ENG — verify-only run, nothing to ship"
+            echo "FLIP=0" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          cp lij/lij-wasm/pkg/lij_wasm.js lij/lij-wasm/pkg/lij_wasm_bg.wasm \
+             lij/lij-wasm/pkg/lij_wasm.d.ts lij/lij-wasm/pkg/lij_wasm_bg.wasm.d.ts \
+             lij-pwa/frontend/pkg/
+          N=$(grep -c "?v=${CUREN}" "$W")
+          test "$N" -ge 3   # v224 flip lesson: S27 hardcoded =3; later sessions added lazy-import busters (5 by v634) and the fossil count blocked a clean flip. The invariant is BELOW: every buster flips, none left behind.
+          sed -i "s/?v=${CUREN}/?v=${ENGN}/g" "$W"
+          sed -i "s/LIJ_WASM_EXPECTED = 'phase11-v${CUREN}'/LIJ_WASM_EXPECTED = '${ENG}'/" "$W"
+          PVN=$(grep -oE "LIJ_FRONTEND_VERSION = 'phase11-v[0-9]+'" "$W" | grep -oE "v[0-9]+'" | tr -dc 0-9)
+          test -n "$PVN"   # v186 flip lesson: '[0-9]+ | head -1' matched the 11 in phase11 -> sed no-op'd silently
+          NPV=$((PVN+1))
+          sed -i "s/LIJ_FRONTEND_VERSION = 'phase11-v${PVN}'/LIJ_FRONTEND_VERSION = 'phase11-v${NPV}'/" "$W"
+          test "$(grep -c "?v=${ENGN}" "$W")" = "$N"
+          SWF=lij-pwa/frontend/wallet/sw.js
+          test "$(grep -c "?v=${CUREN}" "$SWF")" -ge 1   # v636 lesson: the v224 flip advanced page busters but NOT the SW precache pins — exact-or-nothing /pkg broke OFFLINE ENGINE LOAD (S37 disease, reintroduced at the flip layer). Parity flips here now, permanently.
+          sed -i "s/?v=${CUREN}/?v=${ENGN}/g" "$SWF"
+          sed -i "s/lij-offline-v${PVN}/lij-offline-v${NPV}/" "$SWF"
+          test "$(grep -c "?v=${CUREN}" "$SWF")" = "0"
+          test "$(grep -c "phase11-v${CUREN}" "$W")" = "0"
+          echo "flip: engine $ENG, page phase11-v${NPV}"
+          echo "FLIP=1" >> "$GITHUB_ENV"
+
+      - name: Commit artifacts + flip (one atomic commit)
+        if: env.FLIP == '1'
+        run: |
+          git config user.name "Claude S27 CI"
+          git config user.email "claude@lij.session"
+          git add lij-pwa/frontend/pkg lij-pwa/frontend/wallet/index.html lij-pwa/frontend/wallet/sw.js
+          git commit -m "engine + page flip [engine-ci]: $(grep -oE 'phase11-v[0-9]+' lij/lij-wasm/src/lib.rs | head -1) live, busters + LIJ_WASM_EXPECTED + page version advanced atomically"
+          git pull --rebase origin main
+          git push origin main
+
+      - name: Dispatch lij-build (GITHUB_TOKEN pushes do not trigger push workflows)
+        if: env.FLIP == '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/lij-build.yml/dispatches" \
+            -d '{"ref":"main"}'
+          echo "lij-build dispatched"
+
+      - name: Surface failure logs as commit comment (any step; pageapp convention)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          def tail(p, n=5000):
+              try: return open(p,'rb').read()[-n:].decode(errors='replace')
+              except Exception: return None
+          parts = []
+          t = tail('/tmp/cargo-test.log')
+          if t: parts.append("== native tests (cargo-test.log tail) ==\n" + t)
+          w = tail('/tmp/wasm-build.log')
+          if w: parts.append("== wasm-pack build (wasm-build.log tail) ==\n" + w)
+          if not parts: parts.append("no logs captured -- failure before/outside logged steps")
+          body = "lij-engine-build FAILED.\n```\n" + "\n\n".join(parts)[-6500:] + "\n```"
+          req = urllib.request.Request(
+              "https://api.github.com/repos/%s/commits/%s/comments" % (os.environ['GITHUB_REPOSITORY'], os.environ['GITHUB_SHA']),
+              data=json.dumps({"body": body}).encode(),
+              headers={"Authorization": "Bearer " + os.environ['GH_TOKEN'],
+                       "Accept": "application/vnd.github+json",
+                       "Content-Type": "application/json"})
+          print("comment:", urllib.request.urlopen(req).status)
+          PY

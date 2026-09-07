@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Lightning in a Jar — You've been gifted sats</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg?v=26">
+<meta name="theme-color" content="#071520">
+<!-- C-0 (S32): last CDN leg deleted — local Geist replaces Google Fonts;
+     who visits a gift link is now nobody’s registry. Fraunces flair traded
+     for privacy — DP may restyle later (ledgered). -->
+<style>
+@font-face{font-family:'Geist Sans';font-weight:400;font-display:swap;src:url('/fonts/geist-sans-400.woff2') format('woff2')}
+@font-face{font-family:'Geist Sans';font-weight:500;font-display:swap;src:url('/fonts/geist-sans-500.woff2') format('woff2')}
+body,h1,h2,h3,h4,p,button,input,a,div,span{font-family:'Geist Sans',system-ui,sans-serif !important}
+</style>
+<style>
+:root{
+  --ink:#071520;
+  --deep:#0D1F2D;
+  --mid:#162737;
+  --surface:#1E3347;
+  --rim:#2E4F68;
+  --ember:#F5A623;
+  --ember2:#E08B0A;
+  --ember3:#FFD080;
+  --glass:#4A9B7A;
+  --glass2:#3A7A5E;
+  --glass3:#6ABFA0;
+  --text:#E8F4F0;
+  --text2:rgba(232,244,240,.65);
+  --text3:rgba(232,244,240,.35);
+  --muted:rgba(232,244,240,.22);
+  --err:#E05555;
+  --glow:rgba(245,166,35,.15);
+  --glassglow:rgba(74,155,122,.15);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{min-height:100dvh;background:var(--ink);font-family:'DM Sans',sans-serif;color:var(--text);overflow-x:hidden}
+
+/* Night sky noise */
+body::before{
+  content:"";position:fixed;inset:0;
+  background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+  pointer-events:none;z-index:0;opacity:.7;
+}
+
+/* Firefly particles canvas */
+#firefly-canvas{position:fixed;inset:0;z-index:1;pointer-events:none}
+
+.wrap{
+  max-width:400px;margin:0 auto;
+  padding:48px 24px 80px;
+  position:relative;z-index:2;
+  min-height:100dvh;
+  display:flex;flex-direction:column;justify-content:center;
+}
+
+.screen{display:none}
+.screen.on{display:flex;flex-direction:column;animation:rise .65s cubic-bezier(.16,1,.3,1) both}
+@keyframes rise{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:translateY(0)}}
+
+/* ── Jar hero ── */
+.jar-hero{text-align:center;margin-bottom:36px}
+
+.jar-svg-wrap{
+  width:96px;height:96px;
+  background:linear-gradient(145deg,rgba(74,155,122,.15),rgba(245,166,35,.08));
+  border:1px solid rgba(74,155,122,.2);
+  border-radius:28px;
+  display:flex;align-items:center;justify-content:center;
+  margin:0 auto 20px;
+  position:relative;
+  animation:jar-breathe 4s ease-in-out infinite;
+}
+@keyframes jar-breathe{
+  0%,100%{box-shadow:0 8px 40px rgba(74,155,122,.18),0 0 60px rgba(245,166,35,.08)}
+  50%{box-shadow:0 12px 60px rgba(74,155,122,.28),0 0 100px rgba(245,166,35,.14),0 0 140px rgba(74,155,122,.06)}
+}
+
+.eyebrow{font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--text3);margin-bottom:8px;font-weight:500}
+.headline{font-family:'Fraunces',serif;font-size:36px;font-weight:700;font-style:italic;line-height:1.12;color:var(--text);margin-bottom:8px}
+.subline{font-size:14px;color:var(--text2);line-height:1.75;font-weight:300}
+
+/* ── Card ── */
+.card{
+  background:linear-gradient(160deg,rgba(22,39,55,.85),rgba(13,31,45,.95));
+  border:1px solid rgba(46,79,104,.5);
+  border-radius:22px;padding:26px 22px;
+  position:relative;overflow:hidden;
+  margin-bottom:14px;
+}
+.card::before{
+  content:"";position:absolute;
+  top:0;left:0;right:0;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(74,155,122,.3),transparent);
+}
+
+/* ── Amount display ── */
+.amount-ring{
+  width:90px;height:90px;
+  border-radius:50%;
+  background:radial-gradient(circle at 35% 35%,rgba(74,155,122,.2),rgba(13,31,45,.8));
+  border:1.5px solid rgba(74,155,122,.3);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  margin:0 auto 20px;
+  box-shadow:0 0 30px rgba(74,155,122,.15);
+}
+.amount-val{font-family:'Fraunces',serif;font-size:26px;font-weight:700;color:var(--text);line-height:1}
+.amount-unit{font-size:10px;color:var(--text3);letter-spacing:.1em;text-transform:uppercase;margin-top:2px}
+
+/* ── Steps ── */
+.steps{margin-bottom:20px}
+.step{display:flex;align-items:center;gap:13px;padding:9px 0;opacity:0;transform:translateX(-12px);transition:all .5s cubic-bezier(.16,1,.3,1)}
+.step.vis{opacity:1;transform:none}
+.step-dot{width:8px;height:8px;border-radius:50%;background:rgba(74,155,122,.18);flex-shrink:0;transition:all .35s}
+.step.done .step-dot{background:var(--ember3);box-shadow:0 0 10px rgba(245,166,35,.6),0 0 20px rgba(245,166,35,.3)}
+.step.act .step-dot{background:var(--glass);animation:pulse-dot .9s ease-in-out infinite}
+@keyframes pulse-dot{0%,100%{box-shadow:0 0 0 0 rgba(74,155,122,.5)}50%{box-shadow:0 0 0 6px rgba(74,155,122,.0)}}
+.step-label{font-size:13px;color:var(--text3);font-weight:300;transition:color .35s}
+.step.done .step-label{color:var(--ember3)}
+.step.act .step-label{color:var(--text)}
+
+/* ── Buttons ── */
+.btn-primary{
+  width:100%;
+  background:linear-gradient(135deg,var(--ember3),var(--ember),var(--ember2));
+  color:var(--ink);
+  font-family:'DM Sans',sans-serif;font-size:15px;font-weight:700;
+  border:none;border-radius:14px;padding:16px;
+  cursor:pointer;letter-spacing:.04em;
+  position:relative;overflow:hidden;
+  transition:transform .15s,box-shadow .15s;
+  box-shadow:0 4px 24px rgba(245,166,35,.28);
+}
+.btn-primary::after{
+  content:"";position:absolute;top:0;left:-100%;width:100%;height:100%;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.2),transparent);
+  transition:left .55s;
+}
+.btn-primary:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 8px 32px rgba(245,166,35,.42)}
+.btn-primary:hover::after{left:100%}
+.btn-primary:disabled{opacity:.45;cursor:not-allowed}
+
+.btn-secondary{
+  width:100%;background:transparent;
+  border:1px solid var(--rim);color:var(--text2);
+  font-family:'DM Sans',sans-serif;font-size:14px;font-weight:500;
+  border-radius:14px;padding:14px;cursor:pointer;
+  transition:all .15s;margin-top:10px;
+}
+.btn-secondary:hover{border-color:var(--glass);color:var(--glass3)}
+
+/* ── Success ── */
+.success-seal{
+  font-size:64px;text-align:center;margin-bottom:16px;
+  filter:drop-shadow(0 0 24px rgba(74,155,122,.5));
+  animation:seal-pop .9s cubic-bezier(.16,1,.3,1) both;
+}
+@keyframes seal-pop{from{opacity:0;transform:scale(.3) rotate(-20deg)}to{opacity:1;transform:none}}
+
+.success-head{font-family:'Fraunces',serif;font-size:44px;font-weight:700;font-style:italic;text-align:center;color:var(--text);line-height:1.05;margin-bottom:8px;animation:rise .8s cubic-bezier(.16,1,.3,1) .3s both}
+.success-sub{font-size:14px;color:var(--text2);text-align:center;line-height:1.8;margin-bottom:24px;animation:rise .8s cubic-bezier(.16,1,.3,1) .45s both;font-weight:300}
+
+.detail-row{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid rgba(46,79,104,.3)}
+.detail-row:last-child{border-bottom:none}
+.detail-key{font-size:10px;text-transform:uppercase;letter-spacing:.15em;color:var(--text3);font-weight:500}
+.detail-val{font-family:monospace;font-size:12px;color:var(--glass3);font-weight:600}
+
+.disclaimer{font-size:10px;color:var(--muted);text-align:center;margin-top:18px;line-height:1.9;letter-spacing:.03em}
+
+/* ── Message ── */
+.msg{font-size:12px;font-weight:500;margin-top:12px;text-align:center;min-height:16px}
+.msg.err{color:var(--err)}
+.msg.ok{color:var(--glass3)}
+
+/* ── Spinner ── */
+.spin{width:24px;height:24px;border:2px solid rgba(245,166,35,.2);border-top-color:var(--ember);border-radius:50%;animation:spin .7s linear infinite;display:inline-block}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<canvas id="firefly-canvas"></canvas>
+<div class="wrap">
+
+<!-- Loading screen -->
+<div class="screen on" id="s-loading">
+  <div style="text-align:center;padding:60px 0">
+    <div class="spin" style="width:36px;height:36px;margin:0 auto 20px;border-width:3px"></div>
+    <div style="font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--text3)">Opening the jar…</div>
+  </div>
+</div>
+
+<!-- Gift claim screen -->
+<div class="screen" id="s-gift">
+  <div class="jar-hero">
+    <div class="jar-svg-wrap">
+      <!-- Large jar SVG with glowing fireflies -->
+      <svg width="56" height="56" viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12 23C12 18 15.5 14 21 13V11a2 2 0 012-2h10a2 2 0 012 2v2c5.5 1 9 5 9 10v22a2 2 0 01-2 2H14a2 2 0 01-2-2V23z" fill="rgba(74,155,122,0.12)" stroke="rgba(106,191,160,0.45)" stroke-width="1.5"/>
+        <path d="M21 13C21 13 23.5 14 28 14s7-1 7-1" stroke="rgba(106,191,160,0.3)" stroke-width="1.2" stroke-linecap="round"/>
+        <path d="M15 25C15 21 17.5 18.5 21 17.5" stroke="rgba(255,255,255,0.15)" stroke-width="1.5" stroke-linecap="round"/>
+        <!-- Fireflies -->
+        <circle cx="24" cy="28" r="2.5" fill="#F5A623"/>
+        <circle cx="24" cy="28" r="5" fill="rgba(245,166,35,0.2)"/>
+        <circle cx="33" cy="35" r="2" fill="#6ABFA0"/>
+        <circle cx="33" cy="35" r="4.5" fill="rgba(74,155,122,0.18)"/>
+        <circle cx="30" cy="22" r="1.5" fill="#FFD080"/>
+        <circle cx="30" cy="22" r="3.5" fill="rgba(255,208,128,0.15)"/>
+        <circle cx="20" cy="38" r="1.8" fill="#F5A623" opacity="0.7"/>
+        <circle cx="20" cy="38" r="4" fill="rgba(245,166,35,0.12)"/>
+        <!-- Lid -->
+        <rect x="19" y="7" width="18" height="5" rx="2" fill="rgba(74,155,122,0.2)" stroke="rgba(106,191,160,0.4)" stroke-width="1.2"/>
+      </svg>
+    </div>
+    <div class="eyebrow">You've been gifted</div>
+    <div class="headline">Lightning<br>in a Jar</div>
+    <div class="subline">Your first Bitcoin.<br>Yours to keep, send, and grow.</div>
+  </div>
+
+  <div class="card">
+    <div class="amount-ring">
+      <div class="amount-val" id="gift-sats">100</div>
+      <div class="amount-unit">sats</div>
+    </div>
+
+    <div class="steps" id="claim-steps">
+      <div class="step" id="step-1">
+        <div class="step-dot"></div>
+        <div class="step-label">Validating gift…</div>
+      </div>
+      <div class="step" id="step-2">
+        <div class="step-dot"></div>
+        <div class="step-label">Creating your wallet</div>
+      </div>
+      <div class="step" id="step-3">
+        <div class="step-dot"></div>
+        <div class="step-label">Catching your lightning bugs</div>
+      </div>
+    </div>
+
+    <button class="btn-primary" id="claim-btn" onclick="claimGift()" disabled>
+      Claim your sats
+    </button>
+    <div class="msg" id="claim-msg"></div>
+  </div>
+
+  <div style="font-size:11px;color:var(--muted);text-align:center;line-height:1.9;letter-spacing:.02em">
+    No account needed. No personal information.<br>Your keys. Your Bitcoin.
+  </div>
+</div>
+
+<!-- Success screen -->
+<div class="screen" id="s-success">
+  <div class="success-seal">🫙</div>
+  <div class="success-head">It's yours.</div>
+  <div class="success-sub">Your wallet is ready.<br>Your sats are inside.</div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="detail-row">
+      <div class="detail-key">Amount</div>
+      <div class="detail-val" id="success-sats">100 sats</div>
+    </div>
+    <div class="detail-row">
+      <div class="detail-key">Wallet ID</div>
+      <div class="detail-val" id="success-pubkey">—</div>
+    </div>
+    <div class="detail-row">
+      <div class="detail-key">Network</div>
+      <div class="detail-val">Bitcoin Lightning ⚡</div>
+    </div>
+  </div>
+
+  <div class="card" style="background:linear-gradient(160deg,rgba(224,85,85,.08),rgba(13,31,45,.9));border-color:rgba(224,85,85,.2);margin-bottom:16px">
+    <div style="font-size:12px;color:rgba(232,244,240,.65);line-height:1.8">
+      🔑 <strong style="color:var(--text)">Write down your recovery phrase.</strong> It's the only way to restore your wallet if you lose your device. You'll see it in your wallet settings.
+    </div>
+  </div>
+
+  <button class="btn-primary" onclick="openWallet()">Open my wallet ⚡</button>
+
+  <div class="disclaimer">
+    Lightning in a Jar is non-custodial.<br>
+    No one else holds your funds. Not even us.
+  </div>
+</div>
+
+</div><!-- /wrap -->
+
+<script>
+// ── Firefly particle animation ─────────────────────────────────────────────
+(function(){
+  const canvas = document.getElementById('firefly-canvas');
+  const ctx = canvas.getContext('2d');
+  let W, H, flies = [];
+
+  function resize(){
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  const COLORS = [
+    'rgba(245,166,35,',   // amber
+    'rgba(106,191,160,',  // teal
+    'rgba(255,208,128,',  // warm white
+  ];
+
+  function makeFly(){
+    return {
+      x: Math.random() * W,
+      y: Math.random() * H,
+      r: Math.random() * 2 + 0.8,
+      vx: (Math.random() - .5) * .4,
+      vy: (Math.random() - .5) * .4,
+      phase: Math.random() * Math.PI * 2,
+      speed: Math.random() * .02 + .008,
+      color: COLORS[Math.floor(Math.random() * COLORS.length)],
+      glowR: Math.random() * 8 + 4,
+    };
+  }
+
+  for(let i = 0; i < 28; i++) flies.push(makeFly());
+
+  function draw(){
+    ctx.clearRect(0, 0, W, H);
+    const now = Date.now() * .001;
+
+    flies.forEach(f => {
+      f.x += f.vx;
+      f.y += f.vy;
+      if(f.x < -20) f.x = W + 20;
+      if(f.x > W + 20) f.x = -20;
+      if(f.y < -20) f.y = H + 20;
+      if(f.y > H + 20) f.y = -20;
+
+      const alpha = (Math.sin(now * f.speed * 60 + f.phase) + 1) / 2;
+      const a = alpha * .75 + .1;
+
+      // Glow
+      const grad = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, f.glowR);
+      grad.addColorStop(0, f.color + a + ')');
+      grad.addColorStop(1, f.color + '0)');
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, f.glowR, 0, Math.PI * 2);
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      // Core dot
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2);
+      ctx.fillStyle = f.color + Math.min(a * 1.4, 1) + ')';
+      ctx.fill();
+    });
+
+    requestAnimationFrame(draw);
+  }
+  draw();
+})();
+
+// ── Gift claim flow ────────────────────────────────────────────────────────
+const params = new URLSearchParams(window.location.search);
+const giftToken = params.get('g');
+
+function setStep(n, state) {
+  const el = document.getElementById(`step-${n}`);
+  if (!el) return;
+  el.classList.remove('vis','done','act');
+  if (state === 'vis') el.classList.add('vis');
+  if (state === 'done') { el.classList.add('vis','done'); }
+  if (state === 'act') { el.classList.add('vis','act'); }
+}
+
+function delay(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+async function runSteps() {
+  await delay(300);
+  setStep(1, 'act');
+  await delay(900);
+  setStep(1, 'done');
+  setStep(2, 'act');
+  await delay(700);
+  setStep(2, 'done');
+  setStep(3, 'act');
+  await delay(600);
+  setStep(3, 'done');
+
+  // Enable claim button
+  document.getElementById('claim-btn').disabled = false;
+}
+
+async function claimGift() {
+  const btn = document.getElementById('claim-btn');
+  const msg = document.getElementById('claim-msg');
+  btn.disabled = true;
+  btn.textContent = 'Claiming…';
+  msg.className = 'msg';
+  msg.textContent = '';
+
+  try {
+    // TODO: wire to WASM LijWalletHandle.create() + LNURLw pull
+    // For now simulate the flow
+    await delay(1500);
+
+    // Simulate wallet creation
+    const demoPubkey = 'lij_' + Math.random().toString(36).slice(2, 14);
+    localStorage.setItem('lij_pubkey', demoPubkey);
+
+    // Show success
+    document.getElementById('success-sats').textContent =
+      document.getElementById('gift-sats').textContent + ' sats';
+    document.getElementById('success-pubkey').textContent =
+      demoPubkey.slice(0, 8) + '…';
+
+    showScreen('s-success');
+
+  } catch(e) {
+    btn.disabled = false;
+    btn.textContent = 'Claim your sats';
+    msg.className = 'msg err';
+    msg.textContent = '⚠ ' + e.message;
+  }
+}
+
+function openWallet() {
+  window.location.href = '/wallet/';
+}
+
+function showScreen(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('on'));
+  const el = document.getElementById(id);
+  if (el) el.classList.add('on');
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────
+async function init() {
+  await delay(800);
+
+  if (!giftToken) {
+    // No gift token — redirect to wallet or show error
+    showScreen('s-gift');
+    document.getElementById('claim-msg').className = 'msg err';
+    document.getElementById('claim-msg').textContent = 'No gift token found.';
+    return;
+  }
+
+  showScreen('s-gift');
+  runSteps();
+}
+
+init();
+</script>
+</body>
+</html>

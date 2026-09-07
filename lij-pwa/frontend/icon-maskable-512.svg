@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 44 44"
+     width="512" height="512"
+     role="img"
+     aria-label="Lightning in a Jar (maskable)">
+  <title>Lightning in a Jar — maskable</title>
+
+  <defs>
+    <!-- Outside the jar: 135° diagonal across full 44×44 icon -->
+    <linearGradient id="bg-diagonal-m" x1="0" y1="0" x2="44" y2="44" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#b06f33"/>
+      <stop offset="22%"  stop-color="#6a4220"/>
+      <stop offset="50%"  stop-color="#2a1a0e"/>
+      <stop offset="80%"  stop-color="#0c0706"/>
+      <stop offset="100%" stop-color="#030201"/>
+    </linearGradient>
+
+    <!-- Inside the jar: same stops, mirrored TR→BL -->
+    <linearGradient id="bg-mirror-m" x1="44" y1="0" x2="0" y2="44" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#b06f33"/>
+      <stop offset="22%"  stop-color="#6a4220"/>
+      <stop offset="50%"  stop-color="#2a1a0e"/>
+      <stop offset="80%"  stop-color="#0c0706"/>
+      <stop offset="100%" stop-color="#030201"/>
+    </linearGradient>
+
+    <!-- Limbus: same physical size as master (radius 17.6 in user units),
+         centered on the jar (which is offset by +6, +6) -->
+    <radialGradient id="limbus-m" cx="22" cy="23.6" r="17.6" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#000000" stop-opacity="0"/>
+      <stop offset="78%"  stop-color="#000000" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.5"/>
+    </radialGradient>
+
+    <!-- Clip path: jar interior translated by +6 in both axes -->
+    <clipPath id="jar-interior-m" clipPathUnits="userSpaceOnUse">
+      <path d="M18 12.8 L18 14 C15.2 14.7 13.5 17 13.5 19.5 L13.5 31.5 a1.5 1.5 0 0 0 1.5 1.5 L29 33 a1.5 1.5 0 0 0 1.5 -1.5 L30.5 19.5 C30.5 17 28.8 14.7 26 14 L26 12.8 Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- 1. Background covers the full icon area (Android bleed zone included) -->
+  <rect width="44" height="44" fill="url(#bg-diagonal-m)"/>
+
+  <!-- 2. Glass refraction inside the jar -->
+  <g clip-path="url(#jar-interior-m)">
+    <rect width="44" height="44" fill="url(#bg-mirror-m)"/>
+    <rect width="44" height="44" fill="url(#limbus-m)"/>
+  </g>
+
+  <!-- 3-5. Jar mark, translated by (6, 6) so it sits in the inner 80% safe zone.
+         Stroke order: body → bolt → lid, so lid covers bolt's top tip. -->
+  <g transform="translate(6, 6)">
+    <!-- Jar body -->
+    <path fill="none" stroke="#f4ecd0" stroke-width="1.2"
+          stroke-linecap="round" stroke-linejoin="round"
+          d="M12 6.8 L12 8 C9.2 8.7 7.5 11 7.5 13.5 L7.5 25.5 a1.5 1.5 0 0 0 1.5 1.5 L23 27 a1.5 1.5 0 0 0 1.5 -1.5 L24.5 13.5 C24.5 11 22.8 8.7 20 8 L20 6.8"/>
+
+    <!-- Bolt -->
+    <path fill="none" stroke="#FFC888" stroke-width="1"
+          stroke-linecap="round" stroke-linejoin="round"
+          d="M16 6.5 L14.6 11.5 L17.2 13.5 L13.8 18 L16.6 20.5 L14.2 25"/>
+    <path fill="none" stroke="#FFC888" stroke-width="0.8"
+          stroke-linecap="round" stroke-linejoin="round"
+          d="M15.7 14.5 L18.2 17 L17 19"/>
+    <path fill="none" stroke="#FFC888" stroke-width="0.7"
+          stroke-linecap="round" stroke-linejoin="round"
+          d="M14.6 11.5 L12.5 13.5"/>
+
+    <!-- Lid drawn last, sits in front -->
+    <rect fill="none" stroke="#f4ecd0" stroke-width="1.2"
+          stroke-linecap="round" stroke-linejoin="round"
+          x="11" y="3.5" width="10" height="3" rx="0.5"/>
+  </g>
+</svg>

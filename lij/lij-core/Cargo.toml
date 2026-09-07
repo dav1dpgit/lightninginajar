@@ -1,0 +1,67 @@
+[package]
+name = "lij-core"
+version = "0.2.0"
+edition = "2021"
+description = "Lightning-in-a-Jar core wallet logic. v0.2.0: OutputSweeper auto-handles force-close residue, m/525 override dropped (Plan A)."
+
+# v211 escape kit: `escape_kit` (default ON) forwards to lightning's
+# `unsafe_revoked_tx_signing`, which adds the copy-signing trait methods the
+# read-only escape export copy-signs the latest holder commitment with. Source
+# gates read THIS lij-core feature (not lightning's) — a `cfg(feature=...)` in
+# lij-core sees lij-core's own feature set, so the delegation method and the
+# widened trait must be gated on the same lij-core flag to agree across the
+# native-test leg (cfg(test)=true) and the wasm-lib leg (cfg(test)=false).
+# Adds methods only; zero runtime behavior change.
+[features]
+default = ["escape_kit"]
+escape_kit = ["lightning/unsafe_revoked_tx_signing"]
+
+[dependencies]
+lightning = { version = "0.0.123", features = ["max_level_trace"] }
+lightning-invoice = "0.31"
+lightning-rapid-gossip-sync = "0.0.123"
+lightning-background-processor = { version = "0.0.123", features = ["futures"] }
+
+bitcoin = { version = "0.30", features = ["rand"] }
+
+futures = "0.3"
+futures-util = "0.3"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+log = "0.4"
+thiserror = "1"
+anyhow = "1"
+
+rand = { version = "0.8", features = ["getrandom"] }
+getrandom = { version = "0.2", features = ["js"] }
+bip39 = { version = "2", features = ["rand"] }
+
+hex = "0.4"
+
+# Persistence encryption (see persist.rs)
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+hkdf = { version = "0.12", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-timer = "0.2"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "console",
+    "Window",
+    "Storage",
+    "Request",
+    "RequestInit",
+    "RequestMode",
+    "Response",
+    "Headers",
+] }
+instant = { version = "0.1", features = ["wasm-bindgen"] }

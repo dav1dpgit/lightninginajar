@@ -1,0 +1,6 @@
+target/
+
+# vendored crates may legitimately contain src/target/ source dirs (e.g. cc) —
+# never let the build-dir pattern above eat them
+!vendor/**/target/
+!vendor/**/target/**

@@ -1,0 +1,52 @@
+# v687 (S45, DP): security headers on every response. They cannot stop a
+# hostile deploy (they come from the same origin as the code) — they close
+# the third-party doors: downgrade to plain HTTP, framing, foreign script,
+# feature abuse. The CSP carries 'unsafe-inline' because the wallet page has
+# This /* policy keeps 'unsafe-inline' for the site root and /join (one inline
+# script each). The WALLET's policy is the strict one in the /wallet/* block
+# below (v708, S45): script-src 'self' + a sha256 per inline block, no
+# 'unsafe-inline' — every handler is an action attribute since v707.
+# connect-src stays broad on purpose: the wallet talks to whichever LSP, chain
+# source and registry the user chooses.
+/*
+  Strict-Transport-Security: max-age=31536000
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  Permissions-Policy: camera=(self), microphone=(), geolocation=(), payment=(), usb=(), bluetooth=(), interest-cohort=()
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https: wss:; worker-src 'self' blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'
+
+# Cloudflare Pages response headers.
+# The wasm glue + binary keep fixed filenames, so without explicit cache
+# control Cloudflare's edge (and the browser) can serve a stale build even
+# after a deploy — the ?v= query trick does NOT bust an edge cache that
+# ignores query strings. Force revalidation so every deploy actually lands.
+/pkg/*
+  Cache-Control: no-cache, must-revalidate
+
+# The wallet shell itself must always be the freshest deployed copy, otherwise
+# the (correct) wasm URLs inside it never get requested.
+# v708 (S45, DP "Proceed" — CSP strict-mode lift, step 3, THE FLIP): the wallet's
+# ENFORCING policy. `! Content-Security-Policy` removes the /* line first
+# (Cloudflare applies a block's unsets before its sets), then the strict line
+# is set: script-src 'self' + the sha256 of each of the wallet page's 9 inline
+# <script> blocks + 'wasm-unsafe-eval' — NO 'unsafe-inline' for script. The
+# hashes are written by the cut (ops/frontend/lij_csp.py) from the final page
+# bytes on every build; the cut refuses to write while any inline handler
+# exists (census 0/0/0 since v707). Styles keep 'unsafe-inline' (style
+# injection cannot run script; img-src/font-src 'self' block CSS beacons).
+# LAW (workers-sdk constructConfiguration.ts `rules[rule.path] = ...`): ONE
+# block per path — a second /wallet/* block would overwrite this one.
+/wallet/*
+  Cache-Control: no-cache, must-revalidate
+  ! Content-Security-Policy
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'sha256-J7rlKqfuDU6TAQ7lLSFc6bV780bBFYguX0C3Ap0arRM=' 'sha256-AK1Uoz8oCBeqnRu0PwCWF7zf/JvsilNTyw6kl/R3vII=' 'sha256-czBYg5m7NmEU//gcDMX7C4LOmnrEG0g0uNdRVGxXsnQ=' 'sha256-dht8MR+OlONmRlKZY+swPcVWLJiMgac/DrM828nMvbs=' 'sha256-6cfHuVRBq5zxHrMV1SeQr6usF19Xw6KC4L8zKxuceq4=' 'sha256-nVUSGDF5+A8cVhEyfXg0s5uWP0pCptEG0PC5eB7UQ1A=' 'sha256-nJGdZZeUvznkJC58fYEXR2Uy2wptLLoXSNvzxJerzcw=' 'sha256-VktM/mQQkRt1KlTN/CD4xQjHJstcE4p9iqyELcBwsmQ=' 'sha256-SgNNF52wcRe/OMBZHn5lCCqbggpKO+pa4zczbxHuljE=' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https: wss:; worker-src 'self' blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'
+
+/index.html
+  Cache-Control: no-cache, must-revalidate
+
+# v313: the site-root stylesheet was NOT covered above — and this file’s
+# own note is right that ?v= does not bust an edge that ignores query
+# strings. Every stylesheet revalidates from now on.
+/*.css
+  Cache-Control: no-cache, must-revalidate

@@ -1,0 +1,99 @@
+name: lij-build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'lij/**'
+      - 'lij-pwa/**'
+      - '.github/workflows/lij-build.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: lij-build
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: lij
+
+      - name: toolchain
+        run: |
+          rustup target add wasm32-unknown-unknown
+          curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+
+      - name: build wasm (mirrors Codespace command)
+        id: build
+        run: |
+          set -o pipefail
+          cd lij
+          code=0
+          (cargo clean -p lij-wasm && wasm-pack build --release --target web --out-dir ../../lij-pwa/frontend/pkg lij-wasm) 2>&1 | tee "$GITHUB_WORKSPACE/build.log" || code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+      - name: zip frontend (mirrors Codespace command)
+        if: steps.build.outputs.code == '0'
+        run: |
+          PAGE=$(grep -oP "LIJ_FRONTEND_VERSION = 'phase11-v\K[0-9]+" lij-pwa/frontend/wallet/index.html)
+          echo "ZIPNAME=lij-v${PAGE}.zip" >> "$GITHUB_ENV"
+          cd lij-pwa/frontend
+          rm -f *.pre-* *.backup
+          zip -rq "$GITHUB_WORKSPACE/lij-v${PAGE}.zip" .
+
+      - name: publish deploy branch (Cloudflare Pages source)
+        if: steps.build.outputs.code == '0'
+        run: |
+          mkdir -p /tmp/site
+          cp -r lij-pwa/frontend/. /tmp/site/
+          rm -f /tmp/site/*.pre-* /tmp/site/*.backup
+          # wasm-pack emits pkg/.gitignore containing '*' — it would exclude
+          # the wasm from the publish commit; strip all gitignores from the site
+          find /tmp/site -name ".gitignore" -delete
+          cd /tmp/site
+          git init -q -b deploy
+          git config user.name "lij-ci"
+          git config user.email "ci@lij.invalid"
+          git add -A
+          git commit -qm "deploy ${GITHUB_SHA} (engine+page built from main)"
+          git push --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" deploy
+
+      - name: publish status + artifacts to build-artifacts branch
+        if: always()
+        run: |
+          CODE="${{ steps.build.outputs.code }}"
+          CODE="${CODE:-1}"
+          if [ "$CODE" = "0" ]; then OK=true; else OK=false; fi
+          ENG=$(grep -oP '"phase11-v\K[0-9]+' lij/lij-wasm/src/lib.rs | head -1 || echo "")
+          PAGE=$(grep -oP "LIJ_FRONTEND_VERSION = 'phase11-v\K[0-9]+" lij-pwa/frontend/wallet/index.html || echo "")
+          mkdir -p /tmp/pub
+          cp "$GITHUB_WORKSPACE/build.log" /tmp/pub/ 2>/dev/null || true
+          SHA256=""
+          if [ -n "${ZIPNAME:-}" ] && [ -f "$GITHUB_WORKSPACE/$ZIPNAME" ]; then
+            cp "$GITHUB_WORKSPACE/$ZIPNAME" /tmp/pub/
+            SHA256=$(sha256sum "/tmp/pub/$ZIPNAME" | cut -d' ' -f1)
+          fi
+          printf '{"ok": %s, "exit_code": "%s", "sha": "%s", "engine": "phase11-v%s", "page": "phase11-v%s", "zip": "%s", "zip_sha256": "%s", "finished_at": "%s"}\n' \
+            "$OK" "$CODE" "$GITHUB_SHA" "$ENG" "$PAGE" "${ZIPNAME:-}" "$SHA256" "$(date -u +%FT%TZ)" \
+            > /tmp/pub/build-status.json
+          cd /tmp/pub
+          git init -q -b build-artifacts
+          git config user.name "lij-ci"
+          git config user.email "ci@lij.invalid"
+          git add -A
+          git commit -qm "build ${GITHUB_SHA} ok=$OK"
+          git push --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" build-artifacts
+
+      - name: propagate build result
+        if: always()
+        run: |
+          CODE="${{ steps.build.outputs.code }}"
+          exit "${CODE:-1}"

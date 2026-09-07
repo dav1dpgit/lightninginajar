@@ -1,0 +1,5 @@
+lij/target/
+__pycache__/
+*.zip
+*.orig
+.DS_Store

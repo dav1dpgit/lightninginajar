@@ -1,0 +1,16 @@
+{
+  "name": "lij-wasm",
+  "type": "module",
+  "description": "WASM bindings for Lightning-in-a-Jar. This is the npm package your PWA imports.",
+  "version": "0.1.0",
+  "files": [
+    "lij_wasm_bg.wasm",
+    "lij_wasm.js",
+    "lij_wasm.d.ts"
+  ],
+  "main": "lij_wasm.js",
+  "types": "lij_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
