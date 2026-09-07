@@ -52,4 +52,4 @@ The engine began as a fork of MutinyWallet/mutiny-node (MIT); its notice is reta
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). The names, logo and site are not licensed — see [TRADEMARKS.md](TRADEMARKS.md).
