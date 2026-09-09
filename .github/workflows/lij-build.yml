@@ -61,7 +61,7 @@ jobs:
           zip -rq "$GITHUB_WORKSPACE/lij-v${PAGE}.zip" .
 
       - name: publish deploy branch (Cloudflare Pages source)
-        if: steps.build.outputs.code == '0'
+        if: steps.build.outputs.code == '0' && github.repository == 'dav1dpgit/lightning-in-a-jar'
         run: |
           mkdir -p /tmp/site
           cp -r lij-pwa/frontend/. /tmp/site/
@@ -78,7 +78,7 @@ jobs:
           git push --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" deploy
 
       - name: publish status + artifacts to build-artifacts branch
-        if: always()
+        if: always() && github.repository == 'dav1dpgit/lightning-in-a-jar'
         run: |
           CODE="${{ steps.build.outputs.code }}"
           CODE="${CODE:-1}"
@@ -104,7 +104,7 @@ jobs:
           git push --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" build-artifacts
 
       - name: releases row (docs/releases.md in this repository only)
-        if: steps.build.outputs.code == '0'
+        if: steps.build.outputs.code == '0' && github.repository == 'dav1dpgit/lightning-in-a-jar'
         run: |
           set -e
           ENG=$(grep -oP '"phase11-v\K[0-9]+' lij/lij-wasm/src/lib.rs | head -1)

@@ -104,7 +104,7 @@ jobs:
           echo "FLIP=1" >> "$GITHUB_ENV"
 
       - name: Commit artifacts + flip (one atomic commit)
-        if: env.FLIP == '1'
+        if: env.FLIP == '1' && github.repository == 'dav1dpgit/lightning-in-a-jar'
         run: |
           git config user.name "Claude S27 CI"
           git config user.email "claude@lij.session"
@@ -114,7 +114,7 @@ jobs:
           git push origin main
 
       - name: Dispatch lij-build (GITHUB_TOKEN pushes do not trigger push workflows)
-        if: env.FLIP == '1'
+        if: env.FLIP == '1' && github.repository == 'dav1dpgit/lightning-in-a-jar'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
