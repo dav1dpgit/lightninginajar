@@ -1,0 +1,12 @@
+     Removed 0 files
+[INFO]: 🎯  Checking for the Wasm target...
+[INFO]: 🌀  Compiling to Wasm...
+error: failed to calculate checksum of: /home/runner/work/lightninginajar/lightninginajar/lij/vendor/cc/src/target/llvm.rs
+
+Caused by:
+  failed to open file `/home/runner/work/lightninginajar/lightninginajar/lij/vendor/cc/src/target/llvm.rs`
+
+Caused by:
+  No such file or directory (os error 2)
+Error: `cargo build` failed, see the output above for details
+Caused by: `cargo build` failed, see the output above for details
