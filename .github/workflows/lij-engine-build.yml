@@ -94,6 +94,10 @@ jobs:
           test "$(grep -c "?v=${CUREN}" "$SWF")" -ge 1   # v636 lesson: the v224 flip advanced page busters but NOT the SW precache pins — exact-or-nothing /pkg broke OFFLINE ENGINE LOAD (S37 disease, reintroduced at the flip layer). Parity flips here now, permanently.
           sed -i "s/?v=${CUREN}/?v=${ENGN}/g" "$SWF"
           sed -i "s/lij-offline-v${PVN}/lij-offline-v${NPV}/" "$SWF"
+          # v708 law: the wallet's CSP lists a sha256 per inline script block, written from the FINAL page
+          # bytes — the seds above changed those bytes, so the hashes are rewritten here or every inline
+          # block would be refused by the browser. Refuses to write if an inline handler ever reappears.
+          python3 -c "import sys; sys.path.insert(0, 'ops/frontend'); import lij_csp; lij_csp.write_and_gate(expected_blocks=9, enforcing=True)"
           test "$(grep -c "?v=${CUREN}" "$SWF")" = "0"
           test "$(grep -c "phase11-v${CUREN}" "$W")" = "0"
           echo "flip: engine $ENG, page phase11-v${NPV}"
@@ -104,7 +108,7 @@ jobs:
         run: |
           git config user.name "Claude S27 CI"
           git config user.email "claude@lij.session"
-          git add lij-pwa/frontend/pkg lij-pwa/frontend/wallet/index.html lij-pwa/frontend/wallet/sw.js
+          git add lij-pwa/frontend/pkg lij-pwa/frontend/wallet/index.html lij-pwa/frontend/wallet/sw.js lij-pwa/frontend/_headers
           git commit -m "engine + page flip [engine-ci]: $(grep -oE 'phase11-v[0-9]+' lij/lij-wasm/src/lib.rs | head -1) live, busters + LIJ_WASM_EXPECTED + page version advanced atomically"
           git pull --rebase origin main
           git push origin main

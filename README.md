@@ -6,6 +6,7 @@ A bitcoin wallet that runs in the browser: on-chain plus Lightning, the Lightnin
 
 ## What it is
 
+- **Sends to silent-payment addresses (BIP-352).** An `sp1q…` destination in the on-chain send pays a one-time taproot output derived from the wallet's own inputs; the BIP's test vectors run in the native test step. Receiving is not built — coins received that way would be the one thing a plain BIP84 wallet could not recover from the 12 words, and the wallet's recovery floor comes first.
 - **Pure Lightning, no side-chain.** Channels are the wallet's own LDK channels with its LSP; there is no Spark/Ark-style shared-custody construction. On-chain funds sit at ordinary BIP84 addresses.
 - **Your bitcoin key is your Lightning key.** Everything derives from the 12 words. On-chain funds are recoverable in any BIP84 wallet; cooperative and force closes pay the wallet's side straight to its own m/84 address.
 - **An open LSP market (LIJOX).** Any node operator can run the adapter, register, and serve any wallet that speaks the standard; wallets choose and switch providers. The protocol and the registry live in [dav1dpgit/LIJOX](https://github.com/dav1dpgit/LIJOX); the LSP side in [dav1dpgit/lijox-lnd-adapter](https://github.com/dav1dpgit/lijox-lnd-adapter).

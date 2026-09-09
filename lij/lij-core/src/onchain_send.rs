@@ -64,9 +64,68 @@ impl SendResult {
 /// is LDK-style sat/kilo-weight (FeeQuote::on_chain_sweep); 1 vbyte = 4 weight,
 /// so sat/vB = sat_per_kw / 250. Rounded up, floored at 1 sat/vB.
 pub(crate) fn estimate_fee(n_in: usize, n_out: usize, fee_rate_sat_per_kw: u32) -> u64 {
-    let vsize = 11 + 68 * n_in as u64 + 31 * n_out as u64;
+    estimate_fee_with(n_in, n_out, 0, fee_rate_sat_per_kw)
+}
+
+/// v240: `extra_vbytes` covers outputs larger than P2WPKH — a silent-payment
+/// destination is a P2TR output, 43 vB instead of 31.
+pub(crate) fn estimate_fee_with(n_in: usize, n_out: usize, extra_vbytes: u64, fee_rate_sat_per_kw: u32) -> u64 {
+    let vsize = 11 + 68 * n_in as u64 + 31 * n_out as u64 + extra_vbytes;
     let sat_per_vb = (((fee_rate_sat_per_kw as u64) + 249) / 250).max(1);
     vsize * sat_per_vb
+}
+
+/// v240 (BIP-352): the destination is either an ordinary address (script known
+/// up front) or a silent-payment address (script derived from the inputs that
+/// end up selected). `Deferred` carries the parsed keys until then.
+enum Dest {
+    Script(ScriptBuf),
+    SilentPayment(crate::silent_payment::SpAddress),
+}
+
+fn parse_dest(dest: &str, network: Network) -> LijResult<Dest> {
+    if crate::silent_payment::looks_like(dest, network) {
+        return Ok(Dest::SilentPayment(crate::silent_payment::parse(dest, network)?));
+    }
+    let dest_addr = Address::from_str(dest)
+        .map_err(|e| LijError::Node(format!("invalid address: {e}")))?
+        .require_network(network)
+        .map_err(|e| LijError::Node(format!("address is for the wrong network: {e}")))?;
+    Ok(Dest::Script(dest_addr.script_pubkey()))
+}
+
+/// The output script for `dest` given the inputs finally selected — for a
+/// silent-payment address this is where the one-time taproot key is derived.
+fn resolve_dest_script(
+    dest: &Dest,
+    root_key: &RootKey,
+    secp: &Secp256k1<bitcoin::secp256k1::All>,
+    selected: &[&SpendableUtxo],
+) -> LijResult<ScriptBuf> {
+    match dest {
+        Dest::Script(spk) => Ok(spk.clone()),
+        Dest::SilentPayment(addr) => {
+            let mut inputs = Vec::with_capacity(selected.len());
+            for u in selected {
+                inputs.push(crate::silent_payment::SpInput {
+                    secret: signing_secret(root_key, secp, u.chain, u.index)?,
+                    outpoint: OutPoint {
+                        txid: Txid::from_str(&u.txid)
+                            .map_err(|e| LijError::Node(format!("bad utxo txid {}: {e}", u.txid)))?,
+                        vout: u.vout,
+                    },
+                });
+            }
+            crate::silent_payment::derive_output_script(secp, &inputs, addr)
+        }
+    }
+}
+
+fn dest_extra_vbytes(dest: &Dest) -> u64 {
+    match dest {
+        Dest::Script(_) => 0,
+        Dest::SilentPayment(_) => 12,
+    }
 }
 
 /// A spendable UTXO with everything needed to sign it.
@@ -178,12 +237,9 @@ pub async fn build_and_send(
         return Err(LijError::Node("amount must be greater than zero".into()));
     }
 
-    // Parse + network-check the destination address.
-    let dest_addr = Address::from_str(dest)
-        .map_err(|e| LijError::Node(format!("invalid address: {e}")))?
-        .require_network(network)
-        .map_err(|e| LijError::Node(format!("address is for the wrong network: {e}")))?;
-    let dest_spk = dest_addr.script_pubkey();
+    // Parse + network-check the destination (v240: or a silent-payment address).
+    let dest_parsed = parse_dest(dest, network)?;
+    let extra_vb = dest_extra_vbytes(&dest_parsed);
 
     let secp = Secp256k1::new();
 
@@ -201,12 +257,14 @@ pub async fn build_and_send(
     for u in &spendable {
         selected.push(u);
         total_in += u.value_sats;
-        if total_in >= amount_sats + estimate_fee(selected.len(), 2, fee_rate_sat_per_kw) {
+        if total_in >= amount_sats + estimate_fee_with(selected.len(), 2, extra_vb, fee_rate_sat_per_kw) {
             break;
         }
     }
     let n_in = selected.len();
-    let mut fee_sats = estimate_fee(n_in, 2, fee_rate_sat_per_kw);
+    let mut fee_sats = estimate_fee_with(n_in, 2, extra_vb, fee_rate_sat_per_kw);
+    // v240: a silent-payment output key depends on the inputs just chosen.
+    let dest_spk = resolve_dest_script(&dest_parsed, root_key, &secp, &selected)?;
     if total_in < amount_sats + fee_sats {
         return Err(LijError::Node(format!(
             "insufficient funds: have {total_in} sats, need {} (amount {amount_sats} + fee {fee_sats})",
@@ -369,11 +427,9 @@ pub async fn build_and_send_bump(
         ));
     }
 
-    let dest_addr = Address::from_str(dest)
-        .map_err(|e| LijError::Node(format!("recorded destination unparseable: {e}")))?
-        .require_network(network)
-        .map_err(|e| LijError::Node(format!("recorded destination wrong network: {e}")))?;
-    let dest_spk = dest_addr.script_pubkey();
+    let dest_parsed = parse_dest(dest, network)
+        .map_err(|e| LijError::Node(format!("recorded destination unusable: {e}")))?;
+    let extra_vb = dest_extra_vbytes(&dest_parsed);
     let secp = Secp256k1::new();
 
     // Reconstruct the ORIGINAL inputs with signing info.
@@ -419,8 +475,11 @@ pub async fn build_and_send_bump(
     }
 
     let n_in = selected.len();
-    let vsize = 11 + 68 * n_in as u64 + 31 * 2;
-    let mut new_fee = estimate_fee(n_in, 2, new_fee_rate_sat_per_kw);
+    let vsize = 11 + 68 * n_in as u64 + 31 * 2 + extra_vb;
+    let mut new_fee = estimate_fee_with(n_in, 2, extra_vb, new_fee_rate_sat_per_kw);
+    // v240: the same inputs re-derive the same silent-payment output — RBF keeps the output.
+    let selected_refs: Vec<&SpendableUtxo> = selected.iter().collect();
+    let dest_spk = resolve_dest_script(&dest_parsed, root_key, &secp, &selected_refs)?;
     let bip125_min = old_fee + vsize; // old absolute fee + 1 sat/vB incremental relay
     if new_fee < bip125_min {
         let min_vb = (bip125_min + vsize - 1) / vsize;

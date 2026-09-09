@@ -38,6 +38,7 @@ pub mod priority_scan;
 pub mod cold_start;
 pub mod onchain_scan;
 pub mod onchain_send;
+pub mod silent_payment;
 pub mod channel_open;
 pub mod tier2;
 pub mod tier2_sync;
