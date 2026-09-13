@@ -13,21 +13,21 @@
 //! channel matches a UTXO on-chain, requiring at least some marginal on-chain transacting in
 //! order to announce a channel. This module handles that checking.
 
+use bitcoin::amount::Amount;
+use bitcoin::constants::ChainHash;
 use bitcoin::TxOut;
-use bitcoin::blockdata::constants::ChainHash;
 
-use hex::DisplayHex;
+use bitcoin::hex::DisplayHex;
 
-use crate::events::MessageSendEvent;
 use crate::ln::chan_utils::make_funding_redeemscript_from_slices;
-use crate::ln::msgs::{self, LightningError, ErrorAction};
+use crate::ln::msgs::{self, ErrorAction, LightningError, MessageSendEvent};
 use crate::routing::gossip::{NetworkGraph, NodeId, P2PGossipSync};
 use crate::util::logger::{Level, Logger};
 
 use crate::prelude::*;
 
+use crate::sync::{LockTestExt, Mutex};
 use alloc::sync::{Arc, Weak};
-use crate::sync::{Mutex, LockTestExt};
 use core::ops::Deref;
 
 /// An error when accessing the chain via [`UtxoLookup`].
@@ -135,6 +135,7 @@ impl UtxoLookup for UtxoResolver {
 
 impl UtxoFuture {
 	/// Builds a new future for later resolution.
+	#[rustfmt::skip]
 	pub fn new() -> Self {
 		Self { state: Arc::new(Mutex::new(UtxoMessages {
 			complete: None,
@@ -157,9 +158,11 @@ impl UtxoFuture {
 	///
 	/// [`processing_queue_high`]: crate::ln::msgs::RoutingMessageHandler::processing_queue_high
 	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
-	pub fn resolve_without_forwarding<L: Deref>(&self,
-		graph: &NetworkGraph<L>, result: Result<TxOut, UtxoLookupError>)
-	where L::Target: Logger {
+	pub fn resolve_without_forwarding<L: Deref>(
+		&self, graph: &NetworkGraph<L>, result: Result<TxOut, UtxoLookupError>,
+	) where
+		L::Target: Logger,
+	{
 		self.do_resolve(graph, result);
 	}
 
@@ -174,9 +177,17 @@ impl UtxoFuture {
 	///
 	/// [`processing_queue_high`]: crate::ln::msgs::RoutingMessageHandler::processing_queue_high
 	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
-	pub fn resolve<L: Deref, G: Deref<Target=NetworkGraph<L>>, U: Deref, GS: Deref<Target = P2PGossipSync<G, U, L>>>(&self,
-		graph: &NetworkGraph<L>, gossip: GS, result: Result<TxOut, UtxoLookupError>
-	) where L::Target: Logger, U::Target: UtxoLookup {
+	pub fn resolve<
+		L: Deref,
+		G: Deref<Target = NetworkGraph<L>>,
+		U: Deref,
+		GS: Deref<Target = P2PGossipSync<G, U, L>>,
+	>(
+		&self, graph: &NetworkGraph<L>, gossip: GS, result: Result<TxOut, UtxoLookupError>,
+	) where
+		L::Target: Logger,
+		U::Target: UtxoLookup,
+	{
 		let mut res = self.do_resolve(graph, result);
 		for msg_opt in res.iter_mut() {
 			if let Some(msg) = msg_opt.take() {
@@ -185,6 +196,7 @@ impl UtxoFuture {
 		}
 	}
 
+	#[rustfmt::skip]
 	fn do_resolve<L: Deref>(&self, graph: &NetworkGraph<L>, result: Result<TxOut, UtxoLookupError>)
 	-> [Option<MessageSendEvent>; 5] where L::Target: Logger {
 		let (announcement, node_a, node_b, update_a, update_b) = {
@@ -279,6 +291,7 @@ struct PendingChecksContext {
 }
 
 impl PendingChecksContext {
+	#[rustfmt::skip]
 	fn lookup_completed(&mut self,
 		msg: &msgs::UnsignedChannelAnnouncement, completed_state: &Weak<Mutex<UtxoMessages>>
 	) {
@@ -305,6 +318,7 @@ pub(super) struct PendingChecks {
 }
 
 impl PendingChecks {
+	#[rustfmt::skip]
 	pub(super) fn new() -> Self {
 		PendingChecks { internal: Mutex::new(PendingChecksContext {
 			channels: new_hash_map(), nodes: new_hash_map(),
@@ -313,12 +327,13 @@ impl PendingChecks {
 
 	/// Checks if there is a pending `channel_update` UTXO validation for the given channel,
 	/// and, if so, stores the channel message for handling later and returns an `Err`.
+	#[rustfmt::skip]
 	pub(super) fn check_hold_pending_channel_update(
 		&self, msg: &msgs::UnsignedChannelUpdate, full_msg: Option<&msgs::ChannelUpdate>
 	) -> Result<(), LightningError> {
 		let mut pending_checks = self.internal.lock().unwrap();
 		if let hash_map::Entry::Occupied(e) = pending_checks.channels.entry(msg.short_channel_id) {
-			let is_from_a = (msg.flags & 1) == 1;
+			let is_from_a = (msg.channel_flags & 1) == 1;
 			match Weak::upgrade(e.get()) {
 				Some(msgs_ref) => {
 					let mut messages = msgs_ref.lock().unwrap();
@@ -349,6 +364,7 @@ impl PendingChecks {
 
 	/// Checks if there is a pending `node_announcement` UTXO validation for a channel with the
 	/// given node and, if so, stores the channel message for handling later and returns an `Err`.
+	#[rustfmt::skip]
 	pub(super) fn check_hold_pending_node_announcement(
 		&self, msg: &msgs::UnsignedNodeAnnouncement, full_msg: Option<&msgs::NodeAnnouncement>
 	) -> Result<(), LightningError> {
@@ -394,6 +410,7 @@ impl PendingChecks {
 		Ok(())
 	}
 
+	#[rustfmt::skip]
 	fn check_replace_previous_entry(msg: &msgs::UnsignedChannelAnnouncement,
 		full_msg: Option<&msgs::ChannelAnnouncement>, replacement: Option<Weak<Mutex<UtxoMessages>>>,
 		pending_channels: &mut HashMap<u64, Weak<Mutex<UtxoMessages>>>
@@ -452,15 +469,16 @@ impl PendingChecks {
 		Ok(())
 	}
 
+	#[rustfmt::skip]
 	pub(super) fn check_channel_announcement<U: Deref>(&self,
 		utxo_lookup: &Option<U>, msg: &msgs::UnsignedChannelAnnouncement,
 		full_msg: Option<&msgs::ChannelAnnouncement>
-	) -> Result<Option<u64>, msgs::LightningError> where U::Target: UtxoLookup {
+	) -> Result<Option<Amount>, msgs::LightningError> where U::Target: UtxoLookup {
 		let handle_result = |res| {
 			match res {
 				Ok(TxOut { value, script_pubkey }) => {
 					let expected_script =
-						make_funding_redeemscript_from_slices(msg.bitcoin_key_1.as_array(), msg.bitcoin_key_2.as_array()).to_v0_p2wsh();
+						make_funding_redeemscript_from_slices(msg.bitcoin_key_1.as_array(), msg.bitcoin_key_2.as_array()).to_p2wsh();
 					if script_pubkey != expected_script {
 						return Err(LightningError{
 							err: format!("Channel announcement key ({}) didn't match on-chain script ({})",
@@ -511,9 +529,9 @@ impl PendingChecks {
 								if let Some(msg) = full_msg { ChannelAnnouncement::Full(msg.clone()) }
 								else { ChannelAnnouncement::Unsigned(msg.clone()) });
 							pending_checks.nodes.entry(msg.node_id_1)
-								.or_insert(Vec::new()).push(Arc::downgrade(&future.state));
+								.or_default().push(Arc::downgrade(&future.state));
 							pending_checks.nodes.entry(msg.node_id_2)
-								.or_insert(Vec::new()).push(Arc::downgrade(&future.state));
+								.or_default().push(Arc::downgrade(&future.state));
 							Err(LightningError {
 								err: "Channel being checked async".to_owned(),
 								action: ErrorAction::IgnoreAndLog(Level::Gossip),
@@ -538,6 +556,7 @@ impl PendingChecks {
 	/// Returns true if there are a large number of async checks pending and future
 	/// `channel_announcement` messages should be delayed. Note that this is only a hint and
 	/// messages already in-flight may still have to be handled for various reasons.
+	#[rustfmt::skip]
 	pub(super) fn too_many_checks_pending(&self) -> bool {
 		let mut pending_checks = self.internal.lock().unwrap();
 		if pending_checks.channels.len() > Self::MAX_PENDING_LOOKUPS {
@@ -564,6 +583,7 @@ mod tests {
 	use crate::routing::gossip::tests::*;
 	use crate::util::test_utils::{TestChainSource, TestLogger};
 
+	use bitcoin::amount::Amount;
 	use bitcoin::secp256k1::{Secp256k1, SecretKey};
 
 	use core::sync::atomic::Ordering;
@@ -576,6 +596,7 @@ mod tests {
 		(chain_source, network_graph)
 	}
 
+	#[rustfmt::skip]
 	fn get_test_objects() -> (msgs::ChannelAnnouncement, TestChainSource,
 		NetworkGraph<Box<TestLogger>>, bitcoin::ScriptBuf, msgs::NodeAnnouncement,
 		msgs::NodeAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, msgs::ChannelUpdate)
@@ -593,16 +614,17 @@ mod tests {
 		let node_b_announce = get_signed_node_announcement(|_| {}, node_2_privkey, &secp_ctx);
 
 		// Note that we have to set the "direction" flag correctly on both messages
-		let chan_update_a = get_signed_channel_update(|msg| msg.flags = 0, node_1_privkey, &secp_ctx);
-		let chan_update_b = get_signed_channel_update(|msg| msg.flags = 1, node_2_privkey, &secp_ctx);
+		let chan_update_a = get_signed_channel_update(|msg| msg.channel_flags = 0, node_1_privkey, &secp_ctx);
+		let chan_update_b = get_signed_channel_update(|msg| msg.channel_flags = 1, node_2_privkey, &secp_ctx);
 		let chan_update_c = get_signed_channel_update(|msg| {
-			msg.flags = 1; msg.timestamp += 1; }, node_2_privkey, &secp_ctx);
+			msg.channel_flags = 1; msg.timestamp += 1; }, node_2_privkey, &secp_ctx);
 
 		(valid_announcement, chain_source, network_graph, good_script, node_a_announce,
 			node_b_announce, chan_update_a, chan_update_b, chan_update_c)
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_fast_async_lookup() {
 		// Check that async lookups which resolve quicker than the future is returned to the
 		// `get_utxo` call can read it still resolve properly.
@@ -610,7 +632,7 @@ mod tests {
 
 		let future = UtxoFuture::new();
 		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: 1_000_000, script_pubkey: good_script }));
+			Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
 
 		network_graph.update_channel_from_announcement(&valid_announcement, &Some(&chain_source)).unwrap();
@@ -618,6 +640,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_async_lookup() {
 		// Test a simple async lookup
 		let (valid_announcement, chain_source, network_graph, good_script,
@@ -632,7 +655,7 @@ mod tests {
 		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
 
 		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: 0, script_pubkey: good_script }));
+			Ok(TxOut { value: Amount::ZERO, script_pubkey: good_script }));
 		network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).unwrap();
 		network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).unwrap();
 
@@ -647,6 +670,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_invalid_async_lookup() {
 		// Test an async lookup which returns an incorrect script
 		let (valid_announcement, chain_source, network_graph, ..) = get_test_objects();
@@ -660,11 +684,12 @@ mod tests {
 		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
 
 		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: 1_000_000, script_pubkey: bitcoin::ScriptBuf::new() }));
+			Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: bitcoin::ScriptBuf::new() }));
 		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_failing_async_lookup() {
 		// Test an async lookup which returns an error
 		let (valid_announcement, chain_source, network_graph, ..) = get_test_objects();
@@ -682,6 +707,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_updates_async_lookup() {
 		// Test async lookups will process pending channel_update/node_announcements once they
 		// complete.
@@ -709,7 +735,7 @@ mod tests {
 			"Awaiting channel_announcement validation to accept channel_update");
 
 		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: 1_000_000, script_pubkey: good_script }));
+			Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
 
 		assert!(network_graph.read_only().channels()
 			.get(&valid_announcement.contents.short_channel_id).unwrap().one_to_two.is_some());
@@ -723,6 +749,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_latest_update_async_lookup() {
 		// Test async lookups will process the latest channel_update if two are received while
 		// awaiting an async UTXO lookup.
@@ -745,7 +772,7 @@ mod tests {
 			"Awaiting channel_announcement validation to accept channel_update");
 
 		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: 1_000_000, script_pubkey: good_script }));
+			Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
 
 		assert_eq!(chan_update_a.contents.timestamp, chan_update_b.contents.timestamp);
 		let graph_lock = network_graph.read_only();
@@ -758,6 +785,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_no_double_lookups() {
 		// Test that a pending async lookup will prevent a second async lookup from flying, but
 		// only if the channel_announcement message is identical.
@@ -792,7 +820,7 @@ mod tests {
 
 		// Still, if we resolve the original future, the original channel will be accepted.
 		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: 1_000_000, script_pubkey: good_script }));
+			Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
 		assert!(!network_graph.read_only().channels()
 			.get(&valid_announcement.contents.short_channel_id).unwrap()
 			.announcement_message.as_ref().unwrap()
@@ -800,6 +828,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_checks_backpressure() {
 		// Test that too_many_checks_pending returns true when there are many checks pending, and
 		// returns false once they complete.
@@ -831,6 +860,7 @@ mod tests {
 	}
 
 	#[test]
+	#[rustfmt::skip]
 	fn test_checks_backpressure_drop() {
 		// Test that too_many_checks_pending returns true when there are many checks pending, and
 		// returns false if we drop some of the futures without completion.

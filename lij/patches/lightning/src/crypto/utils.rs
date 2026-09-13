@@ -1,7 +1,7 @@
-use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::secp256k1::{Message, Secp256k1, SecretKey, ecdsa::Signature, Signing};
+use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::secp256k1::{ecdsa::Signature, Message, Secp256k1, SecretKey, Signing};
 
 use crate::sign::EntropySource;
 
@@ -24,7 +24,7 @@ macro_rules! hkdf_extract_expand {
 		let (k1, k2, _) = hkdf_extract_expand!($salt, $ikm);
 		(k1, k2)
 	}};
-	($salt: expr, $ikm: expr, 5) => {{
+	($salt: expr, $ikm: expr, 6) => {{
 		let (k1, k2, prk) = hkdf_extract_expand!($salt, $ikm);
 
 		let mut hmac = HmacEngine::<Sha256>::new(&prk[..]);
@@ -42,16 +42,23 @@ macro_rules! hkdf_extract_expand {
 		hmac.input(&[5; 1]);
 		let k5 = Hmac::from_engine(hmac).to_byte_array();
 
-		(k1, k2, k3, k4, k5)
-	}}
+		let mut hmac = HmacEngine::<Sha256>::new(&prk[..]);
+		hmac.input(&k5);
+		hmac.input(&[6; 1]);
+		let k6 = Hmac::from_engine(hmac).to_byte_array();
+
+		(k1, k2, k3, k4, k5, k6)
+	}};
 }
 
 pub fn hkdf_extract_expand_twice(salt: &[u8], ikm: &[u8]) -> ([u8; 32], [u8; 32]) {
 	hkdf_extract_expand!(salt, ikm, 2)
 }
 
-pub fn hkdf_extract_expand_5x(salt: &[u8], ikm: &[u8]) -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32], [u8; 32]) {
-	hkdf_extract_expand!(salt, ikm, 5)
+pub fn hkdf_extract_expand_6x(
+	salt: &[u8], ikm: &[u8],
+) -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32], [u8; 32], [u8; 32]) {
+	hkdf_extract_expand!(salt, ikm, 6)
 }
 
 #[inline]
@@ -66,8 +73,11 @@ pub fn sign<C: Signing>(ctx: &Secp256k1<C>, msg: &Message, sk: &SecretKey) -> Si
 #[inline]
 #[allow(unused_variables)]
 pub fn sign_with_aux_rand<C: Signing, ES: Deref>(
-	ctx: &Secp256k1<C>, msg: &Message, sk: &SecretKey, entropy_source: &ES
-) -> Signature where ES::Target: EntropySource {
+	ctx: &Secp256k1<C>, msg: &Message, sk: &SecretKey, entropy_source: &ES,
+) -> Signature
+where
+	ES::Target: EntropySource,
+{
 	#[cfg(feature = "grind_signatures")]
 	let sig = loop {
 		let sig = ctx.sign_ecdsa_with_noncedata(msg, sk, &entropy_source.get_secure_random_bytes());
@@ -75,9 +85,9 @@ pub fn sign_with_aux_rand<C: Signing, ES: Deref>(
 			break sig;
 		}
 	};
-	#[cfg(all(not(feature = "grind_signatures"), not(feature = "_test_vectors")))]
+	#[cfg(all(not(feature = "grind_signatures"), not(ldk_test_vectors)))]
 	let sig = ctx.sign_ecdsa_with_noncedata(msg, sk, &entropy_source.get_secure_random_bytes());
-	#[cfg(all(not(feature = "grind_signatures"), feature = "_test_vectors"))]
+	#[cfg(all(not(feature = "grind_signatures"), ldk_test_vectors))]
 	let sig = sign(ctx, msg, sk);
 	sig
 }

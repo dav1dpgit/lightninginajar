@@ -16,9 +16,10 @@ use crate::util::ser::WithoutLength;
 use crate::prelude::*;
 
 /// An unpredictable sequence of bytes typically containing information needed to derive
-/// [`InvoiceRequest::payer_id`].
+/// [`InvoiceRequest::payer_signing_pubkey`] and [`Refund::payer_signing_pubkey`].
 ///
-/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
+/// [`InvoiceRequest::payer_signing_pubkey`]: crate::offers::invoice_request::InvoiceRequest::payer_signing_pubkey
+/// [`Refund::payer_signing_pubkey`]: crate::offers::refund::Refund::payer_signing_pubkey
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub(super) struct PayerContents(pub Metadata);
@@ -29,6 +30,6 @@ pub(super) struct PayerContents(pub Metadata);
 /// [`Refund::payer_metadata`]: crate::offers::refund::Refund::payer_metadata
 pub(super) const PAYER_METADATA_TYPE: u64 = 0;
 
-tlv_stream!(PayerTlvStream, PayerTlvStreamRef, 0..1, {
+tlv_stream!(PayerTlvStream, PayerTlvStreamRef<'a>, 0..1, {
 	(PAYER_METADATA_TYPE, metadata: (Vec<u8>, WithoutLength)),
 });

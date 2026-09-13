@@ -372,8 +372,7 @@ fn build_address_table(
             )
             .map_err(|e| LijError::Key(format!("coop derive {n}: {e}")))?;
         let coop_pubkey = bitcoin::PublicKey::new(coop_child.private_key.public_key(&secp));
-        let coop_address = Address::p2wpkh(&coop_pubkey, network)
-            .map_err(|e| LijError::Key(format!("coop p2wpkh: {e}")))?;
+        let coop_address = Address::p2wpkh(&bitcoin::CompressedPublicKey(coop_pubkey.inner), network);
         let coop_script_hex = hex::encode(coop_address.script_pubkey().as_bytes());
         by_script_hex.insert(coop_script_hex, coop_address.to_string());
 
@@ -386,8 +385,7 @@ fn build_address_table(
             )
             .map_err(|e| LijError::Key(format!("fc derive {n}: {e}")))?;
         let fc_pubkey = bitcoin::PublicKey::new(fc_child.private_key.public_key(&secp));
-        let fc_address = Address::p2wpkh(&fc_pubkey, network)
-            .map_err(|e| LijError::Key(format!("fc p2wpkh: {e}")))?;
+        let fc_address = Address::p2wpkh(&bitcoin::CompressedPublicKey(fc_pubkey.inner), network);
         let fc_script_hex = hex::encode(fc_address.script_pubkey().as_bytes());
         by_script_hex.insert(fc_script_hex, fc_address.to_string());
 

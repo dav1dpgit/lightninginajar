@@ -23,7 +23,7 @@ A bitcoin wallet that runs in the browser: on-chain plus Lightning, the Lightnin
 - **You can pin a build.** Menu → Dials → Updates → *Ask me*: the service worker then serves the installed build cache-first and a new build waits until you tap the update card. Under *Automatic* (the default) the wallet takes each new build on its next online open.
 - The page's Content-Security-Policy allows only same-origin scripts and the page's own inline blocks by sha256 — no inline handlers, no `eval`. HSTS, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer` and a camera-only `Permissions-Policy` are set (`lij-pwa/frontend/_headers`).
 
-**LDK is patched.** The engine builds against `lightning` 0.0.123 with 10 files changed, +229/−29 lines. Nobody independent has reviewed those lines yet. The full diff, with the purpose of every hunk, is [docs/ldk-patches.md](docs/ldk-patches.md). Six of the ten changed files are wasm32 clock substitutions; the rest are the cooperative-close fee floor, additive read-only accessors in the channel monitor, one boot-time hold that stops a pending cooperative close being double-spent by the holder commitment, and a sweeper guard. Commitment, revocation, HTLC and penalty logic are upstream's.
+**LDK is patched.** The engine builds against `lightning` 0.2.6 (since engine v241, 2026-09-12) with 15 files changed, +252/−37 lines — five files with behavioural changes, the rest wasm32 clock substitutions. Nobody independent has reviewed those lines yet. The full diff, with the purpose of every hunk, is [docs/ldk-patches.md](docs/ldk-patches.md). Ten of the fifteen changed files are wasm32 clock substitutions; the rest are the cooperative-close fee floor, additive read-only accessors in the channel monitor, one boot-time hold that stops a pending cooperative close being double-spent by the holder commitment, a sweeper guard, and the re-exposed `force_close_without_broadcasting_txn` (removed upstream in 0.1; needed for the stale-state abandon, which must never broadcast). Commitment, revocation, HTLC and penalty logic are upstream's.
 
 **Browser storage is fragile.** iOS can evict an installed web app's storage; "clear browsing data" wipes it. The 12 words recover on-chain funds; channel balances need the channel state. Keep the encrypted cloud backup on (Privacy → Cloud) and keep a downloaded copy (Menu → Save backup to device). What each recovery path can and cannot do is in [docs/recovery-classes.md](docs/recovery-classes.md) and [docs/recovery-outcomes.md](docs/recovery-outcomes.md).
 
@@ -35,7 +35,7 @@ A bitcoin wallet that runs in the browser: on-chain plus Lightning, the Lightnin
 
 ```
 lij/                 the engine: lij-core (wallet logic), lij-wasm (the wasm-bindgen surface),
-                     patches/lightning (LDK 0.0.123 + the patch set), vendor/ (all crates, offline build)
+                     patches/lightning (LDK 0.2.6 + the patch set), vendor/ (all crates, offline build)
 lij-pwa/frontend/    the site and the wallet page, sw.js, styles, _headers (CSP), pkg/ (CI-built engine)
 ops/frontend/        lij_csp.py (writes the CSP hashes at cut time), the handler-conversion test
 ops/lij-tier2-filters.py   the tier-2 chain-data endpoint (headers / BIP158 filters / blocks off bitcoind)
@@ -45,7 +45,7 @@ docs/                design records: recovery, the static-address model, delegat
 
 ## Building
 
-See [docs/reproducible-build.md](docs/reproducible-build.md). Short form: Rust nightly-2025-01-01 (pinned in `lij/rust-toolchain.toml`), `wasm-pack build --release --target web --out-dir ../../lij-pwa/frontend/pkg lij-wasm` inside `lij/`, crates vendored. The page is plain HTML/JS with no build step; the CSP hash line is written by `ops/frontend/lij_csp.py`.
+See [docs/reproducible-build.md](docs/reproducible-build.md). Short form: Rust 1.90.0 stable (pinned in `lij/rust-toolchain.toml`), `wasm-pack build --release --target web --out-dir ../../lij-pwa/frontend/pkg lij-wasm` inside `lij/`, crates vendored. The page is plain HTML/JS with no build step; the CSP hash line is written by `ops/frontend/lij_csp.py`.
 
 ## History
 

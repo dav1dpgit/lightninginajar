@@ -185,8 +185,7 @@ pub(crate) fn derive_p2wpkh_address(
         )
         .map_err(|e| LijError::Key(format!("Address derivation failed at index {n}: {e}")))?;
     let pubkey = bitcoin::PublicKey::new(child.private_key.public_key(&secp));
-    let address = Address::p2wpkh(&pubkey, network)
-        .map_err(|e| LijError::Key(format!("p2wpkh encoding failed: {e}")))?;
+    let address = Address::p2wpkh(&bitcoin::CompressedPublicKey(pubkey.inner), network);
     Ok(address.to_string())
 }
 

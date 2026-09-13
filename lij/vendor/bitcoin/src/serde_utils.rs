@@ -7,12 +7,12 @@
 
 pub(crate) struct SerializeBytesAsHex<'a>(pub(crate) &'a [u8]);
 
-impl serde::Serialize for SerializeBytesAsHex<'_> {
+impl<'a> serde::Serialize for SerializeBytesAsHex<'a> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        use bitcoin_internals::hex::display::DisplayHex;
+        use hex::DisplayHex;
 
         serializer.collect_str(&format_args!("{:x}", self.0.as_hex()))
     }
@@ -24,9 +24,8 @@ pub mod btreemap_byte_values {
 
     // NOTE: This module can be exactly copied to use with HashMap.
 
-    use serde;
+    use hex::FromHex;
 
-    use crate::hashes::hex::FromHex;
     use crate::prelude::*;
 
     pub fn serialize<S, T>(v: &BTreeMap<T, Vec<u8>>, s: S) -> Result<S::Ok, S::Error>
@@ -93,8 +92,6 @@ pub mod btreemap_as_seq {
     #![allow(missing_docs)]
 
     // NOTE: This module can be exactly copied to use with HashMap.
-
-    use serde;
 
     use crate::prelude::*;
 
@@ -165,8 +162,6 @@ pub mod btreemap_as_seq_byte_values {
     #![allow(missing_docs)]
 
     // NOTE: This module can be exactly copied to use with HashMap.
-
-    use serde;
 
     use crate::prelude::*;
 
@@ -248,9 +243,7 @@ pub mod hex_bytes {
     //! Module for serialization of byte arrays as hex strings.
     #![allow(missing_docs)]
 
-    use serde;
-
-    use crate::hashes::hex::FromHex;
+    use hex::FromHex;
 
     pub fn serialize<T, S>(bytes: &T, s: S) -> Result<S::Ok, S::Error>
     where
@@ -272,7 +265,7 @@ pub mod hex_bytes {
     {
         struct Visitor<B>(core::marker::PhantomData<B>);
 
-        impl<B: FromHex> serde::de::Visitor<'_> for Visitor<B> {
+        impl<'de, B: FromHex> serde::de::Visitor<'de> for Visitor<B> {
             type Value = B;
 
             fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
@@ -310,7 +303,7 @@ pub mod hex_bytes {
 macro_rules! serde_string_serialize_impl {
     ($name:ty, $expecting:literal) => {
         impl $crate::serde::Serialize for $name {
-            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            fn serialize<S>(&self, serializer: S) -> core::result::Result<S::Ok, S::Error>
             where
                 S: $crate::serde::Serializer,
             {
@@ -323,21 +316,21 @@ macro_rules! serde_string_serialize_impl {
 macro_rules! serde_string_deserialize_impl {
     ($name:ty, $expecting:literal) => {
         impl<'de> $crate::serde::Deserialize<'de> for $name {
-            fn deserialize<D>(deserializer: D) -> Result<$name, D::Error>
+            fn deserialize<D>(deserializer: D) -> core::result::Result<$name, D::Error>
             where
                 D: $crate::serde::de::Deserializer<'de>,
             {
-                use core::fmt::{self, Formatter};
+                use core::fmt::Formatter;
 
                 struct Visitor;
                 impl<'de> $crate::serde::de::Visitor<'de> for Visitor {
                     type Value = $name;
 
-                    fn expecting(&self, f: &mut Formatter) -> fmt::Result {
+                    fn expecting(&self, f: &mut Formatter) -> core::fmt::Result {
                         f.write_str($expecting)
                     }
 
-                    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+                    fn visit_str<E>(self, v: &str) -> core::result::Result<Self::Value, E>
                     where
                         E: $crate::serde::de::Error,
                     {
@@ -364,23 +357,23 @@ pub(crate) use {serde_string_deserialize_impl, serde_string_impl, serde_string_s
 macro_rules! serde_struct_human_string_impl {
     ($name:ident, $expecting:literal, $($fe:ident),*) => (
         impl<'de> $crate::serde::Deserialize<'de> for $name {
-            fn deserialize<D>(deserializer: D) -> Result<$name, D::Error>
+            fn deserialize<D>(deserializer: D) -> core::result::Result<$name, D::Error>
             where
                 D: $crate::serde::de::Deserializer<'de>,
             {
                 if deserializer.is_human_readable() {
-                    use core::fmt::{self, Formatter};
+                    use core::fmt::Formatter;
                     use core::str::FromStr;
 
                     struct Visitor;
                     impl<'de> $crate::serde::de::Visitor<'de> for Visitor {
                         type Value = $name;
 
-                        fn expecting(&self, f: &mut Formatter) -> fmt::Result {
+                        fn expecting(&self, f: &mut Formatter) -> core::fmt::Result {
                             f.write_str($expecting)
                         }
 
-                        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+                        fn visit_str<E>(self, v: &str) -> core::result::Result<Self::Value, E>
                         where
                             E: $crate::serde::de::Error,
                         {
@@ -391,7 +384,7 @@ macro_rules! serde_struct_human_string_impl {
 
                     deserializer.deserialize_str(Visitor)
                 } else {
-                    use core::fmt::{self, Formatter};
+                    use core::fmt::Formatter;
                     use $crate::serde::de::IgnoredAny;
 
                     #[allow(non_camel_case_types)]
@@ -401,11 +394,11 @@ macro_rules! serde_struct_human_string_impl {
                     impl<'de> $crate::serde::de::Visitor<'de> for EnumVisitor {
                         type Value = Enum;
 
-                        fn expecting(&self, f: &mut Formatter) -> fmt::Result {
+                        fn expecting(&self, f: &mut Formatter) -> core::fmt::Result {
                             f.write_str("a field name")
                         }
 
-                        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+                        fn visit_str<E>(self, v: &str) -> core::result::Result<Self::Value, E>
                         where
                             E: $crate::serde::de::Error,
                         {
@@ -419,7 +412,7 @@ macro_rules! serde_struct_human_string_impl {
                     }
 
                     impl<'de> $crate::serde::Deserialize<'de> for Enum {
-                        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+                        fn deserialize<D>(deserializer: D) -> core::result::Result<Self, D::Error>
                         where
                             D: $crate::serde::de::Deserializer<'de>,
                         {
@@ -432,11 +425,11 @@ macro_rules! serde_struct_human_string_impl {
                     impl<'de> $crate::serde::de::Visitor<'de> for Visitor {
                         type Value = $name;
 
-                        fn expecting(&self, f: &mut Formatter) -> fmt::Result {
+                        fn expecting(&self, f: &mut Formatter) -> core::fmt::Result {
                             f.write_str("a struct")
                         }
 
-                        fn visit_seq<V>(self, mut seq: V) -> Result<Self::Value, V::Error>
+                        fn visit_seq<V>(self, mut seq: V) -> core::result::Result<Self::Value, V::Error>
                         where
                             V: $crate::serde::de::SeqAccess<'de>,
                         {
@@ -458,7 +451,7 @@ macro_rules! serde_struct_human_string_impl {
                             Ok(ret)
                         }
 
-                        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+                        fn visit_map<A>(self, mut map: A) -> core::result::Result<Self::Value, A::Error>
                         where
                             A: $crate::serde::de::MapAccess<'de>,
                         {
@@ -504,7 +497,7 @@ macro_rules! serde_struct_human_string_impl {
         }
 
         impl $crate::serde::Serialize for $name {
-            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            fn serialize<S>(&self, serializer: S) -> core::result::Result<S::Ok, S::Error>
             where
                 S: $crate::serde::Serializer,
             {

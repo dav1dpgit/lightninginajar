@@ -9,32 +9,38 @@
 
 //! Utilities for testing BOLT 12 Offers interfaces
 
-use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
 use bitcoin::secp256k1::schnorr::Signature;
+use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
 
-use core::time::Duration;
-use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
-use crate::sign::EntropySource;
-use crate::ln::types::PaymentHash;
-use crate::ln::features::BlindedHopFeatures;
-use crate::offers::invoice::BlindedPayInfo;
+use crate::blinded_path::message::BlindedMessagePath;
+use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
+use crate::blinded_path::BlindedHop;
+use crate::ln::inbound_payment::ExpandedKey;
 use crate::offers::merkle::TaggedHash;
+use crate::sign::EntropySource;
+use crate::types::features::BlindedHopFeatures;
+use crate::types::payment::PaymentHash;
+use core::time::Duration;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
+
+use super::nonce::Nonce;
+use super::offer::OfferBuilder;
+use super::static_invoice::{StaticInvoice, StaticInvoiceBuilder};
 
 pub(crate) fn fail_sign<T: AsRef<TaggedHash>>(_message: &T) -> Result<Signature, ()> {
 	Err(())
 }
 
-pub(crate) fn payer_keys() -> KeyPair {
+pub(crate) fn payer_keys() -> Keypair {
 	let secp_ctx = Secp256k1::new();
-	KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap())
+	Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap())
 }
 
 pub(crate) fn payer_sign<T: AsRef<TaggedHash>>(message: &T) -> Result<Signature, ()> {
 	let secp_ctx = Secp256k1::new();
-	let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+	let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 	Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
 }
 
@@ -42,14 +48,14 @@ pub(crate) fn payer_pubkey() -> PublicKey {
 	payer_keys().public_key()
 }
 
-pub(crate) fn recipient_keys() -> KeyPair {
+pub(crate) fn recipient_keys() -> Keypair {
 	let secp_ctx = Secp256k1::new();
-	KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap())
+	Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap())
 }
 
 pub(crate) fn recipient_sign<T: AsRef<TaggedHash>>(message: &T) -> Result<Signature, ()> {
 	let secp_ctx = Secp256k1::new();
-	let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap());
+	let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap());
 	Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
 }
 
@@ -66,46 +72,41 @@ pub(super) fn privkey(byte: u8) -> SecretKey {
 	SecretKey::from_slice(&[byte; 32]).unwrap()
 }
 
-pub(crate) fn payment_paths() -> Vec<(BlindedPayInfo, BlindedPath)> {
-	let paths = vec![
-		BlindedPath {
-			introduction_node: IntroductionNode::NodeId(pubkey(40)),
-			blinding_point: pubkey(41),
-			blinded_hops: vec![
+pub(crate) fn payment_paths() -> Vec<BlindedPaymentPath> {
+	vec![
+		BlindedPaymentPath::from_blinded_path_and_payinfo(
+			pubkey(40),
+			pubkey(41),
+			vec![
 				BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
 				BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
 			],
-		},
-		BlindedPath {
-			introduction_node: IntroductionNode::NodeId(pubkey(40)),
-			blinding_point: pubkey(41),
-			blinded_hops: vec![
+			BlindedPayInfo {
+				fee_base_msat: 1,
+				fee_proportional_millionths: 1_000,
+				cltv_expiry_delta: 42,
+				htlc_minimum_msat: 100,
+				htlc_maximum_msat: 1_000_000_000_000,
+				features: BlindedHopFeatures::empty(),
+			},
+		),
+		BlindedPaymentPath::from_blinded_path_and_payinfo(
+			pubkey(40),
+			pubkey(41),
+			vec![
 				BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
 				BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
 			],
-		},
-	];
-
-	let payinfo = vec![
-		BlindedPayInfo {
-			fee_base_msat: 1,
-			fee_proportional_millionths: 1_000,
-			cltv_expiry_delta: 42,
-			htlc_minimum_msat: 100,
-			htlc_maximum_msat: 1_000_000_000_000,
-			features: BlindedHopFeatures::empty(),
-		},
-		BlindedPayInfo {
-			fee_base_msat: 1,
-			fee_proportional_millionths: 1_000,
-			cltv_expiry_delta: 42,
-			htlc_minimum_msat: 100,
-			htlc_maximum_msat: 1_000_000_000_000,
-			features: BlindedHopFeatures::empty(),
-		},
-	];
-
-	payinfo.into_iter().zip(paths.into_iter()).collect()
+			BlindedPayInfo {
+				fee_base_msat: 1,
+				fee_proportional_millionths: 1_000,
+				cltv_expiry_delta: 42,
+				htlc_minimum_msat: 100,
+				htlc_maximum_msat: 1_000_000_000_000,
+				features: BlindedHopFeatures::empty(),
+			},
+		),
+	]
 }
 
 pub(crate) fn payment_hash() -> PaymentHash {
@@ -124,4 +125,43 @@ impl EntropySource for FixedEntropy {
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
 		[42; 32]
 	}
+}
+
+pub fn blinded_path() -> BlindedMessagePath {
+	BlindedMessagePath::from_blinded_path(
+		pubkey(40),
+		pubkey(41),
+		vec![
+			BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
+			BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 44] },
+		],
+	)
+}
+
+pub fn dummy_static_invoice() -> StaticInvoice {
+	let node_id = recipient_pubkey();
+	let payment_paths = payment_paths();
+	let now = now();
+	let expanded_key = ExpandedKey::new([42; 32]);
+	let entropy = FixedEntropy {};
+	let nonce = Nonce::from_entropy_source(&entropy);
+	let secp_ctx = Secp256k1::new();
+
+	let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+		.path(blinded_path())
+		.build()
+		.unwrap();
+
+	StaticInvoiceBuilder::for_offer_using_derived_keys(
+		&offer,
+		payment_paths.clone(),
+		vec![blinded_path()],
+		now,
+		&expanded_key,
+		nonce,
+		&secp_ctx,
+	)
+	.unwrap()
+	.build_and_sign(&secp_ctx)
+	.unwrap()
 }

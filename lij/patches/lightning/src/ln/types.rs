@@ -9,22 +9,21 @@
 
 //! Various wrapper types (most around 32-byte arrays) for use in lightning.
 
+use super::channel_keys::RevocationBasepoint;
+
 use crate::chain::transaction::OutPoint;
 use crate::io;
 use crate::ln::msgs::DecodeError;
 use crate::sign::EntropySource;
 use crate::util::ser::{Readable, Writeable, Writer};
-use super::channel_keys::RevocationBasepoint;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use bitcoin::hashes::{
-	Hash as _,
-	HashEngine as _,
-	sha256::Hash as Sha256,
-};
-use core::fmt;
+use bitcoin::hashes::{sha256::Hash as Sha256, Hash as _, HashEngine as _};
+use bitcoin::hex::display::impl_fmt_traits;
+
+use core::borrow::Borrow;
 use core::ops::Deref;
 
 /// A unique 32-byte identifier for a channel.
@@ -35,9 +34,7 @@ use core::ops::Deref;
 /// A _temporary_ ID is generated randomly.
 /// (Later revocation-point-based _v2_ is a possibility.)
 /// The variety (context) is not stored, it is relevant only at creation.
-///
-/// This is not exported to bindings users as we just use [u8; 32] directly.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ChannelId(pub [u8; 32]);
 
 impl ChannelId {
@@ -57,7 +54,9 @@ impl ChannelId {
 
 	/// Create a _temporary_ channel ID randomly, based on an entropy source.
 	pub fn temporary_from_entropy_source<ES: Deref>(entropy_source: &ES) -> Self
-	where ES::Target: EntropySource {
+	where
+		ES::Target: EntropySource,
+	{
 		Self(entropy_source.get_secure_random_bytes())
 	}
 
@@ -81,16 +80,11 @@ impl ChannelId {
 	/// revocation basepoint and hashing the result. The basepoints will be concatenated in increasing
 	/// sorted order.
 	pub fn v2_from_revocation_basepoints(
-		ours: &RevocationBasepoint,
-		theirs: &RevocationBasepoint,
+		ours: &RevocationBasepoint, theirs: &RevocationBasepoint,
 	) -> Self {
 		let ours = ours.0.serialize();
 		let theirs = theirs.0.serialize();
-		let (lesser, greater) = if ours < theirs {
-			(ours, theirs)
-		} else {
-			(theirs, ours)
-		};
+		let (lesser, greater) = if ours < theirs { (ours, theirs) } else { (theirs, ours) };
 		let mut engine = Sha256::engine();
 		engine.input(&lesser[..]);
 		engine.input(&greater[..]);
@@ -99,8 +93,18 @@ impl ChannelId {
 
 	/// Create temporary _v2_ channel ID by concatenating a zeroed out basepoint with the holder
 	/// revocation basepoint and hashing the result.
-	pub fn temporary_v2_from_revocation_basepoint(our_revocation_basepoint: &RevocationBasepoint) -> Self {
-		Self(Sha256::hash(&[[0u8; 33], our_revocation_basepoint.0.serialize()].concat()).to_byte_array())
+	pub fn temporary_v2_from_revocation_basepoint(
+		our_revocation_basepoint: &RevocationBasepoint,
+	) -> Self {
+		let our_revocation_point_bytes = our_revocation_basepoint.0.serialize();
+		Self(Sha256::hash(&[[0u8; 33], our_revocation_point_bytes].concat()).to_byte_array())
+	}
+
+	/// Indicates whether this is a V2 channel ID for the given local and remote revocation basepoints.
+	pub fn is_v2_channel_id(
+		&self, ours: &RevocationBasepoint, theirs: &RevocationBasepoint,
+	) -> bool {
+		*self == Self::v2_from_revocation_basepoints(ours, theirs)
 	}
 }
 
@@ -117,105 +121,39 @@ impl Readable for ChannelId {
 	}
 }
 
-impl fmt::Display for ChannelId {
-	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		crate::util::logger::DebugBytes(&self.0).fmt(f)
+impl Borrow<[u8]> for ChannelId {
+	fn borrow(&self) -> &[u8] {
+		&self.0[..]
 	}
 }
 
-
-/// The payment hash is the hash of the [`PaymentPreimage`] which is the value used to lock funds
-/// in HTLCs while they transit the lightning network.
-///
-/// This is not exported to bindings users as we just use [u8; 32] directly
-#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug, Ord, PartialOrd)]
-pub struct PaymentHash(pub [u8; 32]);
-
-impl core::fmt::Display for PaymentHash {
-	fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-		crate::util::logger::DebugBytes(&self.0).fmt(f)
-	}
-}
-
-/// The payment preimage is the "secret key" which is used to claim the funds of an HTLC on-chain
-/// or in a lightning channel.
-///
-/// This is not exported to bindings users as we just use [u8; 32] directly
-#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug, Ord, PartialOrd)]
-pub struct PaymentPreimage(pub [u8; 32]);
-
-impl core::fmt::Display for PaymentPreimage {
-	fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-		crate::util::logger::DebugBytes(&self.0).fmt(f)
-	}
-}
-
-/// Converts a `PaymentPreimage` into a `PaymentHash` by hashing the preimage with SHA256.
-impl From<PaymentPreimage> for PaymentHash {
-	fn from(value: PaymentPreimage) -> Self {
-		PaymentHash(Sha256::hash(&value.0).to_byte_array())
-	}
-}
-
-/// The payment secret is used to authenticate the sender of an HTLC to the recipient and tie
-/// multi-part HTLCs together into a single payment.
-///
-/// This is not exported to bindings users as we just use [u8; 32] directly
-#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug, Ord, PartialOrd)]
-pub struct PaymentSecret(pub [u8; 32]);
-
-use bitcoin::bech32;
-use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, WriteBase32, u5};
-
-impl FromBase32 for PaymentSecret {
-	type Err = bech32::Error;
-
-	fn from_base32(field_data: &[u5]) -> Result<PaymentSecret, bech32::Error> {
-		if field_data.len() != 52 {
-			return Err(bech32::Error::InvalidLength)
-		} else {
-			let data_bytes = Vec::<u8>::from_base32(field_data)?;
-			let mut payment_secret = [0; 32];
-			payment_secret.copy_from_slice(&data_bytes);
-			Ok(PaymentSecret(payment_secret))
-		}
-	}
-}
-
-impl ToBase32 for PaymentSecret {
-	fn write_base32<W: WriteBase32>(&self, writer: &mut W) -> Result<(), <W as WriteBase32>::Err> {
-		(&self.0[..]).write_base32(writer)
-	}
-}
-
-impl Base32Len for PaymentSecret {
-	fn base32_len(&self) -> usize {
-		52
+impl_fmt_traits! {
+	impl fmt_traits for ChannelId {
+		const LENGTH: usize = 32;
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::hashes::{
-		Hash as _,
-		HashEngine as _,
-		hex::FromHex as _,
-		sha256::Hash as Sha256,
-	};
+	use bitcoin::hashes::{sha256::Hash as Sha256, Hash as _, HashEngine as _};
+	use bitcoin::hex::DisplayHex;
 	use bitcoin::secp256k1::PublicKey;
-	use hex::DisplayHex;
 
 	use super::ChannelId;
+
+	use crate::io;
 	use crate::ln::channel_keys::RevocationBasepoint;
+	use crate::prelude::*;
 	use crate::util::ser::{Readable, Writeable};
 	use crate::util::test_utils;
-	use crate::prelude::*;
-	use crate::io;
+
+	use core::str::FromStr;
 
 	#[test]
 	fn test_channel_id_v1_from_funding_txid() {
 		let channel_id = ChannelId::v1_from_funding_txid(&[2; 32], 1);
-		assert_eq!(channel_id.0.as_hex().to_string(), "0202020202020202020202020202020202020202020202020202020202020203");
+		let expected = "0202020202020202020202020202020202020202020202020202020202020203";
+		assert_eq!(channel_id.0.as_hex().to_string(), expected);
 	}
 
 	#[test]
@@ -250,14 +188,17 @@ mod tests {
 	#[test]
 	fn test_channel_id_display() {
 		let channel_id = ChannelId::v1_from_funding_txid(&[2; 32], 1);
-		assert_eq!(format!("{}", &channel_id), "0202020202020202020202020202020202020202020202020202020202020203");
+		let expected = "0202020202020202020202020202020202020202020202020202020202020203";
+		assert_eq!(format!("{}", &channel_id), expected);
 	}
 
 	#[test]
 	fn test_channel_id_v2_from_basepoints() {
 		// Ours greater than theirs
-		let ours = RevocationBasepoint(PublicKey::from_slice(&<Vec<u8>>::from_hex("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap());
-		let theirs = RevocationBasepoint(PublicKey::from_slice(&<Vec<u8>>::from_hex("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap());
+		let our_pk = "0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c";
+		let ours = RevocationBasepoint(PublicKey::from_str(&our_pk).unwrap());
+		let their_pk = "02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619";
+		let theirs = RevocationBasepoint(PublicKey::from_str(&their_pk).unwrap());
 
 		let mut engine = Sha256::engine();
 		engine.input(&theirs.0.serialize());
@@ -267,8 +208,10 @@ mod tests {
 		assert_eq!(ChannelId::v2_from_revocation_basepoints(&ours, &theirs), expected_id);
 
 		// Theirs greater than ours
-		let ours = RevocationBasepoint(PublicKey::from_slice(&<Vec<u8>>::from_hex("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()[..]).unwrap());
-		let theirs = RevocationBasepoint(PublicKey::from_slice(&<Vec<u8>>::from_hex("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap());
+		let our_pk = "027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007";
+		let ours = RevocationBasepoint(PublicKey::from_str(&our_pk).unwrap());
+		let their_pk = "02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619";
+		let theirs = RevocationBasepoint(PublicKey::from_str(&their_pk).unwrap());
 
 		let mut engine = Sha256::engine();
 		engine.input(&ours.0.serialize());
@@ -276,5 +219,19 @@ mod tests {
 		let expected_id = ChannelId(Sha256::from_engine(engine).to_byte_array());
 
 		assert_eq!(ChannelId::v2_from_revocation_basepoints(&ours, &theirs), expected_id);
+	}
+
+	#[test]
+	fn test_is_v2_channel_id() {
+		let our_pk = "0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c";
+		let ours = RevocationBasepoint(PublicKey::from_str(&our_pk).unwrap());
+		let their_pk = "02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619";
+		let theirs = RevocationBasepoint(PublicKey::from_str(&their_pk).unwrap());
+
+		let channel_id = ChannelId::v2_from_revocation_basepoints(&ours, &theirs);
+		assert!(channel_id.is_v2_channel_id(&ours, &theirs));
+
+		let channel_id = ChannelId::v1_from_funding_txid(&[2; 32], 1);
+		assert!(!channel_id.is_v2_channel_id(&ours, &theirs))
 	}
 }

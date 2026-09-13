@@ -17,7 +17,7 @@ use core::{cmp, ops::Deref};
 
 use crate::prelude::*;
 
-use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::transaction::Transaction;
 
 // TODO: Define typed abstraction over feerates to handle their conversions.
 pub(crate) fn compute_feerate_sat_per_1000_weight(fee_sat: u64, weight: u64) -> u32 {
@@ -36,9 +36,12 @@ pub trait BroadcasterInterface {
 	/// In some cases LDK may attempt to broadcast a transaction which double-spends another
 	/// and this isn't a bug and can be safely ignored.
 	///
-	/// If more than one transaction is given, these transactions should be considered to be a
-	/// package and broadcast together. Some of the transactions may or may not depend on each other,
-	/// be sure to manage both cases correctly.
+	/// If more than one transaction is given, these transactions MUST be a
+	/// single child and its parents and be broadcast together as a package
+	/// (see the [`submitpackage`](https://bitcoincore.org/en/doc/30.0.0/rpc/rawtransactions/submitpackage)
+	/// Bitcoin Core RPC).
+	///
+	/// Implementations MUST NOT assume any topological order on the transactions.
 	///
 	/// Bitcoin transaction packages are defined in BIP 331 and here:
 	/// <https://github.com/bitcoin/bitcoin/blob/master/doc/policy/packages.md>
@@ -49,11 +52,22 @@ pub trait BroadcasterInterface {
 /// estimation.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum ConfirmationTarget {
+	/// The most aggressive feerate estimate which we think is reasonable.
+	///
+	/// This is used to sanity-check our counterparty's feerates and should be as conservative as
+	/// possible to ensure that we don't confuse a peer using a very conservative estimator for one
+	/// trying to burn channel balance to dust. To ensure that this is never lower than an honest
+	/// counterparty's feerate estimate you may wish to use a value which is higher than your
+	/// maximum feerate estimate, for example by adding a constant few-hundred or few-thousand
+	/// sats-per-kW.
+	MaximumFeeEstimate,
 	/// We have some funds available on chain which we need to spend prior to some expiry time at
-	/// which point our counterparty may be able to steal them. Generally we have in the high tens
-	/// to low hundreds of blocks to get our transaction on-chain, but we shouldn't risk too low a
-	/// fee - this should be a relatively high priority feerate.
-	OnChainSweep,
+	/// which point our counterparty may be able to steal them.
+	///
+	/// Generally we have in the high tens to low hundreds of blocks to get our transaction
+	/// on-chain (it doesn't have to happen in the next few blocks!), but we shouldn't risk too low
+	/// a fee - this should be a relatively high priority feerate.
+	UrgentOnChainSweep,
 	/// This is the lowest feerate we will allow our channel counterparty to have in an anchor
 	/// channel in order to close the channel if a channel party goes away.
 	///
@@ -124,14 +138,18 @@ pub enum ConfirmationTarget {
 	///
 	/// [`ChannelManager::close_channel_with_feerate_and_script`]: crate::ln::channelmanager::ChannelManager::close_channel_with_feerate_and_script
 	ChannelCloseMinimum,
-	/// The feerate [`OutputSweeper`] will use on transactions spending
-	/// [`SpendableOutputDescriptor`]s after a channel closure.
+	/// The feerate used to claim on-chain funds when there is no particular urgency to do so.
+	///
+	/// It is used to get commitment transactions without any HTLCs confirmed in [`ChannelMonitor`]
+	/// and by  [`OutputSweeper`] on transactions spending [`SpendableOutputDescriptor`]s after a
+	/// channel closure.
 	///
 	/// Generally spending these outputs is safe as long as they eventually confirm, so a value
 	/// (slightly above) the mempool minimum should suffice. However, as this value will influence
 	/// how long funds will be unavailable after channel closure, [`FeeEstimator`] implementors
 	/// might want to choose a higher feerate to regain control over funds faster.
 	///
+	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 	/// [`OutputSweeper`]: crate::util::sweep::OutputSweeper
 	/// [`SpendableOutputDescriptor`]: crate::sign::SpendableOutputDescriptor
 	OutputSpendingFee,
@@ -164,7 +182,7 @@ pub trait FeeEstimator {
 }
 
 /// Minimum relay fee as required by bitcoin network mempool policy.
-pub const MIN_RELAY_FEE_SAT_PER_1000_WEIGHT: u64 = 4000;
+pub const INCREMENTAL_RELAY_FEE_SAT_PER_1000_WEIGHT: u64 = 253;
 /// Minimum feerate that takes a sane approach to bitcoind weight-to-vbytes rounding.
 /// See the following Core Lightning commit for an explanation:
 /// <https://github.com/ElementsProject/lightning/commit/2e687b9b352c9092b5e8bd4a688916ac50b44af0>
@@ -175,36 +193,31 @@ pub const FEERATE_FLOOR_SATS_PER_KW: u32 = 253;
 ///
 /// Note that this does *not* implement [`FeeEstimator`] to make it harder to accidentally mix the
 /// two.
-pub(crate) struct LowerBoundedFeeEstimator<F: Deref>(pub F) where F::Target: FeeEstimator;
+pub(crate) struct LowerBoundedFeeEstimator<F: Deref>(pub F)
+where
+	F::Target: FeeEstimator;
 
-impl<F: Deref> LowerBoundedFeeEstimator<F> where F::Target: FeeEstimator {
+impl<F: Deref> LowerBoundedFeeEstimator<F>
+where
+	F::Target: FeeEstimator,
+{
 	/// Creates a new `LowerBoundedFeeEstimator` which wraps the provided fee_estimator
 	pub fn new(fee_estimator: F) -> Self {
 		LowerBoundedFeeEstimator(fee_estimator)
 	}
 
 	pub fn bounded_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32 {
-		cmp::max(
-			self.0.get_est_sat_per_1000_weight(confirmation_target),
-			FEERATE_FLOOR_SATS_PER_KW,
-		)
+		cmp::max(self.0.get_est_sat_per_1000_weight(confirmation_target), FEERATE_FLOOR_SATS_PER_KW)
 	}
 
-	/// LiJ Option B: the underlying estimate WITHOUT the 253 sat/kW relay floor.
-	///
-	/// Used only for the cooperative-close MINIMUM feerate (ChannelCloseMinimum)
-	/// in `Channel::calculate_closing_fee_limits`. LiJ's FeeEstimator returns a
-	/// deliberately sub-relay value (COOP_CLOSE_ACCEPT_FLOOR_SAT_PER_KW = 25
-	/// sat/kW ≈ 0.1 sat/vB) for that target so the wallet will ACCEPT a low
-	/// coop-close fee from its trusted LSP (LND nodes routinely propose
-	/// sub-1-sat/vB close fees, e.g. 139 sat ≈ 0.77 sat/vB). The normal
-	/// `bounded_*` path re-floored that 25 back up to 253 (≈182 sat on a ~720-wu
-	/// close tx), which rejected the LSP's 139 and force-closed instead — the
-	/// exact "Unable to come to consensus about closing feerate" failure. This
-	/// accessor lets the close MINIMUM pass through un-floored. The close MAXIMUM
-	/// (NonAnchorChannelFee) keeps the floor via `bounded_*`, and every other
-	/// fee path (opens, sweeps, HTLC txs) is untouched. The final fee paid is
-	/// the negotiated value, not this floor.
+	/// LiJ Option B (re-ported to 0.2.6): the underlying estimate WITHOUT the 253 sat/kW relay
+	/// floor. Used only for the cooperative-close MINIMUM feerate (ChannelCloseMinimum) in
+	/// `Channel::calculate_closing_fee_limits`. LiJ's FeeEstimator returns a deliberately
+	/// sub-relay value for that target so the wallet will ACCEPT a low coop-close fee from its
+	/// LSP (LND nodes routinely propose sub-1-sat/vB close fees). The normal `bounded_*` path
+	/// re-floored it and force-closed instead ("Unable to come to consensus about closing
+	/// feerate"). The close MAXIMUM keeps the floor via `bounded_*`; every other fee path is
+	/// untouched. The final fee paid is the negotiated value, not this floor.
 	pub fn unbounded_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32 {
 		self.0.get_est_sat_per_1000_weight(confirmation_target)
 	}
@@ -212,7 +225,9 @@ impl<F: Deref> LowerBoundedFeeEstimator<F> where F::Target: FeeEstimator {
 
 #[cfg(test)]
 mod tests {
-	use super::{FEERATE_FLOOR_SATS_PER_KW, LowerBoundedFeeEstimator, ConfirmationTarget, FeeEstimator};
+	use super::{
+		ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator, FEERATE_FLOOR_SATS_PER_KW,
+	};
 
 	struct TestFeeEstimator {
 		sat_per_kw: u32,
@@ -230,7 +245,10 @@ mod tests {
 		let test_fee_estimator = &TestFeeEstimator { sat_per_kw };
 		let fee_estimator = LowerBoundedFeeEstimator::new(test_fee_estimator);
 
-		assert_eq!(fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::AnchorChannelFee), FEERATE_FLOOR_SATS_PER_KW);
+		assert_eq!(
+			fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::AnchorChannelFee),
+			FEERATE_FLOOR_SATS_PER_KW
+		);
 	}
 
 	#[test]
@@ -239,6 +257,9 @@ mod tests {
 		let test_fee_estimator = &TestFeeEstimator { sat_per_kw };
 		let fee_estimator = LowerBoundedFeeEstimator::new(test_fee_estimator);
 
-		assert_eq!(fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::AnchorChannelFee), sat_per_kw);
+		assert_eq!(
+			fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::AnchorChannelFee),
+			sat_per_kw
+		);
 	}
 }

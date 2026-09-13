@@ -96,7 +96,14 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v240".to_string()  // v240 (S45, DP: #14): BIP-352 silent payments, SEND side — an sp1q… destination in send_onchain (and its RBF bump) pays a one-time taproot output derived from the selected inputs (lij_core::silent_payment; gated by the BIP's own vectors natively). Receiving not yet.
+    "phase11-v247".to_string()  // v247 (S46): invoices carry a 144-block final CLTV — LDK 0.2.6 will not accept less than 42 and the 24 carried from 0.0.123 made every v241–v246 invoice unpayable by LND/WoS/the chit rail (LiJ senders use 144 regardless and hid it).
+    // v246 (S46): the hold verdict is logged whatever it says (the tape carried nothing for a live answer); adapter 0.75.1 answers with two fresh liveness signals.
+    // v245 (S46): the hold-verdict GET carries the route token (v244 sent it bare → Unauthorized → the old 30-s path; DP's curl receipt).
+    // v244 (S46, DP GO): hold verdict for INTERNAL (LNURL pool-hash) sends — one GET to the LSP's /v1/outcome before the self-hop; owner offline → the page narrates HELD from the first second instead of a 30-s wait booked "failed". Adapter 0.75.0 answers owner_live + hold_cap_s.
+    // v243 (S46, 2026-09-12): close-kind classification — HolderForceClosed is a struct variant since LDK 0.1; the bare-name pattern was a catch-all binding, so v241/v242 filed EVERY closure (cooperative ones included) as Force in CHANNELS. `{ .. }` restores the match. Records already written as Force by v241/v242 are re-labelled at the next boot (see fix_close_kind_v243).
+    // v242 (S46, 2026-09-12): the wasm32 CLOCK SHIMS re-ported — v241 shipped without them; LDK 0.2.6's first SystemTime::now() in the tick panicked ("time not implemented on this platform"), the engine's lock stayed held, every later call failed (desktop F12 receipt). Every wall-clock read in the lightning crate now goes through util::time::lij_now / lij_since_epoch (browser clock on wasm32), and util::time::Instant is a browser-clock Instant on wasm32.
+    // v241 (S46, DP GO 2026-09-12): LDK 0.0.123 → 0.2.6, bitcoin 0.30 → 0.32, toolchain stable 1.90.0, size-first release profile (7.9 MB). All ten LiJ hunks re-ported + force_close_without_broadcasting_txn re-exposed (lij_no_broadcast). Monitor keys, the pinned m/84 payment point and the old remote-key derivation preserved; inbound splices rejected (docs/ldk-0.2-splice-readiness.md). ONE-WAY: state written by v241 is unreadable by v240 and earlier.
+    // v240 (S45, DP: #14): BIP-352 silent payments, SEND side — an sp1q… destination in send_onchain (and its RBF bump) pays a one-time taproot output derived from the selected inputs (lij_core::silent_payment; gated by the BIP's own vectors natively). Receiving not yet.
     // v239 (S45): ChannelInfo.spendable_msat — the spendable lens in millisats for the exact Max. // v238 (S45, DP "truly 0"): send_payment_with_retries takes an exact millisat override for a no-amount invoice (single path; MPP parts stay whole sats) via prepare_lsp_route_request_msat. // v237 (S45, DP): quote_route_fee_to_pubkey — a route quote to a node key with no invoice, so Max can price an LNURL address served by another LSP before any invoice is minted. // v236 (S45, DP): CPFP is a user dial — automatic mode default OFF (set_coop_cpfp_auto), manual Speed up via coop_cpfp(channel_id, send) with a plan mode that shows the fee before the tap; the shared coop_cpfp() applies the automatic gates for the hold loop. // v235 (S45, DP GO): CPFP for a slow cooperative close — after 3 blocks pending, when the sweep rate is well above what the coop tx pays, the wallet spends the coop tx's output to itself with a child that lifts the package (one attempt per 6 blocks; records carry cpfp_txid_hex / cpfp_last_height). // v234 (S45): the watcher also recognises our commitment by shape for records that predate v233 (a cooperative record whose confirmed spend is not its intended tx and pays none of our addresses). // v233 (S45, DP GO): cooperative-close hold — LDK's startup rule (monitor without a manager channel → broadcast the holder commitment) held for cooperative closes this wallet signed that are still pending; rebroadcast; 144-block ceiling; records carry the coop tx + holder commitment txid; the watcher keeps polling until a spend CONFIRMS (intended → actual), relabels a lost race as Force, follows the sweep. // v232 (S43, DP GO): a ProcessingError closure is filed as CloseKind::Force — LDK force-closes on it — so the page's close-inbound bridge shows the returning sats in the mempool as for every other force-close (0a80ac8d had shown nothing until the closing tx confirmed). Prior — v231 (S43, DP GO after the 0a80ac8d force-close was read from the tape): background_tick now hands LDK the LSP\u2019s tip BEFORE the confirmations, holds any confirmation from a block above the accepted tip in the bridge until the tip reaches it, and persists on the tip advance (manager_dirty) — the stored best block can no longer sit one below a funding block, the state that made a later boot\u2019s replay of an older funding block force-close a ready channel. Prior — v230 (S43, DP field 2026-09-02 — "Add to Lightning" at Max twice, the second while the first funding tx sat in the mempool): channel_open::spendable_utxos now excludes outpoints reserved by a pending open/send, exactly as build_funding_tx has since v191, so spendable_total and max_channel_value (the sheet's Available and Max) drop to what is truly fundable the moment a tx is broadcast. Prior — v229 (S43, DP GO — the robust static-address design, replacing the v228 patch): (1) LNURLp preimages are DERIVED from the master key by index (RootKey::lnurlp_preimage, HKDF-SHA256, own salt) — nothing to back up, a wallet restored from its words recomputes every preimage; the local pool is a cache, and a claim that misses the cache searches derived indices (8192+) before failing back. (2) Each hash is registered in this engine for 30 YEARS (was 30 days — the cliff that killed every static address older than a month) and the same `expires` rides to the LSP in the registration JSON so the two sides can never disagree; `index` rides too, and the page passes the LSP's next_index back as a start hint so a restored wallet continues the sequence. Pairs with adapter 0.67.0 (honors expires, cancels the held original on a definitive refusal, reads LND for in-flight truth). Prior — v228 (S43, DP field 2026-09-02 — a same-LSP send to a wallet restored on a new iPhone hung twice, "payment failed"; the UM890 journal showed the LSP's 4 s belt bumping its own in-flight HTLCs): ROOT — the LNURLp preimage pool (lij_lnurlp_preimages, random per device, v195) was never in the backup bundle, so a restore on another device carried the channels and the registered hashes but not the preimages; every payment to the static address then arrived as a PaymentClaimable the wallet could not claim, and it hung until LDK's own expiry. FIX (1) the pool rides in the bundle (gather_state_blob; restores through the generic inject path). FIX (2) a readable pool that lacks the hash fails the HTLC back at once (fail_htlc_backwards after the closure) so the sender learns in a second; an unreadable pool keeps holding and looks again. Not caused by S43's speed work — the same hang existed on any version. Prior — v227 (S43, DP GO — same-LSP speed, engine half, under "extra careful nothing breaks at all"): (i) an internal send (dest == the active LSP) skips the route ask — the v222 self-hop never read the answer and adapter 0.62.1 answered a fixed empty body, which the engine now hands over verbatim; external destinations fetch exactly as before. (ii) a dispatched HTLC (every send_payment_with_route Ok arm: internal, external, MPP) is written to the wire immediately (pump_outbound = the tick's own pm.process_events) instead of waiting for the next tick. (iii) the ChannelManager event pass is extracted VERBATIM from background_tick into process_channel_events and ALSO run on the turn after inbound bytes (never inside the socket callback; try_lock, tick catches up otherwise) — a receiver claims when its HTLC lands, a sender learns "paid" when the fulfill arrives; events seen there flag manager_dirty so the next tick persists as before. Prior — v226 (S43, DP agreed — speed item 0, the cold-open first send): the boot's independent quorum round asked the four chain endpoints ONE AFTER ANOTHER with NO enforced timeout, and the Ready rule waited for the whole round, so the first send after a cold open failed "prepare" and retried on Ready ~2 s later (DP + Dan, 2026-09-01). Now: the four are asked concurrently (independent.rs query_all_each, FuturesUnordered), every WASM GET races a real 5 s timeout (REQUEST_TIMEOUT_SECS finally enforced), and the FIRST endpoint to answer reports early (SingleSource when nothing better stands, consensus height if empty, cold-start marked queried via a hook node.rs installs) so Ready lands on the first source that agrees with the LSP feed — the v225 floor — instead of after the slowest endpoint. Page v655 pairs (Ready retry poll 2 s → 0.5 s). Prior — v225 (S42, DP RULED — the v476 floor lands in the ENGINE): the send/Ready rule required 2 healthy independent chain sources; a phone at 1/4 (VPN, field 2026-09-01) could never reach Ready and every send sat at "finishing its chain check". Now ONE healthy source whose height agrees with the LSP's feed is enough for Ready (two agreeing sources); zero stays ReadOnly/dark. New QuorumState::SingleSource; the page keeps the on-chain face at 2-of-4. // v224 (S41, tester-zero DP): SELECTION LADDER — boot NEVER re-decides a provider (old auto_select re-ranked every boot; two tying providers broke on registry order and flipped funded wallets unpressed). Choice persisted by switch_lsp (full snapshot, registry-outage-proof) > channel counterparty > LiJ-Node default for fresh wallets > top viable listing only when the default is absent; LOYALTY OVER AVAILABILITY (a chosen/channeled provider down = no provider this session, never a substitute); connect failures no longer fail wallet BOOT; list_lsps stickiness armed (was comparing the wallet's own pubkey — never fired once). Prior — v223 (S39): escape-kit truth fields (per-monitor open + claimable_sats \u2014 the kit stops quoting dead commitments); archiver ungated from reconcile_done + resolved monitors leave the spend walk; dest_is_lsp on send silence events (0.57.0 item h). Prior \u2014 v222 internal LNURLp single-hop: dest==LSP ⇒ the prepend IS the route; LND's out-and-back same-channel answer to a self-dest+public-hints query is never parsed (DP field 5/5 cured). Prior — v221 device-file import (import_backup_blob → LijWallet::import_state_blob via node accessors — the cloud-restore inject path made public). Prior — v220 RECOVERY ARC: D3 blob carries on-chain view/pendings/counters (instant blob restores); tier2_rescan_from for imported foreign seeds (SegWit-activation floor 481,824 — wpkh cannot predate it, so 2009-era picks are honored, empty years skipped, failure impossible). Prior: v219 socket-id realm fix.
 }
 
@@ -297,7 +304,7 @@ pub fn pubkey_from_mnemonic(mnemonic: &str, network: &str) -> Result<String, JsV
 
     // Timestamps don't affect node_id (KeysManager derives it from seed alone),
     // but the API requires them. Use a fixed value for determinism.
-    let keys_manager = KeysManager::new(&seed, 0, 0);
+    let keys_manager = KeysManager::new(&seed, 0, 0, false /* 0.2: old remote-key derivation — LiJ pins to_remote itself */);
 
     let node_id = keys_manager.get_node_id(Recipient::Node)
         .map_err(|_| JsValue::from_str("Failed to get node pubkey"))?;
@@ -1561,7 +1568,35 @@ impl LijWalletHandle {
                 // External destinations take the fetch exactly as before.
                 let response_text = if dest_is_lsp {
                     log::info!("[Phase10b-retry] internal send (dest == active LSP) — route ask skipped (v227)");
-                    String::from(r#"{"ok":false,"error":"destination_is_lsp","routes":[],"internal":true}"#)
+                    // v244 (S46, DP): the hold verdict for an INTERNAL send. The invoice was
+                    // minted by the LSP (an LNURL pool hash), so route/build never sees it and
+                    // no lsp_hold ever reached the page — the sender waited 30 s and booked
+                    // "failed" while the HTLC was held. One small GET to the LSP's outcome
+                    // oracle: owner offline → the same lsp_hold shape the external path gets,
+                    // and the page narrates HELD from the first second. Any failure of the
+                    // ask falls back to the old body (no verdict, the timeout narrates).
+                    let hash_hex = hex::encode(prep.payment_hash.0);
+                    let base = prep.url.split("/v1/").next().unwrap_or("").to_string();
+                    let verdict = if base.is_empty() { None } else {
+                        match lij_core::node::fetch_get_with_macaroon(&format!("{base}/v1/outcome?hash={hash_hex}"), &route_macaroon_hex).await {
+                            Ok(t) => serde_json::from_str::<serde_json::Value>(&t).ok(),
+                            Err(e) => { log::warn!("[v244] hold verdict ask failed: {e}"); None }
+                        }
+                    };
+                    // v246: the verdict is logged whatever it says (v245 logged only the offline
+                    // case, so a 'live' answer left no trace on the tape).
+                    if let Some(v) = verdict.as_ref() {
+                        log::info!("[v244] hold verdict: owner_live={:?} peer={:?} heard_s={:?} cap_s={:?}",
+                            v.get("owner_live"), v.get("owner_peer"), v.get("owner_heard_s"), v.get("hold_cap_s"));
+                    }
+                    match verdict.as_ref().and_then(|v| v.get("owner_live")).and_then(|b| b.as_bool()) {
+                        Some(false) => {
+                            let cap = verdict.as_ref().and_then(|v| v.get("hold_cap_s")).and_then(|c| c.as_u64()).unwrap_or(3600);
+                            log::info!("[v244] internal send: the hash's owner is offline — HOLD from the start (cap {cap}s)");
+                            format!(r#"{{"ok":false,"error":"destination_is_lsp","routes":[],"internal":true,"lsp_hold":{{"active":true,"kind":"lnurlp","cap_s":{cap}}}}}"#)
+                        }
+                        _ => String::from(r#"{"ok":false,"error":"destination_is_lsp","routes":[],"internal":true}"#),
+                    }
                 } else { match lij_core::node::fetch_post_with_macaroon(
                     &prep.url,
                     &route_macaroon_hex,
@@ -2345,11 +2380,11 @@ impl LijWalletHandle {
                 // m/525 P2WSH anchor script (the v128-exclusion diagnosis).
                 let (value_sats, descriptor_type, dest_spk): (u64, &str, String) = match &o.descriptor {
                     SOD::StaticOutput { output, .. } =>
-                        (output.value, "StaticOutput", hex::encode(output.script_pubkey.as_bytes())),
+                        (output.value.to_sat(), "StaticOutput", hex::encode(output.script_pubkey.as_bytes())),
                     SOD::DelayedPaymentOutput(d) =>
-                        (d.output.value, "DelayedPaymentOutput", hex::encode(d.output.script_pubkey.as_bytes())),
+                        (d.output.value.to_sat(), "DelayedPaymentOutput", hex::encode(d.output.script_pubkey.as_bytes())),
                     SOD::StaticPaymentOutput(d) =>
-                        (d.output.value, "StaticPaymentOutput", hex::encode(d.output.script_pubkey.as_bytes())),
+                        (d.output.value.to_sat(), "StaticPaymentOutput", hex::encode(d.output.script_pubkey.as_bytes())),
                 };
                 let (status, delayed_until_height, confirmation_height): (&str, Option<u32>, Option<u32>) =
                     match &o.status {
@@ -3647,7 +3682,7 @@ pub fn sign_psbt_hex(mnemonic: &str, psbt_hex: &str) -> Result<String, JsValue> 
                 let hints: Vec<(bitcoin::secp256k1::PublicKey, bitcoin::bip32::DerivationPath)> =
                     psbt.inputs[i].bip32_derivation.iter().map(|(pk, (_fp, path))| (*pk, path.clone())).collect();
                 let wu = match psbt.inputs[i].witness_utxo.as_ref() { Some(o) => o.clone(), None => continue };
-                if !wu.script_pubkey.is_v0_p2wpkh() { continue; }
+                if !wu.script_pubkey.is_p2wpkh() { continue; }
                 for (hint_pk, path) in hints.iter() {
                     let child = match root.derive_priv(&secp, path) { Ok(c) => c, Err(_) => continue };
                     let sk = child.private_key;
@@ -3661,8 +3696,8 @@ pub fn sign_psbt_hex(mnemonic: &str, psbt_hex: &str) -> Result<String, JsValue> 
                     // v205c: VENDORED API AS-READ — spk.p2wpkh_script_code()
                     // builds the BIP143 scriptCode; segwit_signature_hash is
                     // the cache method this crate actually ships.
-                    let code = match wu.script_pubkey.p2wpkh_script_code() { Some(c) => c, None => continue };
-                    let sh = match cache.segwit_signature_hash(i, &code, wu.value, EcdsaSighashType::All) {
+                    // 0.32: the sighash helper takes the scriptPubKey and derives the BIP143 script code
+                    let sh = match cache.p2wpkh_signature_hash(i, &wu.script_pubkey, wu.value, EcdsaSighashType::All) {
                         Ok(s) => s, Err(_) => continue };
                     let msg = match bitcoin::secp256k1::Message::from_slice(sh.as_ref()) { Ok(m2) => m2, Err(_) => continue };
                     let sig = secp.sign_ecdsa(&msg, &sk);
@@ -3671,7 +3706,7 @@ pub fn sign_psbt_hex(mnemonic: &str, psbt_hex: &str) -> Result<String, JsValue> 
             }
         }
         for (i, pk, sig) in adds.into_iter() {
-            let esig = bitcoin::ecdsa::Signature { sig, hash_ty: EcdsaSighashType::All };
+            let esig = bitcoin::ecdsa::Signature { signature: sig, sighash_type: EcdsaSighashType::All };   // 0.32 field names
             psbt.inputs[i].partial_sigs.insert(pk, esig);
             signed_inputs += 1;
         }
@@ -3703,8 +3738,7 @@ pub fn derive_receive_address(mnemonic: &str, index: u32) -> Result<String, JsVa
     let child = root.derive_priv(&secp, &path)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
     let pk = bitcoin::PublicKey::new(child.private_key.public_key(&secp));
-    let addr = bitcoin::Address::p2wpkh(&pk, bitcoin::Network::Bitcoin)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let addr = bitcoin::Address::p2wpkh(&bitcoin::CompressedPublicKey(pk.inner), bitcoin::Network::Bitcoin);   // 0.32: infallible
     Ok(addr.to_string())
 }
 
@@ -3764,7 +3798,7 @@ pub fn derive_account_zpub(mnemonic: &str) -> Result<String, JsValue> {
     let mut data = xpub.encode();
     // zpub version bytes per SLIP-132 (BIP84 mainnet public).
     data[0] = 0x04; data[1] = 0xb2; data[2] = 0x47; data[3] = 0x46;
-    Ok(bitcoin::base58::check_encode_slice(&data))
+    Ok(bitcoin::base58::encode_check(&data))   // 0.32 name
 }
 
 
@@ -3810,7 +3844,7 @@ pub fn psbt_probe(mnemonic: &str, psbt_hex: &str) -> Result<String, JsValue> {
             }));
         }
         let has_wu = inp.witness_utxo.is_some();
-        let is_wpkh = inp.witness_utxo.as_ref().map(|o| o.script_pubkey.is_v0_p2wpkh()).unwrap_or(false);
+        let is_wpkh = inp.witness_utxo.as_ref().map(|o| o.script_pubkey.is_p2wpkh()).unwrap_or(false);
         inputs.push(serde_json::json!({
             "input": idx,
             "partial_sigs": inp.partial_sigs.len(),

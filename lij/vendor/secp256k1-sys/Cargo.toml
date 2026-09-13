@@ -10,21 +10,17 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2018"
+edition = "2021"
+rust-version = "1.56.1"
 name = "secp256k1-sys"
-version = "0.8.2"
+version = "0.10.1"
 authors = [
     "Dawid Ciężarkiewicz <dpc@ucore.info>",
     "Andrew Poelstra <apoelstra@wpsoftware.net>",
     "Steven Roose <steven@stevenroose.org>",
 ]
 build = "build.rs"
-links = "rustsecp256k1_v0_8_1"
-autolib = false
-autobins = false
-autoexamples = false
-autotests = false
-autobenches = false
+links = "rustsecp256k1_v0_10_0"
 description = "FFI for Pieter Wuille's `libsecp256k1` library."
 homepage = "https://github.com/rust-bitcoin/rust-secp256k1/"
 documentation = "https://docs.rs/secp256k1-sys/"
@@ -38,14 +34,17 @@ license = "CC0-1.0"
 repository = "https://github.com/rust-bitcoin/rust-secp256k1/"
 
 [package.metadata.docs.rs]
-features = [
-    "recovery",
-    "lowmemory",
-]
+all-features = true
 rustdoc-args = [
     "--cfg",
     "docsrs",
 ]
+
+[dev-dependencies.libc]
+version = "0.2"
+
+[build-dependencies.cc]
+version = "1.0.28"
 
 [features]
 alloc = []
@@ -54,12 +53,6 @@ lowmemory = []
 recovery = []
 std = ["alloc"]
 
-[lib]
-name = "secp256k1_sys"
-path = "src/lib.rs"
-
-[dev-dependencies.libc]
-version = "0.2"
-
-[build-dependencies.cc]
-version = "1.0.28"
+[lints.rust.unexpected_cfgs]
+level = "deny"
+priority = 0

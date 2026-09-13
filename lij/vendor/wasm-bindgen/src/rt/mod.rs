@@ -1,13 +1,18 @@
 use crate::convert::{FromWasmAbi, IntoWasmAbi, WasmAbi, WasmRet};
 use crate::describe::inform;
 use crate::JsValue;
-#[cfg(all(target_arch = "wasm32", feature = "std", panic = "unwind"))]
+#[cfg(all(
+    all(target_family = "wasm", not(target_os = "wasi")),
+    feature = "std",
+    panic = "unwind"
+))]
 use core::any::Any;
 use core::borrow::{Borrow, BorrowMut};
 #[cfg(target_feature = "atomics")]
 use core::cell::UnsafeCell;
 use core::cell::{Cell, RefCell};
 use core::convert::Infallible;
+use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::panic::{RefUnwindSafe, UnwindSafe};
 #[cfg(target_feature = "atomics")]
@@ -32,7 +37,7 @@ pub fn js_panic(err: JsValue) {
     #[cfg(all(feature = "std", not(target_feature = "atomics")))]
     ::std::panic::panic_any(err);
     #[cfg(not(all(feature = "std", not(target_feature = "atomics"))))]
-    ::core::panic!("{:?}", err);
+    ::core::panic!("{err:?}");
 }
 
 // Cast between arbitrary types supported by wasm-bindgen by going via JS.
@@ -55,23 +60,28 @@ pub fn wbg_cast<From: IntoWasmAbi, To: FromWasmAbi>(value: From) -> To {
     // 2. Since we can't name it to associate with a specific import or
     //    export, we use a different approach. After describing the input
     //    type, this function internally calls a special import recognized
-    //    by the `wasm-bindgen` CLI tool, `__wbindgen_describe_cast`. This
-    //    imported symbol is similar to `__wbindgen_describe` in that it's
-    //    not intended to show up in the final binary but it's merely a
+    //    by the `wasm-bindgen` CLI tool, `__wbindgen_describe_generic_import`.
+    //    This imported symbol is similar to `__wbindgen_describe` in that
+    //    it's not intended to show up in the final binary but it's merely a
     //    signal for `wasm-bindgen` that marks the parent function
-    //    (`breaks_if_inlined`) as a cast descriptor.
+    //    (`breaks_if_inlined`) as a descriptor to be discovered, interpreted,
+    //    and rewritten. A cast is the degenerate case of a generic import:
+    //    the descriptor stream carries an empty (zero-length) shim key, which
+    //    the CLI recognizes as "manufacture an identity adapter" rather than
+    //    looking up JS binding metadata by key.
     //
     // Most of this doesn't actually make sense to happen at runtime! The
     // real magic happens when `wasm-bindgen` comes along and updates our
     // generated code. When `wasm-bindgen` runs it performs a few tasks:
     //
     // * First, it finds all functions that call
-    //   `__wbindgen_describe_cast`. These are all `breaks_if_inlined`
+    //   `__wbindgen_describe_generic_import`. These are all `breaks_if_inlined`
     //   defined below as the symbol isn't called anywhere else.
     // * Next, `wasm-bindgen` executes the `breaks_if_inlined`
     //   monomorphized functions, passing it dummy arguments. This will
     //   execute the function until it reaches the call to
-    //   `__wbindgen_describe_cast`, at which point the interpreter stops.
+    //   `__wbindgen_describe_generic_import`, at which point the interpreter
+    //   stops.
     // * Finally, and probably most heinously, the call to
     //   `breaks_if_inlined` is rewritten to call an otherwise globally
     //   imported function. This globally imported function will simply
@@ -87,6 +97,9 @@ pub fn wbg_cast<From: IntoWasmAbi, To: FromWasmAbi>(value: From) -> To {
         prim3: <From::Abi as WasmAbi>::Prim3,
         prim4: <From::Abi as WasmAbi>::Prim4,
     ) -> WasmRet<To::Abi> {
+        // Empty (zero-length) shim key: a cast is the degenerate generic
+        // import that the CLI turns into an identity adapter.
+        inform(0);
         inform(FUNCTION);
         inform(0);
         inform(1);
@@ -95,7 +108,17 @@ pub fn wbg_cast<From: IntoWasmAbi, To: FromWasmAbi>(value: From) -> To {
         To::describe();
         // Pass all inputs and outputs across the opaque FFI boundary to prevent
         // compiler from removing them as dead code.
-        core::ptr::read(super::__wbindgen_describe_cast(
+        //
+        // SAFETY: this is the shape `describe_generic_import` requires. We are
+        // inside `breaks_if_inlined`, which is `#[inline(never)]` and
+        // monomorphised per `(From, To)`, and this is its single call to the
+        // marker. `func` is this very function, and `prims` points at this
+        // function's own live ABI arguments, so both stay alive across the
+        // opaque boundary. The CLI rewrites this call site to the manufactured
+        // import, whose return type is exactly `To::Abi`; reading the returned
+        // pointer at `To::Abi` (via the `WasmRet<To::Abi>` return type) is
+        // therefore reading it at the one type it is valid for.
+        core::ptr::read(crate::describe::describe_generic_import(
             breaks_if_inlined::<From, To> as _,
             &(prim1, prim2, prim3, prim4) as *const _ as _,
         ) as _)
@@ -274,6 +297,175 @@ macro_rules! __wbindgen_coverage {
 pub fn assert_not_null<T>(s: *mut T) {
     if s.is_null() {
         throw_null();
+    }
+}
+
+#[cfg(target_arch = "wasm64")]
+pub type WasmWordRepr = f64;
+#[cfg(not(target_arch = "wasm64"))]
+pub type WasmWordRepr = u32;
+
+/// Signed counterpart of [`WasmWordRepr`]. Used for `isize` ABI lowering so
+/// that negative values sign-extend correctly when widening to `f64`.
+#[cfg(target_arch = "wasm64")]
+pub type WasmSignedWordRepr = f64;
+#[cfg(not(target_arch = "wasm64"))]
+pub type WasmSignedWordRepr = i32;
+
+/// A single pointer-sized machine word using the JS-number ABI on wasm64.
+#[repr(transparent)]
+#[derive(Copy, Clone, Default)]
+pub struct WasmWord(WasmWordRepr);
+
+impl WasmWord {
+    #[inline]
+    pub fn from_usize(value: usize) -> Self {
+        #[cfg(target_arch = "wasm64")]
+        {
+            Self(value as f64)
+        }
+        #[cfg(not(target_arch = "wasm64"))]
+        {
+            Self(value as u32)
+        }
+    }
+
+    #[inline]
+    pub fn into_usize(self) -> usize {
+        self.0 as usize
+    }
+
+    #[inline]
+    pub fn from_isize(value: isize) -> Self {
+        #[cfg(target_arch = "wasm64")]
+        {
+            Self(value as f64)
+        }
+        #[cfg(not(target_arch = "wasm64"))]
+        {
+            Self(value as u32)
+        }
+    }
+
+    #[inline]
+    pub fn into_isize(self) -> isize {
+        self.0 as isize
+    }
+
+    #[inline]
+    pub fn is_zero(&self) -> bool {
+        #[cfg(target_arch = "wasm64")]
+        {
+            self.0 == 0.0
+        }
+        #[cfg(not(target_arch = "wasm64"))]
+        {
+            self.0 == 0
+        }
+    }
+}
+
+impl WasmAbi for WasmWord {
+    type Prim1 = WasmWordRepr;
+    type Prim2 = ();
+    type Prim3 = ();
+    type Prim4 = ();
+
+    #[inline]
+    fn split(self) -> (Self::Prim1, (), (), ()) {
+        (self.0, (), (), ())
+    }
+
+    #[inline]
+    fn join(prim1: Self::Prim1, _: (), _: (), _: ()) -> Self {
+        Self(prim1)
+    }
+}
+
+/// A typed raw pointer using the JS-number ABI on wasm64.
+#[repr(transparent)]
+#[derive(Copy, Clone)]
+pub struct WasmPtr<T> {
+    word: WasmWord,
+    _marker: PhantomData<*mut T>,
+}
+
+impl<T> Default for WasmPtr<T> {
+    #[inline]
+    fn default() -> Self {
+        Self::null()
+    }
+}
+
+impl<T> WasmPtr<T> {
+    #[inline]
+    pub fn from_ptr(ptr: *mut T) -> Self {
+        Self::from_usize(ptr as usize)
+    }
+
+    #[inline]
+    pub fn into_ptr(self) -> *mut T {
+        self.into_usize() as *mut T
+    }
+
+    #[inline]
+    pub fn from_usize(value: usize) -> Self {
+        Self {
+            word: WasmWord::from_usize(value),
+            _marker: PhantomData,
+        }
+    }
+
+    #[inline]
+    pub fn into_usize(self) -> usize {
+        self.word.into_usize()
+    }
+
+    #[inline]
+    pub fn null() -> Self {
+        Self::from_usize(0)
+    }
+
+    #[inline]
+    pub fn is_null(&self) -> bool {
+        self.word.is_zero()
+    }
+}
+
+impl<T> WasmAbi for WasmPtr<T> {
+    type Prim1 = <WasmWord as WasmAbi>::Prim1;
+    type Prim2 = ();
+    type Prim3 = ();
+    type Prim4 = ();
+
+    #[inline]
+    fn split(self) -> (Self::Prim1, (), (), ()) {
+        self.word.split()
+    }
+
+    #[inline]
+    fn join(prim1: Self::Prim1, _: (), _: (), _: ()) -> Self {
+        Self {
+            word: WasmWord::join(prim1, (), (), ()),
+            _marker: PhantomData,
+        }
+    }
+}
+
+// The wasm64 representation of `WasmWord` is `f64`, which has enough
+// mantissa precision to roundtrip any in-range pointer value. On wasm32
+// the representation is `u32`, so this test is only meaningful on wasm64.
+#[cfg(all(test, target_arch = "wasm64"))]
+mod tests {
+    use super::WasmWord;
+
+    #[test]
+    fn wasm_word_roundtrips_large_pointer_values() {
+        let value = 1usize << 60;
+        assert_eq!(WasmWord::from_usize(value).into_usize(), value);
+
+        let signed = -(1isize << 40);
+        assert_eq!(WasmWord::from_isize(signed).into_isize(), signed);
     }
 }
 
@@ -504,16 +696,18 @@ impl<T: ?Sized> BorrowMut<T> for RcRefMut<T> {
 }
 
 #[no_mangle]
-pub extern "C" fn __wbindgen_malloc(size: usize, align: usize) -> *mut u8 {
+pub extern "C" fn __wbindgen_malloc(size: WasmWord, align: WasmWord) -> WasmPtr<u8> {
+    let size = size.into_usize();
+    let align = align.into_usize();
     if let Ok(layout) = Layout::from_size_align(size, align) {
         unsafe {
             if layout.size() > 0 {
                 let ptr = alloc(layout);
                 if !ptr.is_null() {
-                    return ptr;
+                    return WasmPtr::from_ptr(ptr);
                 }
             } else {
-                return align as *mut u8;
+                return WasmPtr::from_usize(align);
             }
         }
     }
@@ -523,17 +717,21 @@ pub extern "C" fn __wbindgen_malloc(size: usize, align: usize) -> *mut u8 {
 
 #[no_mangle]
 pub unsafe extern "C" fn __wbindgen_realloc(
-    ptr: *mut u8,
-    old_size: usize,
-    new_size: usize,
-    align: usize,
-) -> *mut u8 {
+    ptr: WasmPtr<u8>,
+    old_size: WasmWord,
+    new_size: WasmWord,
+    align: WasmWord,
+) -> WasmPtr<u8> {
+    let ptr = ptr.into_ptr();
+    let old_size = old_size.into_usize();
+    let new_size = new_size.into_usize();
+    let align = align.into_usize();
     debug_assert!(old_size > 0);
     debug_assert!(new_size > 0);
     if let Ok(layout) = Layout::from_size_align(old_size, align) {
         let ptr = realloc(ptr, layout, new_size);
         if !ptr.is_null() {
-            return ptr;
+            return WasmPtr::from_ptr(ptr);
         }
     }
     malloc_failure();
@@ -546,11 +744,12 @@ fn malloc_failure() -> ! {
             super::throw_str("invalid malloc request")
         } else if #[cfg(feature = "std")] {
             std::process::abort();
-        } else if #[cfg(all(
-            target_arch = "wasm32",
-            any(target_os = "unknown", target_os = "none")
-        ))] {
+        } else if #[cfg(target_arch = "wasm32")] {
+            // stable
             core::arch::wasm32::unreachable();
+        } else if #[cfg(target_arch = "wasm64")] {
+            // unstable, need simd_wasm64 feature
+            core::arch::wasm64::unreachable();
         } else {
             unreachable!()
         }
@@ -558,12 +757,15 @@ fn malloc_failure() -> ! {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn __wbindgen_free(ptr: *mut u8, size: usize, align: usize) {
+pub unsafe extern "C" fn __wbindgen_free(ptr: WasmPtr<u8>, size: WasmWord, align: WasmWord) {
+    let size = size.into_usize();
     // This happens for zero-length slices, and in that case `ptr` is
     // likely bogus so don't actually send this to the system allocator
     if size == 0 {
         return;
     }
+    let ptr = ptr.into_ptr();
+    let align = align.into_usize();
     let layout = Layout::from_size_align_unchecked(size, align);
     dealloc(ptr, layout);
 }
@@ -609,15 +811,34 @@ pub fn link_mem_intrinsics() {
 #[cfg_attr(target_feature = "atomics", thread_local)]
 static GLOBAL_EXNDATA: ThreadLocalWrapper<Cell<[u32; 2]>> = ThreadLocalWrapper(Cell::new([0; 2]));
 
-#[cfg(panic = "unwind")]
 #[no_mangle]
 pub static mut __instance_terminated: u32 = 0;
 
+/// Written in-fiber at every resume by the CLI-generated wrapper around a
+/// `#[wasm_bindgen(catch, suspending)]` import (see
+/// `cli-support/src/transforms/jspi.rs`): 0 when the awaited `Promise`
+/// fulfilled, 1 when it rejected — in which case the rejection reason is the
+/// import's return value. The store happens immediately before the suspend
+/// call returns, so reading it right after is race-free even with arbitrary
+/// fiber interleaving.
+#[no_mangle]
+pub static mut __wbindgen_jspi_rejected: u32 = 0;
+
+/// Whether the just-returned `#[wasm_bindgen(catch, suspending)]` import
+/// call's awaited promise rejected. Used by macro-generated glue.
+#[inline]
+pub fn jspi_rejected() -> bool {
+    unsafe { __wbindgen_jspi_rejected != 0 }
+}
+
+fn no_op() {}
+
+pub static NO_OP_PTR: fn() = no_op;
+
 /// Stores the Wasm indirect-function-table index of the registered hard-abort
 /// callback.  Zero means no callback is registered.
-#[cfg(panic = "unwind")]
 #[no_mangle]
-pub static mut __abort_handler: u32 = 0;
+pub static mut __abort_handler: fn() = NO_OP_PTR;
 
 /// Register a callback invoked when a hard abort (instance termination) occurs.
 ///
@@ -629,97 +850,31 @@ pub static mut __abort_handler: u32 = 0;
 /// export call from within the handler is immediately blocked.  A throwing
 /// or panicking handler cannot suppress the original error.
 ///
-/// **Experimental — only available when built with `panic=unwind`.**
-/// On `panic=abort` builds the no-op stub always returns `None` and the
-/// callback will never fire.
-#[cfg(panic = "unwind")]
+/// **Experimental.** The callback fires automatically on `panic=unwind`
+/// builds. On `panic=abort` builds the abort machinery is only emitted when
+/// `wasm-bindgen` is run with `--force-enable-abort-handler`; without that flag
+/// the handler is registered but never fires.
 pub fn set_on_abort(f: fn()) -> Option<fn()> {
-    // On wasm32, function pointers are indices into the Wasm
-    // __indirect_function_table. Casting fn() -> usize -> u32 extracts
-    // that index without touching linear memory.
+    let prev = unsafe { __abort_handler };
     unsafe {
-        let prev = __abort_handler;
-        __abort_handler = f as usize as u32;
-        if prev != 0 {
-            Some(core::mem::transmute::<usize, fn()>(prev as usize))
-        } else {
-            None
-        }
+        __abort_handler = f;
+    }
+
+    // TODO: If the MSRV reaches 1.85, use `core::ptr::fn_addr_eq` instead
+    if (prev as usize) != (NO_OP_PTR as usize) {
+        Some(prev)
+    } else {
+        None
     }
 }
 
-/// No-op stub for `panic=abort` builds — handler will never fire.
-#[cfg(not(panic = "unwind"))]
-pub fn set_on_abort(_f: fn()) -> Option<fn()> {
-    None
-}
-
-/// Sentinel written to `__instance_terminated` to signal a reinit.
-/// Distinct from `0` (live) and `1` (hard terminated).
-#[cfg(panic = "unwind")]
-pub const REINIT_SENTINEL: u32 = u32::MAX;
-
-/// Signal that the instance should be reinitialised before the next export
-/// call.
+/// Schedule the instance for reinitialization before the next export call.
 ///
-/// **Experimental — only available when built with `panic=unwind` and when
-/// wasm-bindgen is invoked with `--experimental-reset-state-function`.**
-/// Without that flag the JS guard is not emitted, so the sentinel is written
-/// but never acted upon.  On `panic=abort` builds this is a no-op.
-#[cfg(panic = "unwind")]
-pub fn reinit() {
-    unsafe {
-        __instance_terminated = REINIT_SENTINEL;
-    }
+/// The reinit machinery is automatically emitted when this function is used.
+/// Works with both `panic=unwind` and `panic=abort` builds.
+pub fn schedule_reinit() {
+    crate::__wbindgen_reinit();
 }
-
-/// Stores the Wasm indirect-function-table index of the registered reinit
-/// callback.  Zero means no callback is registered.
-#[cfg(panic = "unwind")]
-#[no_mangle]
-pub static mut __reinit_handler: u32 = 0;
-
-/// Register a callback invoked on the new instance immediately after
-/// `__wbg_reset_state()` creates it following a [`reinit()`] signal.
-///
-/// Returns the previously registered handler, or `None` if none was set.
-/// This mirrors the `std::panic::set_hook` convention and lets callers chain
-/// or restore handlers.
-///
-/// Because `__wbg_reset_state()` creates a completely fresh
-/// `WebAssembly.Instance`, all Rust statics (including `__reinit_handler`
-/// itself) are reset to their initial values on the new instance.  The
-/// callback should therefore be re-registered on every instance — the
-/// idiomatic way is via a `#[wasm_bindgen(start)]` function that runs
-/// automatically on every instantiation.
-///
-/// **Experimental — only available when built with `panic=unwind` and when
-/// wasm-bindgen is invoked with `--experimental-reset-state-function`.**
-/// Without that flag the JS guard is not emitted and the callback will never
-/// fire.  On `panic=abort` builds the no-op stub always returns `None`.
-#[cfg(panic = "unwind")]
-pub fn set_on_reinit(f: fn()) -> Option<fn()> {
-    // Same table-index cast as set_on_abort.
-    unsafe {
-        let prev = __reinit_handler;
-        __reinit_handler = f as usize as u32;
-        if prev != 0 {
-            Some(core::mem::transmute::<usize, fn()>(prev as usize))
-        } else {
-            None
-        }
-    }
-}
-
-/// No-op stub for `panic=abort` builds.
-#[cfg(not(panic = "unwind"))]
-pub fn set_on_reinit(_f: fn()) -> Option<fn()> {
-    None
-}
-
-/// No-op stub for `panic=abort` builds.
-#[cfg(not(panic = "unwind"))]
-pub fn reinit() {}
 
 #[no_mangle]
 pub unsafe extern "C" fn __wbindgen_exn_store(idx: u32) {
@@ -877,13 +1032,21 @@ pub const fn encode_u32_to_fixed_len_bytes(value: u32) -> [u8; 5] {
     result
 }
 
-#[cfg(all(target_arch = "wasm32", feature = "std", panic = "unwind"))]
+#[cfg(all(
+    all(target_family = "wasm", not(target_os = "wasi")),
+    feature = "std",
+    panic = "unwind"
+))]
 #[wasm_bindgen_macro::wasm_bindgen(wasm_bindgen = crate, raw_module = "__wbindgen_placeholder__")]
 extern "C" {
     fn __wbindgen_panic_error(msg: &JsValue) -> JsValue;
 }
 
-#[cfg(all(target_arch = "wasm32", feature = "std", panic = "unwind"))]
+#[cfg(all(
+    all(target_family = "wasm", not(target_os = "wasi")),
+    feature = "std",
+    panic = "unwind"
+))]
 pub fn panic_to_panic_error(val: std::boxed::Box<dyn Any + Send>) -> JsValue {
     #[cfg(not(target_feature = "atomics"))]
     {
@@ -904,7 +1067,11 @@ pub fn panic_to_panic_error(val: std::boxed::Box<dyn Any + Send>) -> JsValue {
     err
 }
 
-#[cfg(all(target_arch = "wasm32", feature = "std", panic = "unwind"))]
+#[cfg(all(
+    all(target_family = "wasm", not(target_os = "wasi")),
+    feature = "std",
+    panic = "unwind"
+))]
 pub fn maybe_catch_unwind<F: FnOnce() -> R + std::panic::UnwindSafe, R>(f: F) -> R {
     let result = std::panic::catch_unwind(f);
     match result {
@@ -915,7 +1082,70 @@ pub fn maybe_catch_unwind<F: FnOnce() -> R + std::panic::UnwindSafe, R>(f: F) ->
     }
 }
 
-#[cfg(not(all(target_arch = "wasm32", feature = "std", panic = "unwind")))]
+#[cfg(not(all(
+    all(target_family = "wasm", not(target_os = "wasi")),
+    feature = "std",
+    panic = "unwind"
+)))]
 pub fn maybe_catch_unwind<F: FnOnce() -> R, R>(f: F) -> R {
     f()
 }
+
+/// Compile-time requirement that `T: RefUnwindSafe` under `panic = "unwind"`.
+///
+/// Emitted by `#[wasm_bindgen]` for the receiver type of `&self` / `&mut self`
+/// methods and the pointee of `&T` / `&mut T` arguments on exported functions.
+///
+/// Stdlib's `&mut T: !UnwindSafe` blanket means we cannot use the closure's
+/// own `UnwindSafe` bound to validate user types — every `&mut self` method
+/// would fail unconditionally. Instead, this requires the *logical* unwind
+/// safety property (`T: RefUnwindSafe`): the user's type must not contain
+/// interior mutability whose invariants could be silently broken when a
+/// panic is caught by [`maybe_catch_unwind`]. This is the same property
+/// `RefCell`, `Cell`, `Mutex` advertise when refusing to implement
+/// `RefUnwindSafe`.
+///
+/// Users whose type is genuinely safe to observe after a caught panic can
+/// opt in with `impl RefUnwindSafe for MyType {}` or by wrapping interior-
+/// mutable fields in `std::panic::AssertUnwindSafe`.
+///
+/// No-op outside `panic = "unwind"` builds (where panics abort instead).
+#[cfg(all(
+    all(target_family = "wasm", not(target_os = "wasi")),
+    feature = "std",
+    panic = "unwind"
+))]
+#[inline(always)]
+pub fn ensure_ref_unwind_safe<T: ?Sized + std::panic::RefUnwindSafe>() {}
+
+#[cfg(not(all(
+    all(target_family = "wasm", not(target_os = "wasi")),
+    feature = "std",
+    panic = "unwind"
+)))]
+#[inline(always)]
+pub fn ensure_ref_unwind_safe<T: ?Sized>() {}
+
+/// Compile-time requirement that `T: UnwindSafe` under `panic = "unwind"`.
+///
+/// Used for owned receiver / argument types where the value is consumed
+/// inside the catch boundary; mirrors [`ensure_ref_unwind_safe`] but for
+/// owned-value contexts where `UnwindSafe` (rather than `RefUnwindSafe`)
+/// is the relevant property.
+///
+/// No-op outside `panic = "unwind"` builds.
+#[cfg(all(
+    all(target_family = "wasm", not(target_os = "wasi")),
+    feature = "std",
+    panic = "unwind"
+))]
+#[inline(always)]
+pub fn ensure_unwind_safe<T: ?Sized + std::panic::UnwindSafe>() {}
+
+#[cfg(not(all(
+    all(target_family = "wasm", not(target_os = "wasi")),
+    feature = "std",
+    panic = "unwind"
+)))]
+#[inline(always)]
+pub fn ensure_unwind_safe<T: ?Sized>() {}

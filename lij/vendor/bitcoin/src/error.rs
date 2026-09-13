@@ -1,69 +1,131 @@
+// SPDX-License-Identifier: CC0-1.0
+
 //! Contains error types and other error handling tools.
 
 use core::fmt;
 
-use bitcoin_internals::write_err;
+use crate::internal_macros::write_err;
+use crate::prelude::*;
 
-use crate::consensus::encode;
+#[rustfmt::skip]                // Keep public re-exports separate.
+#[doc(inline)]
 pub use crate::parse::ParseIntError;
 
-/// A general error code, other errors should implement conversions to/from this
-/// if appropriate.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum Error {
-    /// Encoding error
-    Encode(encode::Error),
-    /// The header hash is not below the target
-    BlockBadProofOfWork,
-    /// The `target` field of a block header did not match the expected difficulty
-    BlockBadTarget,
+/// Error returned when parsing integer from an supposedly prefixed hex string for
+/// a type that can be created infallibly from an integer.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum PrefixedHexError {
+    /// Hex string is missing prefix.
+    MissingPrefix(MissingPrefixError),
+    /// Error parsing integer from hex string.
+    ParseInt(ParseIntError),
 }
 
-impl fmt::Display for Error {
+impl fmt::Display for PrefixedHexError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use PrefixedHexError::*;
+
         match *self {
-            Error::Encode(ref e) => write_err!(f, "encoding error"; e),
-            Error::BlockBadProofOfWork => f.write_str("block target correct but not attained"),
-            Error::BlockBadTarget => f.write_str("block target incorrect"),
+            MissingPrefix(ref e) => write_err!(f, "hex string is missing prefix"; e),
+            ParseInt(ref e) => write_err!(f, "prefixed hex string invalid int"; e),
         }
     }
 }
 
 #[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
-impl std::error::Error for Error {
+impl std::error::Error for PrefixedHexError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        use self::Error::*;
+        use PrefixedHexError::*;
 
-        match self {
-            Encode(e) => Some(e),
-            BlockBadProofOfWork | BlockBadTarget => None,
+        match *self {
+            MissingPrefix(ref e) => Some(e),
+            ParseInt(ref e) => Some(e),
         }
     }
 }
 
-#[doc(hidden)]
-impl From<encode::Error> for Error {
-    fn from(e: encode::Error) -> Error { Error::Encode(e) }
+impl From<MissingPrefixError> for PrefixedHexError {
+    fn from(e: MissingPrefixError) -> Self { Self::MissingPrefix(e) }
 }
 
-/// Impls std::error::Error for the specified type with appropriate attributes, possibly returning
-/// source.
-macro_rules! impl_std_error {
-    // No source available
-    ($type:ty) => {
-        #[cfg(feature = "std")]
-        #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
-        impl std::error::Error for $type {}
-    };
-    // Struct with $field as source
-    ($type:ty, $field:ident) => {
-        #[cfg(feature = "std")]
-        #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
-        impl std::error::Error for $type {
-            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.$field) }
-        }
-    };
+impl From<ParseIntError> for PrefixedHexError {
+    fn from(e: ParseIntError) -> Self { Self::ParseInt(e) }
 }
-pub(crate) use impl_std_error;
+
+/// Error returned when parsing integer from an supposedly un-prefixed hex string.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum UnprefixedHexError {
+    /// Hex string contains prefix.
+    ContainsPrefix(ContainsPrefixError),
+    /// Error parsing integer from string.
+    ParseInt(ParseIntError),
+}
+
+impl fmt::Display for UnprefixedHexError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use UnprefixedHexError::*;
+
+        match *self {
+            ContainsPrefix(ref e) => write_err!(f, "hex string is contains prefix"; e),
+            ParseInt(ref e) => write_err!(f, "hex string parse int"; e),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for UnprefixedHexError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        use UnprefixedHexError::*;
+
+        match *self {
+            ContainsPrefix(ref e) => Some(e),
+            ParseInt(ref e) => Some(e),
+        }
+    }
+}
+
+impl From<ContainsPrefixError> for UnprefixedHexError {
+    fn from(e: ContainsPrefixError) -> Self { Self::ContainsPrefix(e) }
+}
+
+impl From<ParseIntError> for UnprefixedHexError {
+    fn from(e: ParseIntError) -> Self { Self::ParseInt(e) }
+}
+
+/// Error when hex string is missing a prefix (e.g. 0x).
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct MissingPrefixError {
+    hex: String,
+}
+
+impl MissingPrefixError {
+    pub(crate) fn new(s: &str) -> Self { Self { hex: s.into() } }
+}
+
+impl fmt::Display for MissingPrefixError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "hex string is missing a prefix (e.g. 0x): {}", self.hex)
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for MissingPrefixError {}
+
+/// Error when hex string contains a prefix (e.g. 0x).
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ContainsPrefixError {
+    hex: String,
+}
+
+impl ContainsPrefixError {
+    pub(crate) fn new(s: &str) -> Self { Self { hex: s.into() } }
+}
+
+impl fmt::Display for ContainsPrefixError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "hex string contains a prefix: {}", self.hex)
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for ContainsPrefixError {}

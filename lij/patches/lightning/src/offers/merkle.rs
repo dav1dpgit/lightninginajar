@@ -9,19 +9,19 @@
 
 //! Tagged hashes for use in signature calculation and verification.
 
-use bitcoin::hashes::{Hash, HashEngine, sha256};
-use bitcoin::secp256k1::{Message, PublicKey, Secp256k1, self};
-use bitcoin::secp256k1::schnorr::Signature;
 use crate::io;
 use crate::util::ser::{BigSize, Readable, Writeable, Writer};
+use bitcoin::hashes::{sha256, Hash, HashEngine};
+use bitcoin::secp256k1::schnorr::Signature;
+use bitcoin::secp256k1::{self, Message, PublicKey, Secp256k1};
 
 #[allow(unused_imports)]
 use crate::prelude::*;
 
 /// Valid type range for signature TLV records.
-const SIGNATURE_TYPES: core::ops::RangeInclusive<u64> = 240..=1000;
+pub(super) const SIGNATURE_TYPES: core::ops::RangeInclusive<u64> = 240..=1000;
 
-tlv_stream!(SignatureTlvStream, SignatureTlvStreamRef, SIGNATURE_TYPES, {
+tlv_stream!(SignatureTlvStream, SignatureTlvStreamRef<'a>, SIGNATURE_TYPES, {
 	(240, signature: Signature),
 });
 
@@ -50,16 +50,12 @@ impl TaggedHash {
 	///
 	/// Panics if `tlv_stream` is not a well-formed TLV stream containing at least one TLV record.
 	pub(super) fn from_tlv_stream<'a, I: core::iter::Iterator<Item = TlvRecord<'a>>>(
-		tag: &'static str, tlv_stream: I
+		tag: &'static str, tlv_stream: I,
 	) -> Self {
 		let tag_hash = sha256::Hash::hash(tag.as_bytes());
 		let merkle_root = root_hash(tlv_stream);
-		let digest = Message::from_slice(tagged_hash(tag_hash, merkle_root).as_byte_array()).unwrap();
-		Self {
-			tag,
-			merkle_root,
-			digest,
-		}
+		let digest = Message::from_digest(tagged_hash(tag_hash, merkle_root).to_byte_array());
+		Self { tag, merkle_root, digest }
 	}
 
 	/// Returns the digest to sign.
@@ -98,7 +94,10 @@ pub enum SignError {
 }
 
 /// A function for signing a [`TaggedHash`].
-pub(super) trait SignFn<T: AsRef<TaggedHash>> {
+///
+/// This is not exported to bindings users as signing functions should just be used per-signed-type
+/// instead.
+pub trait SignFn<T: AsRef<TaggedHash>> {
 	/// Signs a [`TaggedHash`] computed over the merkle root of `message`'s TLV stream.
 	fn sign(&self, message: &T) -> Result<Signature, ()>;
 }
@@ -121,9 +120,7 @@ where
 ///
 /// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-pub(super) fn sign_message<F, T>(
-	f: F, message: &T, pubkey: PublicKey,
-) -> Result<Signature, SignError>
+pub fn sign_message<F, T>(f: F, message: &T, pubkey: PublicKey) -> Result<Signature, SignError>
 where
 	F: SignFn<T>,
 	T: AsRef<TaggedHash>,
@@ -140,7 +137,7 @@ where
 
 /// Verifies the signature with a pubkey over the given message using a tagged hash as the message
 /// digest.
-pub(super) fn verify_signature(
+pub fn verify_signature(
 	signature: &Signature, message: &TaggedHash, pubkey: PublicKey,
 ) -> Result<(), secp256k1::Error> {
 	let digest = message.as_digest();
@@ -164,7 +161,7 @@ fn root_hash<'a, I: core::iter::Iterator<Item = TlvRecord<'a>>>(tlv_stream: I) -
 	let branch_tag = tagged_hash_engine(sha256::Hash::hash("LnBranch".as_bytes()));
 
 	let mut leaves = Vec::new();
-	for record in TlvStream::skip_signatures(tlv_stream) {
+	for record in tlv_stream.filter(|record| !SIGNATURE_TYPES.contains(&record.r#type)) {
 		leaves.push(tagged_hash_from_engine(leaf_tag.clone(), &record.record_bytes));
 		leaves.push(tagged_hash_from_engine(nonce_tag.clone(), &record.type_bytes));
 	}
@@ -227,9 +224,7 @@ pub(super) struct TlvStream<'a> {
 
 impl<'a> TlvStream<'a> {
 	pub fn new(data: &'a [u8]) -> Self {
-		Self {
-			data: io::Cursor::new(data),
-		}
+		Self { data: io::Cursor::new(data) }
 	}
 
 	pub fn range<T>(self, types: T) -> impl core::iter::Iterator<Item = TlvRecord<'a>>
@@ -240,12 +235,6 @@ impl<'a> TlvStream<'a> {
 		self.skip_while(move |record| !types.contains(&record.r#type))
 			.take_while(move |record| take_range.contains(&record.r#type))
 	}
-
-	fn skip_signatures(
-		tlv_stream: impl core::iter::Iterator<Item = TlvRecord<'a>>
-	) -> impl core::iter::Iterator<Item = TlvRecord<'a>> {
-		tlv_stream.filter(|record| !SIGNATURE_TYPES.contains(&record.r#type))
-	}
 }
 
 /// A slice into a [`TlvStream`] for a record.
@@ -254,6 +243,7 @@ pub(super) struct TlvRecord<'a> {
 	type_bytes: &'a [u8],
 	// The entire TLV record.
 	pub(super) record_bytes: &'a [u8],
+	pub(super) end: usize,
 }
 
 impl<'a> Iterator for TlvStream<'a> {
@@ -276,143 +266,181 @@ impl<'a> Iterator for TlvStream<'a> {
 
 			self.data.set_position(end);
 
-			Some(TlvRecord { r#type, type_bytes, record_bytes })
+			Some(TlvRecord { r#type, type_bytes, record_bytes, end: end as usize })
 		} else {
 			None
 		}
 	}
 }
 
-/// Encoding for a pre-serialized TLV stream that excludes any signature TLV records.
-///
-/// Panics if the wrapped bytes are not a well-formed TLV stream.
-pub(super) struct WithoutSignatures<'a>(pub &'a [u8]);
-
-impl<'a> Writeable for WithoutSignatures<'a> {
+impl<'a> Writeable for TlvRecord<'a> {
 	#[inline]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		let tlv_stream = TlvStream::new(self.0);
-		for record in TlvStream::skip_signatures(tlv_stream) {
-			writer.write_all(record.record_bytes)?;
-		}
-		Ok(())
+		writer.write_all(self.record_bytes)
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{SIGNATURE_TYPES, TlvStream, WithoutSignatures};
+	use super::{TlvStream, SIGNATURE_TYPES};
 
-	use bitcoin::hashes::{Hash, sha256};
-	use bitcoin::hashes::hex::FromHex;
-	use bitcoin::secp256k1::{KeyPair, Message, Secp256k1, SecretKey};
-	use bitcoin::secp256k1::schnorr::Signature;
-	use crate::offers::offer::{Amount, OfferBuilder};
+	use crate::ln::channelmanager::PaymentId;
+	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::offers::invoice_request::{InvoiceRequest, UnsignedInvoiceRequest};
+	use crate::offers::nonce::Nonce;
+	use crate::offers::offer::{Amount, CurrencyCode, OfferBuilder};
 	use crate::offers::parse::Bech32Encode;
-	use crate::offers::test_utils::{payer_pubkey, recipient_pubkey};
+	use crate::offers::signer::Metadata;
+	use crate::offers::test_utils::recipient_pubkey;
 	use crate::util::ser::Writeable;
+	use bitcoin::hashes::{sha256, Hash};
+	use bitcoin::hex::FromHex;
+	use bitcoin::secp256k1::schnorr::Signature;
+	use bitcoin::secp256k1::{Keypair, Message, Secp256k1, SecretKey};
 
 	#[test]
 	fn calculates_merkle_root_hash() {
 		// BOLT 12 test vectors
-		macro_rules! tlv1 { () => { "010203e8" } }
-		macro_rules! tlv2 { () => { "02080000010000020003" } }
-		macro_rules! tlv3 { () => { "03310266e4598d1d3c415f572a8488830b60f7e744ed9235eb0b1ba93283b315c0351800000000000000010000000000000002" } }
+		const HEX_1: &'static str = "010203e8";
+		let bytes_1 =
+			<Vec<u8>>::from_hex("b013756c8fee86503a0b4abdab4cddeb1af5d344ca6fc2fa8b6c08938caa6f93")
+				.unwrap();
 		assert_eq!(
-			super::root_hash(TlvStream::new(&<Vec<u8>>::from_hex(tlv1!()).unwrap())),
-			sha256::Hash::from_slice(&<Vec<u8>>::from_hex("b013756c8fee86503a0b4abdab4cddeb1af5d344ca6fc2fa8b6c08938caa6f93").unwrap()).unwrap(),
+			super::root_hash(TlvStream::new(&<Vec<u8>>::from_hex(HEX_1).unwrap())),
+			sha256::Hash::from_slice(&bytes_1).unwrap(),
 		);
+
+		const HEX_2: &'static str = concat!("010203e8", "02080000010000020003");
+		let bytes_2 =
+			<Vec<u8>>::from_hex("c3774abbf4815aa54ccaa026bff6581f01f3be5fe814c620a252534f434bc0d1")
+				.unwrap();
 		assert_eq!(
-			super::root_hash(TlvStream::new(&<Vec<u8>>::from_hex(concat!(tlv1!(), tlv2!())).unwrap())),
-			sha256::Hash::from_slice(&<Vec<u8>>::from_hex("c3774abbf4815aa54ccaa026bff6581f01f3be5fe814c620a252534f434bc0d1").unwrap()).unwrap(),
+			super::root_hash(TlvStream::new(&<Vec<u8>>::from_hex(HEX_2).unwrap())),
+			sha256::Hash::from_slice(&bytes_2).unwrap(),
 		);
+
+		const HEX_3: &'static str = concat!("010203e8","02080000010000020003", "03310266e4598d1d3c415f572a8488830b60f7e744ed9235eb0b1ba93283b315c0351800000000000000010000000000000002");
+		let bytes_3 =
+			<Vec<u8>>::from_hex("ab2e79b1283b0b31e0b035258de23782df6b89a38cfa7237bde69aed1a658c5d")
+				.unwrap();
 		assert_eq!(
-			super::root_hash(TlvStream::new(&<Vec<u8>>::from_hex(concat!(tlv1!(), tlv2!(), tlv3!())).unwrap())),
-			sha256::Hash::from_slice(&<Vec<u8>>::from_hex("ab2e79b1283b0b31e0b035258de23782df6b89a38cfa7237bde69aed1a658c5d").unwrap()).unwrap(),
+			super::root_hash(TlvStream::new(&<Vec<u8>>::from_hex(HEX_3).unwrap())),
+			sha256::Hash::from_slice(&bytes_3).unwrap(),
 		);
 	}
 
 	#[test]
 	fn calculates_merkle_root_hash_from_invoice_request() {
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let nonce = Nonce([0u8; 16]);
 		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let recipient_pubkey = {
-			let secret_key = SecretKey::from_slice(&<Vec<u8>>::from_hex("4141414141414141414141414141414141414141414141414141414141414141").unwrap()).unwrap();
-			KeyPair::from_secret_key(&secp_ctx, &secret_key).public_key()
+			let secret_bytes = <Vec<u8>>::from_hex(
+				"4141414141414141414141414141414141414141414141414141414141414141",
+			)
+			.unwrap();
+			let secret_key = SecretKey::from_slice(&secret_bytes).unwrap();
+			Keypair::from_secret_key(&secp_ctx, &secret_key).public_key()
 		};
 		let payer_keys = {
-			let secret_key = SecretKey::from_slice(&<Vec<u8>>::from_hex("4242424242424242424242424242424242424242424242424242424242424242").unwrap()).unwrap();
-			KeyPair::from_secret_key(&secp_ctx, &secret_key)
+			let secret_bytes = <Vec<u8>>::from_hex(
+				"4242424242424242424242424242424242424242424242424242424242424242",
+			)
+			.unwrap();
+			let secret_key = SecretKey::from_slice(&secret_bytes).unwrap();
+			Keypair::from_secret_key(&secp_ctx, &secret_key)
 		};
 
 		// BOLT 12 test vectors
 		let invoice_request = OfferBuilder::new(recipient_pubkey)
 			.description("A Mathematical Treatise".into())
-			.amount(Amount::Currency { iso4217_code: *b"USD", amount: 100 })
+			.amount(Amount::Currency {
+				iso4217_code: CurrencyCode::new(*b"USD").unwrap(),
+				amount: 100,
+			})
 			.build_unchecked()
-			.request_invoice(vec![0; 8], payer_keys.public_key()).unwrap()
+			// Override the payer metadata and signing pubkey to match the test vectors
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.payer_metadata(Metadata::Bytes(vec![0; 8]))
+			.payer_signing_pubkey(payer_keys.public_key())
 			.build_unchecked()
-			.sign(|message: &UnsignedInvoiceRequest|
+			.sign(|message: &UnsignedInvoiceRequest| {
 				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &payer_keys))
-			)
+			})
 			.unwrap();
 		assert_eq!(
 			invoice_request.to_string(),
 			"lnr1qqyqqqqqqqqqqqqqqcp4256ypqqkgzshgysy6ct5dpjk6ct5d93kzmpq23ex2ct5d9ek293pqthvwfzadd7jejes8q9lhc4rvjxd022zv5l44g6qah82ru5rdpnpjkppqvjx204vgdzgsqpvcp4mldl3plscny0rt707gvpdh6ndydfacz43euzqhrurageg3n7kafgsek6gz3e9w52parv8gs2hlxzk95tzeswywffxlkeyhml0hh46kndmwf4m6xma3tkq2lu04qz3slje2rfthc89vss",
 		);
+
+		let bytes =
+			<Vec<u8>>::from_hex("608407c18ad9a94d9ea2bcdbe170b6c20c462a7833a197621c916f78cf18e624")
+				.unwrap();
 		assert_eq!(
 			super::root_hash(TlvStream::new(&invoice_request.bytes[..])),
-			sha256::Hash::from_slice(&<Vec<u8>>::from_hex("608407c18ad9a94d9ea2bcdbe170b6c20c462a7833a197621c916f78cf18e624").unwrap()).unwrap(),
+			sha256::Hash::from_slice(&bytes).unwrap(),
 		);
-		assert_eq!(
-			invoice_request.signature(),
-			Signature::from_slice(&<Vec<u8>>::from_hex("b8f83ea3288cfd6ea510cdb481472575141e8d8744157f98562d162cc1c472526fdb24befefbdebab4dbb726bbd1b7d8aec057f8fa805187e5950d2bbe0e5642").unwrap()).unwrap(),
-		);
+
+		let bytes = <Vec<u8>>::from_hex("b8f83ea3288cfd6ea510cdb481472575141e8d8744157f98562d162cc1c472526fdb24befefbdebab4dbb726bbd1b7d8aec057f8fa805187e5950d2bbe0e5642").unwrap();
+		assert_eq!(invoice_request.signature(), Signature::from_slice(&bytes).unwrap(),);
 	}
 
-        #[test]
-        fn compute_tagged_hash() {
-                let unsigned_invoice_request = OfferBuilder::new(recipient_pubkey())
-                        .amount_msats(1000)
-                        .build().unwrap()
-                        .request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-                        .payer_note("bar".into())
-                        .build().unwrap();
+	#[test]
+	fn compute_tagged_hash() {
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let nonce = Nonce([0u8; 16]);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
 
-                // Simply test that we can grab the tag and merkle root exposed by the accessor
-                // functions, then use them to succesfully compute a tagged hash.
-                let tagged_hash = unsigned_invoice_request.as_ref();
-                let expected_digest = unsigned_invoice_request.as_ref().as_digest();
-                let tag = sha256::Hash::hash(tagged_hash.tag().as_bytes());
-                let actual_digest = Message::from_slice(super::tagged_hash(tag, tagged_hash.merkle_root()).as_byte_array())
-                        .unwrap();
-                assert_eq!(*expected_digest, actual_digest);
-        }
+		let unsigned_invoice_request = OfferBuilder::new(recipient_pubkey())
+			.amount_msats(1000)
+			.build()
+			.unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.payer_note("bar".into())
+			.build_unchecked();
+
+		// Simply test that we can grab the tag and merkle root exposed by the accessor
+		// functions, then use them to succesfully compute a tagged hash.
+		let tagged_hash = unsigned_invoice_request.as_ref();
+		let expected_digest = unsigned_invoice_request.as_ref().as_digest();
+		let tag = sha256::Hash::hash(tagged_hash.tag().as_bytes());
+		let actual_digest = Message::from_digest(
+			super::tagged_hash(tag, tagged_hash.merkle_root()).to_byte_array(),
+		);
+		assert_eq!(*expected_digest, actual_digest);
+	}
 
 	#[test]
 	fn skips_encoding_signature_tlv_records() {
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let nonce = Nonce([0u8; 16]);
 		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let recipient_pubkey = {
 			let secret_key = SecretKey::from_slice(&[41; 32]).unwrap();
-			KeyPair::from_secret_key(&secp_ctx, &secret_key).public_key()
-		};
-		let payer_keys = {
-			let secret_key = SecretKey::from_slice(&[42; 32]).unwrap();
-			KeyPair::from_secret_key(&secp_ctx, &secret_key)
+			Keypair::from_secret_key(&secp_ctx, &secret_key).public_key()
 		};
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey)
 			.amount_msats(100)
 			.build_unchecked()
-			.request_invoice(vec![0; 8], payer_keys.public_key()).unwrap()
-			.build_unchecked()
-			.sign(|message: &UnsignedInvoiceRequest|
-				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &payer_keys))
-			)
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.build_and_sign()
 			.unwrap();
 
 		let mut bytes_without_signature = Vec::new();
-		WithoutSignatures(&invoice_request.bytes).write(&mut bytes_without_signature).unwrap();
+		let tlv_stream_without_signatures = TlvStream::new(&invoice_request.bytes)
+			.filter(|record| !SIGNATURE_TYPES.contains(&record.r#type));
+		for record in tlv_stream_without_signatures {
+			record.write(&mut bytes_without_signature).unwrap();
+		}
 
 		assert_ne!(bytes_without_signature, invoice_request.bytes);
 		assert_eq!(
@@ -423,27 +451,26 @@ mod tests {
 
 	#[test]
 	fn iterates_over_tlv_stream_range() {
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let nonce = Nonce([0u8; 16]);
 		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let recipient_pubkey = {
 			let secret_key = SecretKey::from_slice(&[41; 32]).unwrap();
-			KeyPair::from_secret_key(&secp_ctx, &secret_key).public_key()
-		};
-		let payer_keys = {
-			let secret_key = SecretKey::from_slice(&[42; 32]).unwrap();
-			KeyPair::from_secret_key(&secp_ctx, &secret_key)
+			Keypair::from_secret_key(&secp_ctx, &secret_key).public_key()
 		};
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey)
 			.amount_msats(100)
 			.build_unchecked()
-			.request_invoice(vec![0; 8], payer_keys.public_key()).unwrap()
-			.build_unchecked()
-			.sign(|message: &UnsignedInvoiceRequest|
-				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &payer_keys))
-			)
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.build_and_sign()
 			.unwrap();
 
-		let tlv_stream = TlvStream::new(&invoice_request.bytes).range(0..1)
+		let tlv_stream = TlvStream::new(&invoice_request.bytes)
+			.range(0..1)
 			.chain(TlvStream::new(&invoice_request.bytes).range(1..80))
 			.chain(TlvStream::new(&invoice_request.bytes).range(80..160))
 			.chain(TlvStream::new(&invoice_request.bytes).range(160..240))

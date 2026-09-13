@@ -4,7 +4,7 @@ use super::*;
 use wasm_bindgen::prelude::*;
 #[wasm_bindgen]
 extern "C" {
-    # [wasm_bindgen (extends = :: js_sys :: Object , js_name = IDBIndexParameters)]
+    #[wasm_bindgen(extends = "::js_sys::Object", js_name = "IDBIndexParameters")]
     #[derive(Debug, Clone, PartialEq, Eq)]
     #[doc = "The `IdbIndexParameters` dictionary."]
     #[doc = ""]
@@ -52,7 +52,7 @@ impl IdbIndexParameters {
         let mut ret: Self = ::wasm_bindgen::JsCast::unchecked_into(::js_sys::Object::new());
         ret
     }
-    #[deprecated = "Use `set_locale()` instead."]
+    #[deprecated]
     pub fn locale(&mut self, val: Option<&str>) -> &mut Self {
         self.set_locale(val);
         self

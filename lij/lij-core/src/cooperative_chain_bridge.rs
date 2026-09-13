@@ -515,7 +515,7 @@ mod tests {
     /// Build a simple valid bitcoin::Transaction for tests.
     fn build_dummy_tx(seed: u8) -> Transaction {
         Transaction {
-            version: 2,
+            version: bitcoin::transaction::Version::TWO,
             lock_time: LockTime::ZERO,
             input: vec![TxIn {
                 previous_output: bitcoin::OutPoint::null(),
@@ -524,7 +524,7 @@ mod tests {
                 witness: Witness::new(),
             }],
             output: vec![TxOut {
-                value: seed as u64 * 1000,
+                value: bitcoin::Amount::from_sat(seed as u64 * 1000),
                 script_pubkey: bitcoin::ScriptBuf::new(),
             }],
         }

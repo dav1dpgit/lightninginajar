@@ -18,11 +18,13 @@
 //! information on its usage.
 //!
 //! [offers]: <https://github.com/lightning/bolts/pull/798>
-//! [blinded paths]: crate::blinded_path::BlindedPath
+//! [blinded paths]: crate::blinded_path::message::BlindedMessagePath
 //! [`OnionMessenger`]: self::messenger::OnionMessenger
 
+pub mod async_payments;
+pub mod dns_resolution;
+#[cfg(test)]
+mod functional_tests;
 pub mod messenger;
 pub mod offers;
 pub mod packet;
-#[cfg(test)]
-mod functional_tests;

@@ -20,39 +20,50 @@ pub(crate) trait LockTestExt<'a> {
 	fn unsafe_well_ordered_double_lock_self(&'a self) -> Self::ExclLock;
 }
 
-#[cfg(all(feature = "std", not(ldk_bench), test))]
+#[cfg(all(not(ldk_bench), test))]
 mod debug_sync;
-#[cfg(all(feature = "std", not(ldk_bench), test))]
+#[cfg(all(not(ldk_bench), test))]
 pub use debug_sync::*;
-#[cfg(all(feature = "std", not(ldk_bench), test))]
+#[cfg(all(not(ldk_bench), test))]
 // Note that to make debug_sync's regex work this must not contain `debug_string` in the module name
 mod test_lockorder_checks;
 
 #[cfg(all(feature = "std", any(ldk_bench, not(test))))]
 pub(crate) mod fairrwlock;
 #[cfg(all(feature = "std", any(ldk_bench, not(test))))]
-pub use {std::sync::{Arc, Mutex, Condvar, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard}, fairrwlock::FairRwLock};
+pub use {
+	fairrwlock::FairRwLock,
+	std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard},
+};
 
 #[cfg(all(feature = "std", any(ldk_bench, not(test))))]
 mod ext_impl {
 	use super::*;
 	impl<'a, T: 'a> LockTestExt<'a> for Mutex<T> {
 		#[inline]
-		fn held_by_thread(&self) -> LockHeldState { LockHeldState::Unsupported }
+		fn held_by_thread(&self) -> LockHeldState {
+			LockHeldState::Unsupported
+		}
 		type ExclLock = MutexGuard<'a, T>;
 		#[inline]
-		fn unsafe_well_ordered_double_lock_self(&'a self) -> MutexGuard<T> { self.lock().unwrap() }
+		fn unsafe_well_ordered_double_lock_self(&'a self) -> MutexGuard<'a, T> {
+			self.lock().unwrap()
+		}
 	}
 	impl<'a, T: 'a> LockTestExt<'a> for RwLock<T> {
 		#[inline]
-		fn held_by_thread(&self) -> LockHeldState { LockHeldState::Unsupported }
+		fn held_by_thread(&self) -> LockHeldState {
+			LockHeldState::Unsupported
+		}
 		type ExclLock = RwLockWriteGuard<'a, T>;
 		#[inline]
-		fn unsafe_well_ordered_double_lock_self(&'a self) -> RwLockWriteGuard<T> { self.write().unwrap() }
+		fn unsafe_well_ordered_double_lock_self(&'a self) -> RwLockWriteGuard<'a, T> {
+			self.write().unwrap()
+		}
 	}
 }
 
-#[cfg(not(feature = "std"))]
+#[cfg(all(not(feature = "std"), any(ldk_bench, not(test))))]
 mod nostd_sync;
-#[cfg(not(feature = "std"))]
+#[cfg(all(not(feature = "std"), any(ldk_bench, not(test))))]
 pub use nostd_sync::*;

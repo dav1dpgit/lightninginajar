@@ -13,11 +13,7 @@
 edition = "2021"
 rust-version = "1.56.0"
 name = "zerocopy"
-version = "0.8.48"
-authors = [
-    "Joshua Liebow-Feeser <joshlf@google.com>",
-    "Jack Wrenn <jswrenn@amazon.com>",
-]
+version = "0.8.57"
 build = "build.rs"
 exclude = [".*"]
 autolib = false
@@ -67,6 +63,13 @@ rustdoc-args = [
     "--extend-css",
     "rustdoc/style.css",
 ]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "i686-unknown-linux-gnu",
+    "i686-pc-windows-msvc",
+]
 
 [package.metadata.playground]
 features = ["__internal_use_only_features_that_work_on_stable"]
@@ -92,6 +95,7 @@ path = "src/lib.rs"
 [[test]]
 name = "codegen"
 path = "tests/codegen.rs"
+test = false
 
 [[test]]
 name = "include"
@@ -100,6 +104,7 @@ path = "tests/include.rs"
 [[test]]
 name = "ui"
 path = "tests/ui.rs"
+required-features = ["derive"]
 
 [[bench]]
 name = "as_bytes_dynamic_size"
@@ -382,7 +387,7 @@ name = "zero_static_size"
 path = "benches/zero_static_size.rs"
 
 [dependencies.zerocopy-derive]
-version = "=0.8.48"
+version = "=0.8.57"
 optional = true
 
 [dev-dependencies.elain]
@@ -392,7 +397,7 @@ version = "0.3.0"
 version = "0.11"
 
 [dev-dependencies.rand]
-version = "0.8.5"
+version = "0.8.7"
 features = ["small_rng"]
 default-features = false
 
@@ -406,7 +411,7 @@ version = "1.0"
 version = "1.1"
 
 [dev-dependencies.zerocopy-derive]
-version = "=0.8.48"
+version = "=0.8.57"
 
 [target."cfg(any())".dependencies.zerocopy-derive]
-version = "=0.8.48"
+version = "=0.8.57"

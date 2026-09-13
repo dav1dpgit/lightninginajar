@@ -60,11 +60,11 @@ pub const TYPE_BROADCAST_ACK: u16 = 32819;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-fn write_version<W: Writer>(w: &mut W) -> Result<(), std::io::Error> {
+fn write_version<W: Writer>(w: &mut W) -> Result<(), lightning::io::Error> {
     PROTOCOL_VERSION.write(w)
 }
 
-fn read_version<R: std::io::Read>(r: &mut R) -> Result<u8, DecodeError> {
+fn read_version<R: lightning::io::Read>(r: &mut R) -> Result<u8, DecodeError> {
     let v: u8 = Readable::read(r)?;
     if v != PROTOCOL_VERSION {
         // Unknown protocol version; report as InvalidValue so peer can
@@ -89,7 +89,7 @@ pub struct SubscribeChainData {
 }
 
 impl Writeable for SubscribeChainData {
-    fn write<W: Writer>(&self, w: &mut W) -> Result<(), std::io::Error> {
+    fn write<W: Writer>(&self, w: &mut W) -> Result<(), lightning::io::Error> {
         write_version(w)?;
         (self.watch_txids.len() as u16).write(w)?;
         for txid in &self.watch_txids {
@@ -104,7 +104,7 @@ impl Writeable for SubscribeChainData {
 }
 
 impl Readable for SubscribeChainData {
-    fn read<R: std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+    fn read<R: lightning::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
         let _v = read_version(r)?;
         let n_txids: u16 = Readable::read(r)?;
         let mut watch_txids = Vec::with_capacity(n_txids as usize);
@@ -147,7 +147,7 @@ pub struct ChainDataBundle {
 }
 
 impl Writeable for ChainDataBundle {
-    fn write<W: Writer>(&self, w: &mut W) -> Result<(), std::io::Error> {
+    fn write<W: Writer>(&self, w: &mut W) -> Result<(), lightning::io::Error> {
         write_version(w)?;
         self.tip_height.write(w)?;
         self.tip_blockhash.write(w)?;
@@ -163,7 +163,7 @@ impl Writeable for ChainDataBundle {
 }
 
 impl Readable for ChainDataBundle {
-    fn read<R: std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+    fn read<R: lightning::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
         let _v = read_version(r)?;
         let tip_height = Readable::read(r)?;
         let tip_blockhash = Readable::read(r)?;
@@ -196,7 +196,7 @@ pub struct BlockHeightUpdate {
 }
 
 impl Writeable for BlockHeightUpdate {
-    fn write<W: Writer>(&self, w: &mut W) -> Result<(), std::io::Error> {
+    fn write<W: Writer>(&self, w: &mut W) -> Result<(), lightning::io::Error> {
         write_version(w)?;
         self.new_height.write(w)?;
         self.new_blockhash.write(w)
@@ -204,7 +204,7 @@ impl Writeable for BlockHeightUpdate {
 }
 
 impl Readable for BlockHeightUpdate {
-    fn read<R: std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+    fn read<R: lightning::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
         let _v = read_version(r)?;
         Ok(Self {
             new_height: Readable::read(r)?,
@@ -242,7 +242,7 @@ pub struct FundingTxConfirmed {
 }
 
 impl Writeable for FundingTxConfirmed {
-    fn write<W: Writer>(&self, w: &mut W) -> Result<(), std::io::Error> {
+    fn write<W: Writer>(&self, w: &mut W) -> Result<(), lightning::io::Error> {
         write_version(w)?;
         self.txid.write(w)?;
         self.confirmed_at_height.write(w)?;
@@ -250,8 +250,8 @@ impl Writeable for FundingTxConfirmed {
         self.confirmations.write(w)?;
         // 1MB sanity cap on tx bytes (mirrors BroadcastTx max).
         if self.raw_tx_bytes.len() > 1_000_000 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
+            return Err(lightning::io::Error::new(
+                lightning::io::ErrorKind::InvalidData,
                 "raw_tx_bytes exceeds 1MB",
             ));
         }
@@ -264,7 +264,7 @@ impl Writeable for FundingTxConfirmed {
 }
 
 impl Readable for FundingTxConfirmed {
-    fn read<R: std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+    fn read<R: lightning::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
         let _v = read_version(r)?;
         let txid: Txid = Readable::read(r)?;
         let confirmed_at_height: u32 = Readable::read(r)?;
@@ -309,7 +309,7 @@ pub struct FeeScheduleUpdate {
 }
 
 impl Writeable for FeeScheduleUpdate {
-    fn write<W: Writer>(&self, w: &mut W) -> Result<(), std::io::Error> {
+    fn write<W: Writer>(&self, w: &mut W) -> Result<(), lightning::io::Error> {
         write_version(w)?;
         self.fee_sat_per_vb_fast.write(w)?;
         self.fee_sat_per_vb_medium.write(w)?;
@@ -318,7 +318,7 @@ impl Writeable for FeeScheduleUpdate {
 }
 
 impl Readable for FeeScheduleUpdate {
-    fn read<R: std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+    fn read<R: lightning::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
         let _v = read_version(r)?;
         Ok(Self {
             fee_sat_per_vb_fast: Readable::read(r)?,
@@ -372,7 +372,7 @@ pub struct ChannelStateUpdate {
 }
 
 impl Writeable for ChannelStateUpdate {
-    fn write<W: Writer>(&self, w: &mut W) -> Result<(), std::io::Error> {
+    fn write<W: Writer>(&self, w: &mut W) -> Result<(), lightning::io::Error> {
         write_version(w)?;
         self.counterparty_pubkey.write(w)?;
         self.funding_txid.write(w)?;
@@ -388,7 +388,7 @@ impl Writeable for ChannelStateUpdate {
 }
 
 impl Readable for ChannelStateUpdate {
-    fn read<R: std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+    fn read<R: lightning::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
         let _v = read_version(r)?;
         let counterparty_pubkey = Readable::read(r)?;
         let funding_txid = Readable::read(r)?;
@@ -418,7 +418,7 @@ pub struct RegisterWatchTx {
 }
 
 impl Writeable for RegisterWatchTx {
-    fn write<W: Writer>(&self, w: &mut W) -> Result<(), std::io::Error> {
+    fn write<W: Writer>(&self, w: &mut W) -> Result<(), lightning::io::Error> {
         write_version(w)?;
         self.txid.write(w)?;
         self.script_pubkey.write(w)
@@ -426,7 +426,7 @@ impl Writeable for RegisterWatchTx {
 }
 
 impl Readable for RegisterWatchTx {
-    fn read<R: std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+    fn read<R: lightning::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
         let _v = read_version(r)?;
         Ok(Self {
             txid: Readable::read(r)?,
@@ -451,7 +451,7 @@ pub struct RegisterWatchOutput {
 }
 
 impl Writeable for RegisterWatchOutput {
-    fn write<W: Writer>(&self, w: &mut W) -> Result<(), std::io::Error> {
+    fn write<W: Writer>(&self, w: &mut W) -> Result<(), lightning::io::Error> {
         write_version(w)?;
         self.funding_txid.write(w)?;
         self.output_index.write(w)?;
@@ -467,7 +467,7 @@ impl Writeable for RegisterWatchOutput {
 }
 
 impl Readable for RegisterWatchOutput {
-    fn read<R: std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+    fn read<R: lightning::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
         let _v = read_version(r)?;
         let funding_txid = Readable::read(r)?;
         let output_index = Readable::read(r)?;
@@ -498,7 +498,7 @@ pub struct BroadcastTx {
 }
 
 impl Writeable for BroadcastTx {
-    fn write<W: Writer>(&self, w: &mut W) -> Result<(), std::io::Error> {
+    fn write<W: Writer>(&self, w: &mut W) -> Result<(), lightning::io::Error> {
         write_version(w)?;
         self.request_id.write(w)?;
         (self.raw_tx.len() as u32).write(w)?;
@@ -507,7 +507,7 @@ impl Writeable for BroadcastTx {
 }
 
 impl Readable for BroadcastTx {
-    fn read<R: std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+    fn read<R: lightning::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
         let _v = read_version(r)?;
         let request_id = Readable::read(r)?;
         let len: u32 = Readable::read(r)?;
@@ -560,14 +560,14 @@ pub struct BroadcastAck {
 }
 
 impl Writeable for BroadcastAck {
-    fn write<W: Writer>(&self, w: &mut W) -> Result<(), std::io::Error> {
+    fn write<W: Writer>(&self, w: &mut W) -> Result<(), lightning::io::Error> {
         write_version(w)?;
         self.request_id.write(w)?;
         self.result.as_u8().write(w)?;
         let bytes = self.detail.as_bytes();
         if bytes.len() > u16::MAX as usize {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
+            return Err(lightning::io::Error::new(
+                lightning::io::ErrorKind::InvalidInput,
                 "detail too long",
             ));
         }
@@ -577,7 +577,7 @@ impl Writeable for BroadcastAck {
 }
 
 impl Readable for BroadcastAck {
-    fn read<R: std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+    fn read<R: lightning::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
         let _v = read_version(r)?;
         let request_id = Readable::read(r)?;
         let result_byte: u8 = Readable::read(r)?;

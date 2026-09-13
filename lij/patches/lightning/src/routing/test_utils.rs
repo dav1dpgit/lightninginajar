@@ -1,3 +1,5 @@
+#![cfg_attr(rustfmt, rustfmt_skip)]
+
 // This file is Copyright its original authors, visible in version control
 // history.
 //
@@ -8,16 +10,16 @@
 // licenses.
 
 use crate::routing::gossip::{NetworkGraph, NodeAlias, P2PGossipSync};
-use crate::ln::features::{ChannelFeatures, NodeFeatures};
+use crate::types::features::{ChannelFeatures, NodeFeatures};
 use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, MAX_VALUE_MSAT, NodeAnnouncement, RoutingMessageHandler, SocketAddress, UnsignedChannelAnnouncement, UnsignedChannelUpdate, UnsignedNodeAnnouncement};
 use crate::util::test_utils;
 use crate::util::ser::Writeable;
 
-use bitcoin::blockdata::constants::ChainHash;
+use bitcoin::constants::ChainHash;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
-use bitcoin::hashes::hex::FromHex;
-use bitcoin::network::constants::Network;
+use bitcoin::hex::FromHex;
+use bitcoin::network::Network;
 use bitcoin::secp256k1::{PublicKey,SecretKey};
 use bitcoin::secp256k1::{Secp256k1, All};
 
@@ -27,11 +29,10 @@ use crate::sync::{self, Arc};
 
 use crate::routing::gossip::NodeId;
 
-// Using the same keys for LN and BTC ids
-pub(crate) fn add_channel(
-	gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
-	secp_ctx: &Secp256k1<All>, node_1_privkey: &SecretKey, node_2_privkey: &SecretKey, features: ChannelFeatures, short_channel_id: u64
-) {
+pub(crate) fn channel_announcement(
+	node_1_privkey: &SecretKey, node_2_privkey: &SecretKey, features: ChannelFeatures,
+	short_channel_id: u64, secp_ctx: &Secp256k1<All>,
+) -> ChannelAnnouncement {
 	let node_id_1 = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_1_privkey));
 	let node_id_2 = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_2_privkey));
 
@@ -47,14 +48,24 @@ pub(crate) fn add_channel(
 	};
 
 	let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
-	let valid_announcement = ChannelAnnouncement {
+	ChannelAnnouncement {
 		node_signature_1: secp_ctx.sign_ecdsa(&msghash, node_1_privkey),
 		node_signature_2: secp_ctx.sign_ecdsa(&msghash, node_2_privkey),
 		bitcoin_signature_1: secp_ctx.sign_ecdsa(&msghash, node_1_privkey),
 		bitcoin_signature_2: secp_ctx.sign_ecdsa(&msghash, node_2_privkey),
 		contents: unsigned_announcement.clone(),
-	};
-	match gossip_sync.handle_channel_announcement(&valid_announcement) {
+	}
+}
+
+// Using the same keys for LN and BTC ids
+pub(crate) fn add_channel(
+	gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
+	secp_ctx: &Secp256k1<All>, node_1_privkey: &SecretKey, node_2_privkey: &SecretKey, features: ChannelFeatures, short_channel_id: u64
+) {
+	let valid_announcement =
+		channel_announcement(node_1_privkey, node_2_privkey, features, short_channel_id, secp_ctx);
+	let node_1_pubkey = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
+	match gossip_sync.handle_channel_announcement(Some(node_1_pubkey), &valid_announcement) {
 		Ok(res) => assert!(res),
 		_ => panic!()
 	};
@@ -64,7 +75,8 @@ pub(crate) fn add_or_update_node(
 	gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 	secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey, features: NodeFeatures, timestamp: u32
 ) {
-	let node_id = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_privkey));
+	let node_pubkey = PublicKey::from_secret_key(&secp_ctx, node_privkey);
+	let node_id = NodeId::from_pubkey(&node_pubkey);
 	let unsigned_announcement = UnsignedNodeAnnouncement {
 		features,
 		timestamp,
@@ -81,7 +93,7 @@ pub(crate) fn add_or_update_node(
 		contents: unsigned_announcement.clone()
 	};
 
-	match gossip_sync.handle_node_announcement(&valid_announcement) {
+	match gossip_sync.handle_node_announcement(Some(node_pubkey), &valid_announcement) {
 		Ok(_) => (),
 		Err(_) => panic!()
 	};
@@ -91,21 +103,22 @@ pub(crate) fn update_channel(
 	gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 	secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey, update: UnsignedChannelUpdate
 ) {
+	let node_pubkey = PublicKey::from_secret_key(&secp_ctx, node_privkey);
 	let msghash = hash_to_message!(&Sha256dHash::hash(&update.encode()[..])[..]);
 	let valid_channel_update = ChannelUpdate {
 		signature: secp_ctx.sign_ecdsa(&msghash, node_privkey),
 		contents: update.clone()
 	};
 
-	match gossip_sync.handle_channel_update(&valid_channel_update) {
+	match gossip_sync.handle_channel_update(Some(node_pubkey), &valid_channel_update) {
 		Ok(res) => assert!(res),
-		Err(_) => panic!()
+		Err(e) => panic!("{e:?}")
 	};
 }
 
 pub(super) fn get_nodes(secp_ctx: &Secp256k1<All>) -> (SecretKey, PublicKey, Vec<SecretKey>, Vec<PublicKey>) {
 	let privkeys: Vec<SecretKey> = (2..22).map(|i| {
-		SecretKey::from_slice(&<Vec<u8>>::from_hex(&format!("{:02x}", i).repeat(32)).unwrap()[..]).unwrap()
+		SecretKey::from_slice(&[i; 32]).unwrap()
 	}).collect();
 
 	let pubkeys = privkeys.iter().map(|secret| PublicKey::from_secret_key(&secp_ctx, secret)).collect();
@@ -155,7 +168,8 @@ pub(super) fn build_line_graph() -> (
 				chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 				short_channel_id: cur_short_channel_id,
 				timestamp: idx as u32,
-				flags: 0,
+				message_flags: 1, // Only must_be_one
+				channel_flags: 0,
 				cltv_expiry_delta: 0,
 				htlc_minimum_msat: 0,
 				htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -167,7 +181,8 @@ pub(super) fn build_line_graph() -> (
 				chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 				short_channel_id: cur_short_channel_id,
 				timestamp: (idx as u32)+1,
-				flags: 1,
+				message_flags: 1, // Only must_be_one
+				channel_flags: 1,
 				cltv_expiry_delta: 0,
 				htlc_minimum_msat: 0,
 				htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -260,7 +275,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 1,
 		timestamp: 1,
-		flags: 1,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 1,
 		cltv_expiry_delta: 0,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -276,7 +292,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 2,
 		timestamp: 1,
-		flags: 0,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 0,
 		cltv_expiry_delta: (5 << 4) | 3,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -288,7 +305,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 2,
 		timestamp: 1,
-		flags: 1,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 1,
 		cltv_expiry_delta: 0,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -304,7 +322,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 12,
 		timestamp: 1,
-		flags: 0,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 0,
 		cltv_expiry_delta: (5 << 4) | 3,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -316,7 +335,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 12,
 		timestamp: 1,
-		flags: 1,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 1,
 		cltv_expiry_delta: 0,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -332,7 +352,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 3,
 		timestamp: 1,
-		flags: 0,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 0,
 		cltv_expiry_delta: (3 << 4) | 1,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -344,7 +365,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 3,
 		timestamp: 1,
-		flags: 1,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 1,
 		cltv_expiry_delta: (3 << 4) | 2,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -358,7 +380,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 4,
 		timestamp: 1,
-		flags: 0,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 0,
 		cltv_expiry_delta: (4 << 4) | 1,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -370,7 +393,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 4,
 		timestamp: 1,
-		flags: 1,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 1,
 		cltv_expiry_delta: (4 << 4) | 2,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -384,7 +408,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 13,
 		timestamp: 1,
-		flags: 0,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 0,
 		cltv_expiry_delta: (13 << 4) | 1,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -396,7 +421,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 13,
 		timestamp: 1,
-		flags: 1,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 1,
 		cltv_expiry_delta: (13 << 4) | 2,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -412,7 +438,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 6,
 		timestamp: 1,
-		flags: 0,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 0,
 		cltv_expiry_delta: (6 << 4) | 1,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -424,7 +451,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 6,
 		timestamp: 1,
-		flags: 1,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 1,
 		cltv_expiry_delta: (6 << 4) | 2,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -438,7 +466,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 11,
 		timestamp: 1,
-		flags: 0,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 0,
 		cltv_expiry_delta: (11 << 4) | 1,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -450,7 +479,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 11,
 		timestamp: 1,
-		flags: 1,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 1,
 		cltv_expiry_delta: (11 << 4) | 2,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -468,7 +498,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 7,
 		timestamp: 1,
-		flags: 0,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 0,
 		cltv_expiry_delta: (7 << 4) | 1,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -480,7 +511,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 7,
 		timestamp: 1,
-		flags: 1,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 1,
 		cltv_expiry_delta: (7 << 4) | 2,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,

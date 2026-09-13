@@ -25,30 +25,30 @@
 //! assert_eq!(format!("{:0>8}", v.as_hex()), "0000abab");
 //!```
 
-#[cfg(all(feature = "alloc", not(feature = "std")))]
+#[cfg(feature = "alloc")]
 use alloc::string::String;
 use core::borrow::Borrow;
 use core::fmt;
 
 use super::Case;
+#[cfg(feature = "std")]
+use super::Table;
 use crate::buf_encoder::BufEncoder;
 
 /// Extension trait for types that can be displayed as hex.
 ///
 /// Types that have a single, obvious text representation being hex should **not** implement this
 /// trait and simply implement `Display` instead.
-///
-/// This trait should be generally implemented for references only. We would prefer to use GAT but
-/// that is beyond our MSRV. As a lint we require the `IsRef` trait which is implemented for all
-/// references.
-pub trait DisplayHex: Copy + sealed::IsRef {
+pub trait DisplayHex {
     /// The type providing [`fmt::Display`] implementation.
     ///
-    /// This is usually a wrapper type holding a reference to `Self`.
-    type Display: fmt::Display + fmt::Debug + fmt::LowerHex + fmt::UpperHex;
+    /// This is a wrapper type holding a reference to `Self`.
+    type Display<'a>: fmt::Display + fmt::Debug + fmt::LowerHex + fmt::UpperHex
+    where
+        Self: 'a;
 
     /// Display `Self` as a continuous sequence of ASCII hex chars.
-    fn as_hex(self) -> Self::Display;
+    fn as_hex<'a>(&'a self) -> Self::Display<'a>;
 
     /// Create a lower-hex-encoded string.
     ///
@@ -56,7 +56,8 @@ pub trait DisplayHex: Copy + sealed::IsRef {
     ///
     /// This may be faster than `.display_hex().to_string()` because it uses `reserve_suggestion`.
     #[cfg(feature = "alloc")]
-    fn to_lower_hex_string(self) -> String { self.to_hex_string(Case::Lower) }
+    #[inline]
+    fn to_lower_hex_string(&self) -> String { self.to_hex_string(Case::Lower) }
 
     /// Create an upper-hex-encoded string.
     ///
@@ -64,13 +65,14 @@ pub trait DisplayHex: Copy + sealed::IsRef {
     ///
     /// This may be faster than `.display_hex().to_string()` because it uses `reserve_suggestion`.
     #[cfg(feature = "alloc")]
-    fn to_upper_hex_string(self) -> String { self.to_hex_string(Case::Upper) }
+    #[inline]
+    fn to_upper_hex_string(&self) -> String { self.to_hex_string(Case::Upper) }
 
     /// Create a hex-encoded string.
     ///
     /// This may be faster than `.display_hex().to_string()` because it uses `reserve_suggestion`.
     #[cfg(feature = "alloc")]
-    fn to_hex_string(self, case: Case) -> String {
+    fn to_hex_string(&self, case: Case) -> String {
         let mut string = String::new();
         self.append_hex_to_string(case, &mut string);
         string
@@ -81,7 +83,7 @@ pub trait DisplayHex: Copy + sealed::IsRef {
     /// This may be faster than `write!(string, "{:x}", self.as_hex())` because it uses
     /// `hex_reserve_sugggestion`.
     #[cfg(feature = "alloc")]
-    fn append_hex_to_string(self, case: Case, string: &mut String) {
+    fn append_hex_to_string<'a>(&'a self, case: Case, string: &mut String) {
         use fmt::Write;
 
         string.reserve(self.hex_reserve_suggestion());
@@ -90,53 +92,128 @@ pub trait DisplayHex: Copy + sealed::IsRef {
             Case::Upper => write!(string, "{:X}", self.as_hex()),
         }
         .unwrap_or_else(|_| {
-            let name = core::any::type_name::<Self::Display>();
+            let name = core::any::type_name::<Self::Display<'a>>();
             // We don't expect `std` to ever be buggy, so the bug is most likely in the `Display`
             // impl of `Self::Display`.
             panic!("The implementation of Display for {} returned an error when it shouldn't", name)
-        })
+        });
     }
 
-    /// Hints how much bytes to reserve when creating a `String`.
+    /// Hints how many bytes to reserve when creating a `String`.
     ///
-    /// Implementors that know the number of produced bytes upfront should override this.
-    /// Defaults to 0.
-    ///
+    /// If you don't know you can just return 0 and take the perf hit.
     // We prefix the name with `hex_` to avoid potential collision with other methods.
-    fn hex_reserve_suggestion(self) -> usize { 0 }
+    fn hex_reserve_suggestion(&self) -> usize;
 }
 
-mod sealed {
-    /// Trait marking a shared reference.
-    pub trait IsRef: Copy {}
+fn internal_display(bytes: &[u8], f: &mut fmt::Formatter, case: Case) -> fmt::Result {
+    use fmt::Write;
+    // There are at least two optimizations left:
+    //
+    // * Reusing the buffer (encoder) which may decrease the number of virtual calls
+    // * Not recursing, avoiding another 1024B allocation and zeroing
+    //
+    // This would complicate the code so I was too lazy to do them but feel free to send a PR!
 
-    impl<T: ?Sized> IsRef for &'_ T {}
-}
+    let mut encoder = BufEncoder::<1024>::new(case);
+    let pad_right = write_pad_left(f, bytes.len(), &mut encoder)?;
 
-impl<'a> DisplayHex for &'a [u8] {
-    type Display = DisplayByteSlice<'a>;
-
-    #[inline]
-    fn as_hex(self) -> Self::Display { DisplayByteSlice { bytes: self } }
-
-    #[inline]
-    fn hex_reserve_suggestion(self) -> usize {
-        // Since the string wouldn't fit into address space if this overflows (actually even for
-        // smaller amounts) it's better to panic right away. It should also give the optimizer
-        // better opportunities.
-        self.len().checked_mul(2).expect("the string wouldn't fit into address space")
+    if f.alternate() {
+        f.write_str("0x")?;
     }
+    match f.precision() {
+        Some(max) if bytes.len() > max / 2 => {
+            match case {
+                Case::Lower => write!(f, "{:x}", bytes[..(max / 2)].as_hex())?,
+                Case::Upper => write!(f, "{:X}", bytes[..(max / 2)].as_hex())?,
+            }
+            if max % 2 == 1 {
+                f.write_char(case.table().byte_to_chars(bytes[max / 2])[0])?;
+            }
+        }
+        Some(_) | None => {
+            let mut chunks = bytes.chunks_exact(512);
+            for chunk in &mut chunks {
+                encoder.put_bytes(chunk);
+                f.write_str(encoder.as_str())?;
+                encoder.clear();
+            }
+            encoder.put_bytes(chunks.remainder());
+            f.write_str(encoder.as_str())?;
+        }
+    }
+
+    write_pad_right(f, pad_right, &mut encoder)
 }
 
-#[cfg(feature = "alloc")]
-impl<'a> DisplayHex for &'a alloc::vec::Vec<u8> {
-    type Display = DisplayByteSlice<'a>;
+fn write_pad_left(
+    f: &mut fmt::Formatter,
+    bytes_len: usize,
+    encoder: &mut BufEncoder<1024>,
+) -> Result<usize, fmt::Error> {
+    let pad_right = if let Some(width) = f.width() {
+        // Add space for 2 characters if the '#' flag is set
+        let full_string_len = if f.alternate() { bytes_len * 2 + 2 } else { bytes_len * 2 };
+        let string_len = match f.precision() {
+            Some(max) => core::cmp::min(max, full_string_len),
+            None => full_string_len,
+        };
+
+        if string_len < width {
+            let (left, right) = match f.align().unwrap_or(fmt::Alignment::Left) {
+                fmt::Alignment::Left => (0, width - string_len),
+                fmt::Alignment::Right => (width - string_len, 0),
+                fmt::Alignment::Center =>
+                    ((width - string_len) / 2, (width - string_len).div_ceil(2)),
+            };
+            // Avoid division by zero and optimize for common case.
+            if left > 0 {
+                let c = f.fill();
+                let chunk_len = encoder.put_filler(c, left);
+                let padding = encoder.as_str();
+                for _ in 0..(left / chunk_len) {
+                    f.write_str(padding)?;
+                }
+                f.write_str(&padding[..((left % chunk_len) * c.len_utf8())])?;
+                encoder.clear();
+            }
+            right
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+    Ok(pad_right)
+}
+
+fn write_pad_right(
+    f: &mut fmt::Formatter,
+    pad_right: usize,
+    encoder: &mut BufEncoder<1024>,
+) -> fmt::Result {
+    // Avoid division by zero and optimize for common case.
+    if pad_right > 0 {
+        encoder.clear();
+        let c = f.fill();
+        let chunk_len = encoder.put_filler(c, pad_right);
+        let padding = encoder.as_str();
+        for _ in 0..(pad_right / chunk_len) {
+            f.write_str(padding)?;
+        }
+        f.write_str(&padding[..((pad_right % chunk_len) * c.len_utf8())])?;
+    }
+    Ok(())
+}
+
+impl DisplayHex for [u8] {
+    type Display<'a> = DisplayByteSlice<'a>;
 
     #[inline]
-    fn as_hex(self) -> Self::Display { DisplayByteSlice { bytes: self } }
+    fn as_hex<'a>(&'a self) -> Self::Display<'a> { DisplayByteSlice { bytes: self } }
 
     #[inline]
-    fn hex_reserve_suggestion(self) -> usize {
+    fn hex_reserve_suggestion(&self) -> usize {
         // Since the string wouldn't fit into address space if this overflows (actually even for
         // smaller amounts) it's better to panic right away. It should also give the optimizer
         // better opportunities.
@@ -147,169 +224,44 @@ impl<'a> DisplayHex for &'a alloc::vec::Vec<u8> {
 /// Displays byte slice as hex.
 ///
 /// Created by [`<&[u8] as DisplayHex>::as_hex`](DisplayHex::as_hex).
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct DisplayByteSlice<'a> {
     // pub because we want to keep lengths in sync
     pub(crate) bytes: &'a [u8],
 }
 
-impl<'a> DisplayByteSlice<'a> {
-    fn display(&self, f: &mut fmt::Formatter, case: Case) -> fmt::Result {
-        use fmt::Write;
-        // There are at least two optimizations left:
-        //
-        // * Reusing the buffer (encoder) which may decrease the number of virtual calls
-        // * Not recursing, avoiding another 1024B allocation and zeroing
-        //
-        // This would complicate the code so I was too lazy to do them but feel free to send a PR!
-
-        let mut encoder = BufEncoder::<1024>::new();
-
-        let pad_right = if let Some(width) = f.width() {
-            let string_len = match f.precision() {
-                Some(max) if self.bytes.len() * 2 > (max + 1) / 2 => max,
-                Some(_) | None => self.bytes.len() * 2,
-            };
-
-            if string_len < width {
-                let (left, right) = match f.align().unwrap_or(fmt::Alignment::Left) {
-                    fmt::Alignment::Left => (0, width - string_len),
-                    fmt::Alignment::Right => (width - string_len, 0),
-                    fmt::Alignment::Center =>
-                        ((width - string_len) / 2, (width - string_len + 1) / 2),
-                };
-                // Avoid division by zero and optimize for common case.
-                if left > 0 {
-                    let c = f.fill();
-                    let chunk_len = encoder.put_filler(c, left);
-                    let padding = encoder.as_str();
-                    for _ in 0..(left / chunk_len) {
-                        f.write_str(padding)?;
-                    }
-                    f.write_str(&padding[..((left % chunk_len) * c.len_utf8())])?;
-                    encoder.clear();
-                }
-                right
-            } else {
-                0
-            }
-        } else {
-            0
-        };
-
-        match f.precision() {
-            Some(max) if self.bytes.len() > (max + 1) / 2 => {
-                write!(f, "{}", self.bytes[..(max / 2)].as_hex())?;
-                if max % 2 == 1 && self.bytes.len() > max / 2 + 1 {
-                    f.write_char(
-                        case.table().byte_to_hex(self.bytes[max / 2 + 1]).as_bytes()[1].into(),
-                    )?;
-                }
-            }
-            Some(_) | None => {
-                let mut chunks = self.bytes.chunks_exact(512);
-                for chunk in &mut chunks {
-                    encoder.put_bytes(chunk, case);
-                    f.write_str(encoder.as_str())?;
-                    encoder.clear();
-                }
-                encoder.put_bytes(chunks.remainder(), case);
-                f.write_str(encoder.as_str())?;
-            }
-        }
-
-        // Avoid division by zero and optimize for common case.
-        if pad_right > 0 {
-            encoder.clear();
-            let c = f.fill();
-            let chunk_len = encoder.put_filler(c, pad_right);
-            let padding = encoder.as_str();
-            for _ in 0..(pad_right / chunk_len) {
-                f.write_str(padding)?;
-            }
-            f.write_str(&padding[..((pad_right % chunk_len) * c.len_utf8())])?;
-        }
-        Ok(())
-    }
-}
-
-impl<'a> fmt::Display for DisplayByteSlice<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { fmt::LowerHex::fmt(self, f) }
-}
-
-impl<'a> fmt::Debug for DisplayByteSlice<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { fmt::LowerHex::fmt(self, f) }
-}
-
-impl<'a> fmt::LowerHex for DisplayByteSlice<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { self.display(f, Case::Lower) }
-}
-
-impl<'a> fmt::UpperHex for DisplayByteSlice<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { self.display(f, Case::Upper) }
-}
-
-/// Displays byte array as hex.
-///
-/// Created by [`<&[u8; CAP / 2] as DisplayHex>::as_hex`](DisplayHex::as_hex).
-pub struct DisplayArray<'a, const CAP: usize> {
-    array: &'a [u8],
-}
-
-impl<'a, const CAP: usize> DisplayArray<'a, CAP> {
-    /// Creates the wrapper.
-    ///
-    /// # Panics
-    ///
-    /// When the length of array is greater than capacity / 2.
+impl DisplayByteSlice<'_> {
     #[inline]
-    fn new(array: &'a [u8]) -> Self {
-        assert!(array.len() <= CAP / 2);
-        DisplayArray { array }
-    }
-
     fn display(&self, f: &mut fmt::Formatter, case: Case) -> fmt::Result {
-        let mut encoder = BufEncoder::<CAP>::new();
-        encoder.put_bytes(self.array, case);
-        f.pad_integral(true, "0x", encoder.as_str())
+        internal_display(self.bytes, f, case)
     }
 }
 
-impl<'a, const LEN: usize> fmt::Display for DisplayArray<'a, LEN> {
+impl fmt::Display for DisplayByteSlice<'_> {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { fmt::LowerHex::fmt(self, f) }
 }
 
-impl<'a, const LEN: usize> fmt::Debug for DisplayArray<'a, LEN> {
+impl fmt::Debug for DisplayByteSlice<'_> {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { fmt::LowerHex::fmt(self, f) }
 }
 
-impl<'a, const LEN: usize> fmt::LowerHex for DisplayArray<'a, LEN> {
+impl fmt::LowerHex for DisplayByteSlice<'_> {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { self.display(f, Case::Lower) }
 }
 
-impl<'a, const LEN: usize> fmt::UpperHex for DisplayArray<'a, LEN> {
+impl fmt::UpperHex for DisplayByteSlice<'_> {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { self.display(f, Case::Upper) }
 }
 
-macro_rules! impl_array_as_hex {
-    ($($len:expr),*) => {
-        $(
-            impl<'a> DisplayHex for &'a [u8; $len] {
-                type Display = DisplayArray<'a, {$len * 2}>;
-
-                fn as_hex(self) -> Self::Display {
-                    DisplayArray::new(self)
-                }
-            }
-        )*
-    }
-}
-
-impl_array_as_hex!(
-    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 20, 32, 33, 64, 65, 128, 256, 512, 1024,
-    2048, 4096
-);
-
-/// Format known-length array as hex.
+/// Efficiently formats a sequence of bytes as a hexadecimal string with compile-time-known length.
+///
+/// Whenever the length of a sequence of bytes (usually an array, but it could be any iterator)
+/// is known at compile time, it is more efficient to use this macro because various length checks
+/// and loops are elided. The buffer is just filled once and then emitted to the formatter.
 ///
 /// This supports all formatting options of formatter and may be faster than calling `as_hex()` on
 /// an arbitrary `&[u8]`. Note that the implementation intentionally keeps leading zeros even when
@@ -327,21 +279,96 @@ impl_array_as_hex!(
 /// * `$bytes` - bytes to be encoded, most likely a reference to an array.
 /// * `$case` - value of type [`Case`] determining whether to format as lower or upper case.
 ///
+/// ## Returns
+///
+/// Returns [`core::fmt::Result`].
+///
 /// ## Panics
 ///
-/// This macro panics if `$len` is not equal to `$bytes.len()`. It also fails to compile if `$len`
-/// is more than half of `usize::MAX`.
+/// This macro panics if the length of the encoded item is larger than `$len`.
+///
+/// ## Static Assertions
+///
+/// The use of a macro instead of a function allows for compile-time length validation. This macro
+/// fails to compile if `$len` is more than half of `usize::MAX`. This prevents runtime panics or
+/// logic errors when formatting fixed-size primitives like Bitcoin hashes or public keys.
+///
+/// ## Examples
+///
+/// ```rust
+/// use hex_conservative::{fmt_hex_max, Case};
+/// use std::fmt;
+///
+/// struct MyHash([u8; 32]);
+///
+/// impl fmt::LowerHex for MyHash {
+///     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+///         // Explicitly use Lower case for {:x}
+///         fmt_hex_max!(f, 32, &self.0, Case::Lower)
+///     }
+/// }
+///
+/// impl fmt::UpperHex for MyHash {
+///     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+///         // Explicitly use Upper case for {:X}
+///         fmt_hex_max!(f, 32, &self.0, Case::Upper)
+///     }
+/// }
+/// ```
 #[macro_export]
-macro_rules! fmt_hex_exact {
+macro_rules! fmt_hex_max {
     ($formatter:expr, $len:expr, $bytes:expr, $case:expr) => {{
         // statically check $len
         #[allow(deprecated)]
         const _: () = [()][($len > usize::MAX / 2) as usize];
+        assert!(
+            $bytes.len() <= $len,
+            "length of the encoded item ({}) is larger than {}",
+            $bytes.len(),
+            $len
+        );
+        $crate::display::fmt_hex_max_fn::<_, { $len * 2 }>($formatter, $bytes, $case)
+    }};
+}
+pub use fmt_hex_max;
+
+/// Formats bytes as hex with runtime and compile-time length checks.
+///
+/// ## Panics
+///
+/// This macro panics if `$len` is not equal to `$bytes.len()`
+///
+/// See [`fmt_hex_max`] for details.
+#[macro_export]
+macro_rules! fmt_hex_exact {
+    ($formatter:expr, $len:expr, $bytes:expr, $case:expr) => {{
         assert_eq!($bytes.len(), $len);
-        $crate::display::fmt_hex_exact_fn::<_, { $len * 2 }>($formatter, $bytes, $case)
+        $crate::fmt_hex_max!($formatter, $len, $bytes, $case)
     }};
 }
 pub use fmt_hex_exact;
+
+/// Formats bytes as hex in lower case.
+///
+/// See [`fmt_hex_max!`] for details.
+#[macro_export]
+macro_rules! fmt_hex_lower {
+    ($formatter:expr, $len:expr, $bytes:expr) => {
+        $crate::fmt_hex_max!($formatter, $len, $bytes, $crate::Case::Lower)
+    };
+}
+pub use fmt_hex_lower;
+
+/// Formats bytes as hex in upper case.
+///
+/// See [`fmt_hex_max!`] for details.
+#[macro_export]
+macro_rules! fmt_hex_upper {
+    ($formatter:expr, $len:expr, $bytes:expr) => {
+        $crate::fmt_hex_max!($formatter, $len, $bytes, $crate::Case::Upper)
+    };
+}
+pub use fmt_hex_upper;
 
 /// Adds `core::fmt` trait implementations to type `$ty`.
 ///
@@ -505,14 +532,16 @@ macro_rules! impl_fmt_traits {
 }
 pub use impl_fmt_traits;
 
-// Implementation detail of `write_hex_exact` macro to de-duplicate the code
+// Implementation detail of `fmt_hex_max` macro to de-duplicate the code
 //
 // Whether hex is an integer or a string is debatable, we cater a little bit to each.
 // - We support users adding `0x` prefix using "{:#}" (treating hex like an integer).
 // - We support limiting the output using precision "{:.10}" (treating hex like a string).
+//
+// This assumes `bytes.len() * 2 == N`.
 #[doc(hidden)]
 #[inline]
-pub fn fmt_hex_exact_fn<I, const N: usize>(
+pub fn fmt_hex_max_fn<I, const N: usize>(
     f: &mut fmt::Formatter,
     bytes: I,
     case: Case,
@@ -521,16 +550,83 @@ where
     I: IntoIterator,
     I::Item: Borrow<u8>,
 {
-    let mut encoder = BufEncoder::<N>::new();
-    encoder.put_bytes(bytes, case);
-    let encoded = encoder.as_str();
+    let mut padding_encoder = BufEncoder::<1024>::new(case);
+    let pad_right = write_pad_left(f, N / 2, &mut padding_encoder)?;
 
-    if let Some(precision) = f.precision() {
-        if encoded.len() > precision {
-            return f.pad_integral(true, "0x", &encoded[..precision]);
+    if f.alternate() {
+        f.write_str("0x")?;
+    }
+    let mut encoder = BufEncoder::<N>::new(case);
+    let encoded = match f.precision() {
+        Some(p) if p < N => {
+            let n = p.div_ceil(2);
+            encoder.put_bytes(bytes.into_iter().take(n));
+            &encoder.as_str()[..p]
+        }
+        _ => {
+            encoder.put_bytes(bytes);
+            encoder.as_str()
+        }
+    };
+    f.write_str(encoded)?;
+
+    write_pad_right(f, pad_right, &mut padding_encoder)
+}
+
+/// Given a `T:` [`fmt::Write`], `HexWriter` implements [`std::io::Write`]
+/// and writes the source bytes to its inner `T` as hex characters.
+#[cfg(feature = "std")]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HexWriter<T> {
+    writer: T,
+    table: &'static Table,
+}
+
+#[cfg(feature = "std")]
+impl<T> HexWriter<T> {
+    /// Creates a `HexWriter` that writes the source bytes to `dest` as hex characters
+    /// in the given `case`.
+    ///
+    /// Note even though we take ownership of the writer one can also call this with `&mut dest`.
+    pub fn new(dest: T, case: Case) -> Self { Self { writer: dest, table: case.table() } }
+    /// Consumes this `HexWriter` returning the inner `T`.
+    pub fn into_inner(self) -> T { self.writer }
+}
+
+#[cfg(feature = "std")]
+impl<T> std::io::Write for HexWriter<T>
+where
+    T: core::fmt::Write,
+{
+    /// Writes `buf` into [`HexWriter`].
+    ///
+    /// # Errors
+    ///
+    /// If no bytes could be written to this `HexWriter`, and the provided buffer is not empty,
+    /// returns [`std::io::ErrorKind::Other`], otherwise returns `Ok`.
+    fn write(&mut self, buf: &[u8]) -> Result<usize, std::io::Error> {
+        let mut n = 0;
+        for byte in buf {
+            let mut hex_chars = [0u8; 2];
+            let hex_str = self.table.byte_to_str(&mut hex_chars, *byte);
+            if self.writer.write_str(hex_str).is_err() {
+                break;
+            }
+            n += 1;
+        }
+        if n == 0 && !buf.is_empty() {
+            Err(std::io::ErrorKind::Other.into())
+        } else {
+            Ok(n)
         }
     }
-    f.pad_integral(true, "0x", encoded)
+
+    /// `flush` is a no-op for [`HexWriter`].
+    ///
+    /// # Errors
+    ///
+    /// [`HexWriter`] never errors when flushing.
+    fn flush(&mut self) -> Result<(), std::io::Error> { Ok(()) }
 }
 
 #[cfg(test)]
@@ -543,6 +639,7 @@ mod tests {
         use core::marker::PhantomData;
 
         use super::*;
+        use crate::alloc::vec::Vec;
 
         fn check_encoding(bytes: &[u8]) {
             use core::fmt::Write;
@@ -587,25 +684,100 @@ mod tests {
             let dummy = Dummy([42; 32]);
             assert_eq!(dummy.to_string(), "2a".repeat(32));
             assert_eq!(format!("{:.10}", dummy), "2a".repeat(5));
+            assert_eq!(format!("{:.11}", dummy), "2a".repeat(5) + "2");
+            assert_eq!(format!("{:.65}", dummy), "2a".repeat(32));
+        }
+
+        struct TestHexUpperLower<'a>(&'a [u8], bool);
+
+        impl fmt::Display for TestHexUpperLower<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                if self.1 {
+                    fmt_hex_upper!(f, 3, self.0)
+                } else {
+                    fmt_hex_lower!(f, 3, self.0)
+                }
+            }
+        }
+
+        #[test]
+        fn fmt_hex_lower_macro() {
+            let bytes = [0x1a, 0x2b, 0x3c];
+            assert_eq!(format!("{}", TestHexUpperLower(&bytes, false)), "1a2b3c");
+        }
+
+        #[test]
+        fn fmt_hex_upper_macro() {
+            let bytes = [0x1a, 0x2b, 0x3c];
+            assert_eq!(format!("{}", TestHexUpperLower(&bytes, true)), "1A2B3C");
+        }
+
+        macro_rules! define_dummy {
+            ($len:literal) => {
+                struct Dummy([u8; $len]);
+                impl fmt::Debug for Dummy {
+                    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                        fmt_hex_exact!(f, $len, &self.0, Case::Lower)
+                    }
+                }
+                impl fmt::Display for Dummy {
+                    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                        fmt_hex_exact!(f, $len, &self.0, Case::Lower)
+                    }
+                }
+            };
+        }
+
+        macro_rules! test_display_hex {
+            ($fs: expr, $a: expr, $check: expr) => {
+                let array = $a;
+                let slice = &$a;
+                let vec = Vec::from($a);
+                let dummy = Dummy($a);
+                assert_eq!(format!($fs, array.as_hex()), $check);
+                assert_eq!(format!($fs, slice.as_hex()), $check);
+                assert_eq!(format!($fs, vec.as_hex()), $check);
+                assert_eq!(format!($fs, dummy), $check);
+            };
+        }
+
+        #[test]
+        fn alternate_flag() {
+            define_dummy!(4);
+
+            test_display_hex!("{:#?}", [0xc0, 0xde, 0xca, 0xfe], "0xc0decafe");
+            test_display_hex!("{:#}", [0xc0, 0xde, 0xca, 0xfe], "0xc0decafe");
         }
 
         #[test]
         fn display_short_with_padding() {
-            let v = vec![0xbe, 0xef];
-            assert_eq!(format!("Hello {:<8}!", v.as_hex()), "Hello beef    !");
-            assert_eq!(format!("Hello {:-<8}!", v.as_hex()), "Hello beef----!");
-            assert_eq!(format!("Hello {:^8}!", v.as_hex()), "Hello   beef  !");
-            assert_eq!(format!("Hello {:>8}!", v.as_hex()), "Hello     beef!");
+            define_dummy!(2);
+
+            test_display_hex!("Hello {:<8}!", [0xbe, 0xef], "Hello beef    !");
+            test_display_hex!("Hello {:-<8}!", [0xbe, 0xef], "Hello beef----!");
+            test_display_hex!("Hello {:^8}!", [0xbe, 0xef], "Hello   beef  !");
+            test_display_hex!("Hello {:>8}!", [0xbe, 0xef], "Hello     beef!");
+
+            test_display_hex!("Hello {:<#8}!", [0xbe, 0xef], "Hello 0xbeef  !");
+            test_display_hex!("Hello {:-<#8}!", [0xbe, 0xef], "Hello 0xbeef--!");
+            test_display_hex!("Hello {:^#8}!", [0xbe, 0xef], "Hello  0xbeef !");
+            test_display_hex!("Hello {:>#8}!", [0xbe, 0xef], "Hello   0xbeef!");
         }
 
         #[test]
         fn display_long() {
+            define_dummy!(512);
             // Note this string is shorter than the one above.
-            let v = vec![0xab; 512];
+            let a = [0xab; 512];
+
             let mut want = "0".repeat(2000 - 1024);
             want.extend(core::iter::repeat("ab").take(512));
-            let got = format!("{:0>2000}", v.as_hex());
-            assert_eq!(got, want)
+            test_display_hex!("{:0>2000}", a, want);
+
+            let mut want = "0".repeat(2000 - 1026);
+            want.push_str("0x");
+            want.extend(core::iter::repeat("ab").take(512));
+            test_display_hex!("{:0>#2000}", a, want);
         }
 
         // Precision and padding act the same as for strings in the stdlib (because we use `Formatter::pad`).
@@ -613,58 +785,109 @@ mod tests {
         #[test]
         fn precision_truncates() {
             // Precision gets the most significant bytes.
-            let v = vec![0x12, 0x34, 0x56, 0x78];
             // Remember the integer is number of hex chars not number of bytes.
-            assert_eq!(format!("{0:.4}", v.as_hex()), "1234");
+            define_dummy!(4);
+
+            test_display_hex!("{0:.4}", [0x12, 0x34, 0x56, 0x78], "1234");
+            test_display_hex!("{0:.5}", [0x12, 0x34, 0x56, 0x78], "12345");
+
+            test_display_hex!("{0:#.4}", [0x12, 0x34, 0x56, 0x78], "0x1234");
+            test_display_hex!("{0:#.5}", [0x12, 0x34, 0x56, 0x78], "0x12345");
         }
 
         #[test]
         fn precision_with_padding_truncates() {
             // Precision gets the most significant bytes.
-            let v = vec![0x12, 0x34, 0x56, 0x78];
-            assert_eq!(format!("{0:10.4}", v.as_hex()), "1234      ");
+            define_dummy!(4);
+
+            test_display_hex!("{0:10.4}", [0x12, 0x34, 0x56, 0x78], "1234      ");
+            test_display_hex!("{0:10.5}", [0x12, 0x34, 0x56, 0x78], "12345     ");
+
+            test_display_hex!("{0:#10.4}", [0x12, 0x34, 0x56, 0x78], "0x1234      ");
+            test_display_hex!("{0:#10.5}", [0x12, 0x34, 0x56, 0x78], "0x12345     ");
         }
 
         #[test]
         fn precision_with_padding_pads_right() {
-            let v = vec![0x12, 0x34, 0x56, 0x78];
-            assert_eq!(format!("{0:10.20}", v.as_hex()), "12345678  ");
+            define_dummy!(4);
+
+            test_display_hex!("{0:10.20}", [0x12, 0x34, 0x56, 0x78], "12345678  ");
+            test_display_hex!("{0:10.14}", [0x12, 0x34, 0x56, 0x78], "12345678  ");
+
+            test_display_hex!("{0:#12.20}", [0x12, 0x34, 0x56, 0x78], "0x12345678  ");
+            test_display_hex!("{0:#12.14}", [0x12, 0x34, 0x56, 0x78], "0x12345678  ");
         }
 
         #[test]
         fn precision_with_padding_pads_left() {
-            let v = vec![0x12, 0x34, 0x56, 0x78];
-            assert_eq!(format!("{0:>10.20}", v.as_hex()), "  12345678");
+            define_dummy!(4);
+
+            test_display_hex!("{0:>10.20}", [0x12, 0x34, 0x56, 0x78], "  12345678");
+
+            test_display_hex!("{0:>#12.20}", [0x12, 0x34, 0x56, 0x78], "  0x12345678");
         }
 
         #[test]
         fn precision_with_padding_pads_center() {
-            let v = vec![0x12, 0x34, 0x56, 0x78];
-            assert_eq!(format!("{0:^10.20}", v.as_hex()), " 12345678 ");
+            define_dummy!(4);
+
+            test_display_hex!("{0:^10.20}", [0x12, 0x34, 0x56, 0x78], " 12345678 ");
+
+            test_display_hex!("{0:^#12.20}", [0x12, 0x34, 0x56, 0x78], " 0x12345678 ");
         }
 
         #[test]
         fn precision_with_padding_pads_center_odd() {
-            let v = vec![0x12, 0x34, 0x56, 0x78];
-            assert_eq!(format!("{0:^11.20}", v.as_hex()), " 12345678  ");
+            define_dummy!(4);
+
+            test_display_hex!("{0:^11.20}", [0x12, 0x34, 0x56, 0x78], " 12345678  ");
+
+            test_display_hex!("{0:^#13.20}", [0x12, 0x34, 0x56, 0x78], " 0x12345678  ");
         }
 
         #[test]
         fn precision_does_not_extend() {
-            let v = vec![0x12, 0x34, 0x56, 0x78];
-            assert_eq!(format!("{0:.16}", v.as_hex()), "12345678");
+            define_dummy!(4);
+
+            test_display_hex!("{0:.16}", [0x12, 0x34, 0x56, 0x78], "12345678");
+
+            test_display_hex!("{0:#.16}", [0x12, 0x34, 0x56, 0x78], "0x12345678");
         }
 
         #[test]
         fn padding_extends() {
-            let v = vec![0xab; 2];
-            assert_eq!(format!("{:0>8}", v.as_hex()), "0000abab");
+            define_dummy!(2);
+
+            test_display_hex!("{:0>8}", [0xab; 2], "0000abab");
+
+            test_display_hex!("{:0>#8}", [0xab; 2], "000xabab");
         }
 
         #[test]
         fn padding_does_not_truncate() {
-            let v = vec![0x12, 0x34, 0x56, 0x78];
-            assert_eq!(format!("{:0>4}", v.as_hex()), "12345678");
+            define_dummy!(4);
+
+            test_display_hex!("{:0>4}", [0x12, 0x34, 0x56, 0x78], "12345678");
+            test_display_hex!("{:0>4}", [0x12, 0x34, 0x56, 0x78], "12345678");
+
+            test_display_hex!("{:0>#4}", [0x12, 0x34, 0x56, 0x78], "0x12345678");
+            test_display_hex!("{:0>#4}", [0x12, 0x34, 0x56, 0x78], "0x12345678");
+        }
+
+        // Tests `impl_fmt_traits` in module scope.
+        // ref: https://rust-lang.github.io/api-guidelines/macros.html#c-anywhere
+        #[allow(dead_code)]
+        struct Wrapper([u8; 4]);
+
+        impl Borrow<[u8]> for Wrapper {
+            fn borrow(&self) -> &[u8] { &self.0[..] }
+        }
+
+        impl_fmt_traits! {
+            #[display_backward(false)]
+            impl fmt_traits for Wrapper {
+                const LENGTH: usize = 4;
+            }
         }
 
         #[test]
@@ -755,6 +978,118 @@ mod tests {
             let want = "78563412";
             let got = format!("{}", tc);
             assert_eq!(got, want);
+        }
+
+        #[test]
+        fn hex_display_case() {
+            let bytes = [0xaa, 0xbb, 0xcc, 0xdd];
+            let upper = "AABBCCDD";
+            let lower = "aabbccdd";
+            assert_eq!(bytes.to_upper_hex_string(), upper);
+            assert_eq!(bytes.to_lower_hex_string(), lower);
+        }
+
+        #[test]
+        fn upper_hex_precision_preserves_case() {
+            let bytes: [u8; 4] = [0xab, 0xcd, 0xef, 0x12];
+            let slice: &[u8] = &bytes;
+            assert_eq!(format!("{:.4X}", slice.as_hex()), "ABCD");
+            assert_eq!(format!("{:.5X}", slice.as_hex()), "ABCDE");
+        }
+
+        #[test]
+        fn lower_hex_precision_works_correctly_with_lowecase() {
+            let bytes: [u8; 4] = [0xab, 0xcd, 0xef, 0x12];
+            let slice: &[u8] = &bytes;
+            assert_eq!(format!("{:.4x}", slice.as_hex()), "abcd");
+            assert_eq!(format!("{:.5x}", slice.as_hex()), "abcde");
+        }
+
+        #[test]
+        fn hex_precision_extreme_boundaries() {
+            let bytes: [u8; 2] = [0xaa, 0xbb];
+            let slice: &[u8] = &bytes;
+
+            // zero precision
+            assert_eq!(format!("{:.0X}", slice.as_hex()), "");
+            assert_eq!(format!("{:.0x}", slice.as_hex()), "");
+
+            // 1-nibble precision (odd, edge case)
+            assert_eq!(format!("{:.1X}", slice.as_hex()), "A");
+            assert_eq!(format!("{:.1x}", slice.as_hex()), "a");
+        }
+
+        #[test]
+        fn hex_precision_greater_than_length() {
+            let bytes: [u8; 2] = [0xab, 0xcd];
+            let slice: &[u8] = &bytes;
+
+            assert_eq!(format!("{:.10X}", slice.as_hex()), "ABCD");
+            assert_eq!(format!("{:.10x}", slice.as_hex()), "abcd");
+        }
+    }
+
+    #[cfg(feature = "std")]
+    mod std {
+        use alloc::string::String;
+        use alloc::vec::Vec;
+        use std::io::Write as _;
+
+        use arrayvec::ArrayString;
+
+        use super::{Case, DisplayHex, HexWriter};
+
+        #[test]
+        fn hex_writer() {
+            use std::io::{ErrorKind, Result, Write};
+
+            use super::Case::{Lower, Upper};
+
+            macro_rules! test_hex_writer {
+                ($cap:expr, $case: expr, $src: expr, $want: expr, $hex_result: expr) => {
+                    let dest_buf = ArrayString::<$cap>::new();
+                    let mut dest = HexWriter::new(dest_buf, $case);
+                    let got = dest.write($src);
+                    match $want {
+                        Ok(n) => assert_eq!(got.unwrap(), n),
+                        Err(e) => assert_eq!(got.unwrap_err().kind(), e.kind()),
+                    }
+                    assert_eq!(dest.into_inner().as_str(), $hex_result);
+                };
+            }
+
+            test_hex_writer!(0, Lower, &[], Result::Ok(0), "");
+            test_hex_writer!(
+                0,
+                Lower,
+                &[0xab, 0xcd],
+                Result::<usize>::Err(ErrorKind::Other.into()),
+                ""
+            );
+            test_hex_writer!(
+                1,
+                Lower,
+                &[0xab, 0xcd],
+                Result::<usize>::Err(ErrorKind::Other.into()),
+                ""
+            );
+            test_hex_writer!(2, Lower, &[0xab, 0xcd], Result::Ok(1), "ab");
+            test_hex_writer!(3, Lower, &[0xab, 0xcd], Result::Ok(1), "ab");
+            test_hex_writer!(4, Lower, &[0xab, 0xcd], Result::Ok(2), "abcd");
+            test_hex_writer!(8, Lower, &[0xab, 0xcd], Result::Ok(2), "abcd");
+            test_hex_writer!(8, Upper, &[0xab, 0xcd], Result::Ok(2), "ABCD");
+
+            let vec: Vec<_> = (0u8..32).collect();
+            let mut writer = HexWriter::new(String::new(), Lower);
+            writer.write_all(&vec[..]).unwrap();
+            assert_eq!(writer.into_inner(), vec.to_lower_hex_string());
+        }
+
+        #[test]
+        fn hex_writer_accepts_and_mut() {
+            let mut dest_buf = ArrayString::<64>::new();
+            let mut dest = HexWriter::new(&mut dest_buf, Case::Lower);
+            let _got = dest.write(b"some data").unwrap();
         }
     }
 }

@@ -14,7 +14,7 @@
 
 use crate::io;
 use crate::ln::msgs;
-use crate::util::ser::{Readable, Writeable, Writer};
+use crate::util::ser::{LengthLimitedRead, LengthReadable, Readable, Writeable, Writer};
 
 /// Trait to be implemented by custom message (unrelated to the channel/gossip LN layers)
 /// decoders.
@@ -25,14 +25,16 @@ pub trait CustomMessageReader {
 	/// implementation and the message could be decoded, must return `Ok(Some(message))`. If the
 	/// message type is unknown to the implementation, must return `Ok(None)`. If a decoding error
 	/// occur, must return `Err(DecodeError::X)` where `X` details the encountered error.
-	fn read<R: io::Read>(&self, message_type: u16, buffer: &mut R) -> Result<Option<Self::CustomMessage>, msgs::DecodeError>;
+	fn read<R: LengthLimitedRead>(
+		&self, message_type: u16, buffer: &mut R,
+	) -> Result<Option<Self::CustomMessage>, msgs::DecodeError>;
 }
 
 // TestEq is a dummy trait which requires PartialEq when built in testing, and otherwise is
 // blanket-implemented for all types.
 
 #[cfg(test)]
-pub trait TestEq : PartialEq {}
+pub trait TestEq: PartialEq {}
 #[cfg(test)]
 impl<T: PartialEq> TestEq for T {}
 
@@ -41,18 +43,19 @@ pub(crate) trait TestEq {}
 #[cfg(not(test))]
 impl<T> TestEq for T {}
 
-
 /// A Lightning message returned by [`read`] when decoding bytes received over the wire. Each
 /// variant contains a message from [`msgs`] or otherwise the message type if unknown.
 #[allow(missing_docs)]
 #[derive(Debug)]
-#[cfg_attr(test, derive(PartialEq))]
-pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
+#[cfg_attr(any(test, feature = "_test_utils"), derive(PartialEq))]
+pub(crate) enum Message<T: core::fmt::Debug + Type + TestEq> {
 	Init(msgs::Init),
 	Error(msgs::ErrorMessage),
 	Warning(msgs::WarningMessage),
 	Ping(msgs::Ping),
 	Pong(msgs::Pong),
+	PeerStorage(msgs::PeerStorage),
+	PeerStorageRetrieval(msgs::PeerStorageRetrieval),
 	OpenChannel(msgs::OpenChannel),
 	OpenChannelV2(msgs::OpenChannelV2),
 	AcceptChannel(msgs::AcceptChannel),
@@ -60,11 +63,8 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	FundingCreated(msgs::FundingCreated),
 	FundingSigned(msgs::FundingSigned),
 	Stfu(msgs::Stfu),
-	#[cfg(splicing)]
-	Splice(msgs::Splice),
-	#[cfg(splicing)]
+	SpliceInit(msgs::SpliceInit),
 	SpliceAck(msgs::SpliceAck),
-	#[cfg(splicing)]
 	SpliceLocked(msgs::SpliceLocked),
 	TxAddInput(msgs::TxAddInput),
 	TxAddOutput(msgs::TxAddOutput),
@@ -78,7 +78,12 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	ChannelReady(msgs::ChannelReady),
 	Shutdown(msgs::Shutdown),
 	ClosingSigned(msgs::ClosingSigned),
+	#[cfg(simple_close)]
+	ClosingComplete(msgs::ClosingComplete),
+	#[cfg(simple_close)]
+	ClosingSig(msgs::ClosingSig),
 	OnionMessage(msgs::OnionMessage),
+	StartBatch(msgs::StartBatch),
 	UpdateAddHTLC(msgs::UpdateAddHTLC),
 	UpdateFulfillHTLC(msgs::UpdateFulfillHTLC),
 	UpdateFailHTLC(msgs::UpdateFailHTLC),
@@ -103,7 +108,7 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	Custom(T),
 }
 
-impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
+impl<T: core::fmt::Debug + Type + TestEq> Writeable for Message<T> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self {
 			&Message::Init(ref msg) => msg.write(writer),
@@ -111,6 +116,8 @@ impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::Warning(ref msg) => msg.write(writer),
 			&Message::Ping(ref msg) => msg.write(writer),
 			&Message::Pong(ref msg) => msg.write(writer),
+			&Message::PeerStorage(ref msg) => msg.write(writer),
+			&Message::PeerStorageRetrieval(ref msg) => msg.write(writer),
 			&Message::OpenChannel(ref msg) => msg.write(writer),
 			&Message::OpenChannelV2(ref msg) => msg.write(writer),
 			&Message::AcceptChannel(ref msg) => msg.write(writer),
@@ -118,11 +125,8 @@ impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::FundingCreated(ref msg) => msg.write(writer),
 			&Message::FundingSigned(ref msg) => msg.write(writer),
 			&Message::Stfu(ref msg) => msg.write(writer),
-			#[cfg(splicing)]
-			&Message::Splice(ref msg) => msg.write(writer),
-			#[cfg(splicing)]
+			&Message::SpliceInit(ref msg) => msg.write(writer),
 			&Message::SpliceAck(ref msg) => msg.write(writer),
-			#[cfg(splicing)]
 			&Message::SpliceLocked(ref msg) => msg.write(writer),
 			&Message::TxAddInput(ref msg) => msg.write(writer),
 			&Message::TxAddOutput(ref msg) => msg.write(writer),
@@ -136,7 +140,12 @@ impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::ChannelReady(ref msg) => msg.write(writer),
 			&Message::Shutdown(ref msg) => msg.write(writer),
 			&Message::ClosingSigned(ref msg) => msg.write(writer),
+			#[cfg(simple_close)]
+			&Message::ClosingComplete(ref msg) => msg.write(writer),
+			#[cfg(simple_close)]
+			&Message::ClosingSig(ref msg) => msg.write(writer),
 			&Message::OnionMessage(ref msg) => msg.write(writer),
+			&Message::StartBatch(ref msg) => msg.write(writer),
 			&Message::UpdateAddHTLC(ref msg) => msg.write(writer),
 			&Message::UpdateFulfillHTLC(ref msg) => msg.write(writer),
 			&Message::UpdateFailHTLC(ref msg) => msg.write(writer),
@@ -154,13 +163,13 @@ impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::QueryChannelRange(ref msg) => msg.write(writer),
 			&Message::ReplyChannelRange(ref msg) => msg.write(writer),
 			&Message::GossipTimestampFilter(ref msg) => msg.write(writer),
-			&Message::Unknown(_) => { Ok(()) },
+			&Message::Unknown(_) => Ok(()),
 			&Message::Custom(ref msg) => msg.write(writer),
 		}
 	}
 }
 
-impl<T> Type for Message<T> where T: core::fmt::Debug + Type + TestEq {
+impl<T: core::fmt::Debug + Type + TestEq> Type for Message<T> {
 	/// Returns the type that was used to decode the message payload.
 	fn type_id(&self) -> u16 {
 		match self {
@@ -169,6 +178,8 @@ impl<T> Type for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::Warning(ref msg) => msg.type_id(),
 			&Message::Ping(ref msg) => msg.type_id(),
 			&Message::Pong(ref msg) => msg.type_id(),
+			&Message::PeerStorage(ref msg) => msg.type_id(),
+			&Message::PeerStorageRetrieval(ref msg) => msg.type_id(),
 			&Message::OpenChannel(ref msg) => msg.type_id(),
 			&Message::OpenChannelV2(ref msg) => msg.type_id(),
 			&Message::AcceptChannel(ref msg) => msg.type_id(),
@@ -176,11 +187,8 @@ impl<T> Type for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::FundingCreated(ref msg) => msg.type_id(),
 			&Message::FundingSigned(ref msg) => msg.type_id(),
 			&Message::Stfu(ref msg) => msg.type_id(),
-			#[cfg(splicing)]
-			&Message::Splice(ref msg) => msg.type_id(),
-			#[cfg(splicing)]
+			&Message::SpliceInit(ref msg) => msg.type_id(),
 			&Message::SpliceAck(ref msg) => msg.type_id(),
-			#[cfg(splicing)]
 			&Message::SpliceLocked(ref msg) => msg.type_id(),
 			&Message::TxAddInput(ref msg) => msg.type_id(),
 			&Message::TxAddOutput(ref msg) => msg.type_id(),
@@ -194,7 +202,12 @@ impl<T> Type for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::ChannelReady(ref msg) => msg.type_id(),
 			&Message::Shutdown(ref msg) => msg.type_id(),
 			&Message::ClosingSigned(ref msg) => msg.type_id(),
+			#[cfg(simple_close)]
+			&Message::ClosingComplete(ref msg) => msg.type_id(),
+			#[cfg(simple_close)]
+			&Message::ClosingSig(ref msg) => msg.type_id(),
 			&Message::OnionMessage(ref msg) => msg.type_id(),
+			&Message::StartBatch(ref msg) => msg.type_id(),
 			&Message::UpdateAddHTLC(ref msg) => msg.type_id(),
 			&Message::UpdateFulfillHTLC(ref msg) => msg.type_id(),
 			&Message::UpdateFailHTLC(ref msg) => msg.type_id(),
@@ -218,7 +231,7 @@ impl<T> Type for Message<T> where T: core::fmt::Debug + Type + TestEq {
 	}
 }
 
-impl<T> Message<T> where T: core::fmt::Debug + Type + TestEq {
+impl<T: core::fmt::Debug + Type + TestEq> Message<T> {
 	/// Returns whether the message's type is even, indicating both endpoints must support it.
 	pub fn is_even(&self) -> bool {
 		(self.type_id() & 1) == 0
@@ -231,8 +244,10 @@ impl<T> Message<T> where T: core::fmt::Debug + Type + TestEq {
 /// # Errors
 ///
 /// Returns an error if the message payload could not be decoded as the specified type.
-pub(crate) fn read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, custom_reader: H)
--> Result<Message<T>, (msgs::DecodeError, Option<u16>)> where
+pub(crate) fn read<R: LengthLimitedRead, T, H: core::ops::Deref>(
+	buffer: &mut R, custom_reader: H,
+) -> Result<Message<T>, (msgs::DecodeError, Option<u16>)>
+where
 	T: core::fmt::Debug + Type + Writeable,
 	H::Target: CustomMessageReader<CustomMessage = T>,
 {
@@ -240,150 +255,166 @@ pub(crate) fn read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, custom_r
 	do_read(buffer, message_type, custom_reader).map_err(|e| (e, Some(message_type)))
 }
 
-fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u16, custom_reader: H)
--> Result<Message<T>, msgs::DecodeError> where
+fn do_read<R: LengthLimitedRead, T, H: core::ops::Deref>(
+	buffer: &mut R, message_type: u16, custom_reader: H,
+) -> Result<Message<T>, msgs::DecodeError>
+where
 	T: core::fmt::Debug + Type + Writeable,
 	H::Target: CustomMessageReader<CustomMessage = T>,
 {
 	match message_type {
 		msgs::Init::TYPE => {
-			Ok(Message::Init(Readable::read(buffer)?))
+			Ok(Message::Init(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::ErrorMessage::TYPE => {
-			Ok(Message::Error(Readable::read(buffer)?))
+			Ok(Message::Error(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::WarningMessage::TYPE => {
-			Ok(Message::Warning(Readable::read(buffer)?))
+			Ok(Message::Warning(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::Ping::TYPE => {
-			Ok(Message::Ping(Readable::read(buffer)?))
+			Ok(Message::Ping(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::Pong::TYPE => {
-			Ok(Message::Pong(Readable::read(buffer)?))
+			Ok(Message::Pong(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
+		msgs::PeerStorage::TYPE => {
+			Ok(Message::PeerStorage(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::PeerStorageRetrieval::TYPE => Ok(Message::PeerStorageRetrieval(
+			LengthReadable::read_from_fixed_length_buffer(buffer)?,
+		)),
 		msgs::OpenChannel::TYPE => {
-			Ok(Message::OpenChannel(Readable::read(buffer)?))
+			Ok(Message::OpenChannel(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::OpenChannelV2::TYPE => {
-			Ok(Message::OpenChannelV2(Readable::read(buffer)?))
+			Ok(Message::OpenChannelV2(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::AcceptChannel::TYPE => {
-			Ok(Message::AcceptChannel(Readable::read(buffer)?))
+			Ok(Message::AcceptChannel(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::AcceptChannelV2::TYPE => {
-			Ok(Message::AcceptChannelV2(Readable::read(buffer)?))
+			Ok(Message::AcceptChannelV2(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::FundingCreated::TYPE => {
-			Ok(Message::FundingCreated(Readable::read(buffer)?))
+			Ok(Message::FundingCreated(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::FundingSigned::TYPE => {
-			Ok(Message::FundingSigned(Readable::read(buffer)?))
+			Ok(Message::FundingSigned(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
-		#[cfg(splicing)]
-		msgs::Splice::TYPE => {
-			Ok(Message::Splice(Readable::read(buffer)?))
+		msgs::SpliceInit::TYPE => {
+			Ok(Message::SpliceInit(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::Stfu::TYPE => {
-			Ok(Message::Stfu(Readable::read(buffer)?))
+			Ok(Message::Stfu(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
-		#[cfg(splicing)]
 		msgs::SpliceAck::TYPE => {
-			Ok(Message::SpliceAck(Readable::read(buffer)?))
+			Ok(Message::SpliceAck(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
-		#[cfg(splicing)]
 		msgs::SpliceLocked::TYPE => {
-			Ok(Message::SpliceLocked(Readable::read(buffer)?))
+			Ok(Message::SpliceLocked(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::TxAddInput::TYPE => {
-			Ok(Message::TxAddInput(Readable::read(buffer)?))
+			Ok(Message::TxAddInput(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::TxAddOutput::TYPE => {
-			Ok(Message::TxAddOutput(Readable::read(buffer)?))
+			Ok(Message::TxAddOutput(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::TxRemoveInput::TYPE => {
-			Ok(Message::TxRemoveInput(Readable::read(buffer)?))
+			Ok(Message::TxRemoveInput(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::TxRemoveOutput::TYPE => {
-			Ok(Message::TxRemoveOutput(Readable::read(buffer)?))
+			Ok(Message::TxRemoveOutput(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::TxComplete::TYPE => {
-			Ok(Message::TxComplete(Readable::read(buffer)?))
+			Ok(Message::TxComplete(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::TxSignatures::TYPE => {
-			Ok(Message::TxSignatures(Readable::read(buffer)?))
+			Ok(Message::TxSignatures(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::TxInitRbf::TYPE => {
-			Ok(Message::TxInitRbf(Readable::read(buffer)?))
+			Ok(Message::TxInitRbf(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::TxAckRbf::TYPE => {
-			Ok(Message::TxAckRbf(Readable::read(buffer)?))
+			Ok(Message::TxAckRbf(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::TxAbort::TYPE => {
-			Ok(Message::TxAbort(Readable::read(buffer)?))
+			Ok(Message::TxAbort(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::ChannelReady::TYPE => {
-			Ok(Message::ChannelReady(Readable::read(buffer)?))
+			Ok(Message::ChannelReady(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::Shutdown::TYPE => {
-			Ok(Message::Shutdown(Readable::read(buffer)?))
+			Ok(Message::Shutdown(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::ClosingSigned::TYPE => {
-			Ok(Message::ClosingSigned(Readable::read(buffer)?))
+			Ok(Message::ClosingSigned(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		#[cfg(simple_close)]
+		msgs::ClosingComplete::TYPE => {
+			Ok(Message::ClosingComplete(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		#[cfg(simple_close)]
+		msgs::ClosingSig::TYPE => {
+			Ok(Message::ClosingSig(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::OnionMessage::TYPE => {
-			Ok(Message::OnionMessage(Readable::read(buffer)?))
+			Ok(Message::OnionMessage(LengthReadable::read_from_fixed_length_buffer(buffer)?))
+		},
+		msgs::StartBatch::TYPE => {
+			Ok(Message::StartBatch(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::UpdateAddHTLC::TYPE => {
-			Ok(Message::UpdateAddHTLC(Readable::read(buffer)?))
+			Ok(Message::UpdateAddHTLC(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::UpdateFulfillHTLC::TYPE => {
-			Ok(Message::UpdateFulfillHTLC(Readable::read(buffer)?))
+			Ok(Message::UpdateFulfillHTLC(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::UpdateFailHTLC::TYPE => {
-			Ok(Message::UpdateFailHTLC(Readable::read(buffer)?))
+			Ok(Message::UpdateFailHTLC(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
-		msgs::UpdateFailMalformedHTLC::TYPE => {
-			Ok(Message::UpdateFailMalformedHTLC(Readable::read(buffer)?))
-		},
+		msgs::UpdateFailMalformedHTLC::TYPE => Ok(Message::UpdateFailMalformedHTLC(
+			LengthReadable::read_from_fixed_length_buffer(buffer)?,
+		)),
 		msgs::CommitmentSigned::TYPE => {
-			Ok(Message::CommitmentSigned(Readable::read(buffer)?))
+			Ok(Message::CommitmentSigned(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::RevokeAndACK::TYPE => {
-			Ok(Message::RevokeAndACK(Readable::read(buffer)?))
+			Ok(Message::RevokeAndACK(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::UpdateFee::TYPE => {
-			Ok(Message::UpdateFee(Readable::read(buffer)?))
+			Ok(Message::UpdateFee(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::ChannelReestablish::TYPE => {
-			Ok(Message::ChannelReestablish(Readable::read(buffer)?))
+			Ok(Message::ChannelReestablish(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
-		msgs::AnnouncementSignatures::TYPE => {
-			Ok(Message::AnnouncementSignatures(Readable::read(buffer)?))
-		},
+		msgs::AnnouncementSignatures::TYPE => Ok(Message::AnnouncementSignatures(
+			LengthReadable::read_from_fixed_length_buffer(buffer)?,
+		)),
 		msgs::ChannelAnnouncement::TYPE => {
-			Ok(Message::ChannelAnnouncement(Readable::read(buffer)?))
+			Ok(Message::ChannelAnnouncement(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::NodeAnnouncement::TYPE => {
-			Ok(Message::NodeAnnouncement(Readable::read(buffer)?))
+			Ok(Message::NodeAnnouncement(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::ChannelUpdate::TYPE => {
-			Ok(Message::ChannelUpdate(Readable::read(buffer)?))
+			Ok(Message::ChannelUpdate(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
-		msgs::QueryShortChannelIds::TYPE => {
-			Ok(Message::QueryShortChannelIds(Readable::read(buffer)?))
-		},
-		msgs::ReplyShortChannelIdsEnd::TYPE => {
-			Ok(Message::ReplyShortChannelIdsEnd(Readable::read(buffer)?))
-		},
+		msgs::QueryShortChannelIds::TYPE => Ok(Message::QueryShortChannelIds(
+			LengthReadable::read_from_fixed_length_buffer(buffer)?,
+		)),
+		msgs::ReplyShortChannelIdsEnd::TYPE => Ok(Message::ReplyShortChannelIdsEnd(
+			LengthReadable::read_from_fixed_length_buffer(buffer)?,
+		)),
 		msgs::QueryChannelRange::TYPE => {
-			Ok(Message::QueryChannelRange(Readable::read(buffer)?))
+			Ok(Message::QueryChannelRange(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
 		msgs::ReplyChannelRange::TYPE => {
-			Ok(Message::ReplyChannelRange(Readable::read(buffer)?))
-		}
-		msgs::GossipTimestampFilter::TYPE => {
-			Ok(Message::GossipTimestampFilter(Readable::read(buffer)?))
+			Ok(Message::ReplyChannelRange(LengthReadable::read_from_fixed_length_buffer(buffer)?))
 		},
+		msgs::GossipTimestampFilter::TYPE => Ok(Message::GossipTimestampFilter(
+			LengthReadable::read_from_fixed_length_buffer(buffer)?,
+		)),
 		_ => {
 			if let Some(custom) = custom_reader.read(message_type, buffer)? {
 				Ok(Message::Custom(custom))
@@ -400,7 +431,9 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 /// # Errors
 ///
 /// Returns an I/O error if the write could not be completed.
-pub(crate) fn write<M: Type + Writeable, W: Writer>(message: &M, buffer: &mut W) -> Result<(), io::Error> {
+pub(crate) fn write<M: Type + Writeable, W: Writer>(
+	message: &M, buffer: &mut W,
+) -> Result<(), io::Error> {
 	message.type_id().write(buffer)?;
 	message.write(buffer)
 }
@@ -431,21 +464,35 @@ pub trait Type: core::fmt::Debug + Writeable + PartialEq {
 
 #[cfg(any(feature = "_test_utils", fuzzing, test))]
 impl Type for () {
-	fn type_id(&self) -> u16 { unreachable!(); }
+	fn type_id(&self) -> u16 {
+		unreachable!();
+	}
 }
 
 #[cfg(test)]
-impl<T: core::fmt::Debug + Writeable + PartialEq> Type for T where T: Encode {
-	fn type_id(&self) -> u16 { T::TYPE }
+impl<T: Encode + Writeable + core::fmt::Debug + PartialEq> Type for T {
+	fn type_id(&self) -> u16 {
+		T::TYPE
+	}
 }
 
 #[cfg(not(test))]
-impl<T: core::fmt::Debug + Writeable> Type for T where T: Encode {
-	fn type_id(&self) -> u16 { T::TYPE }
+impl<T: Encode + core::fmt::Debug + Writeable> Type for T {
+	fn type_id(&self) -> u16 {
+		T::TYPE
+	}
 }
 
 impl Encode for msgs::Stfu {
 	const TYPE: u16 = 2;
+}
+
+impl Encode for msgs::PeerStorage {
+	const TYPE: u16 = 7;
+}
+
+impl Encode for msgs::PeerStorageRetrieval {
+	const TYPE: u16 = 9;
 }
 
 impl Encode for msgs::Init {
@@ -496,6 +543,14 @@ impl Encode for msgs::ClosingSigned {
 	const TYPE: u16 = 39;
 }
 
+impl Encode for msgs::ClosingComplete {
+	const TYPE: u16 = 40;
+}
+
+impl Encode for msgs::ClosingSig {
+	const TYPE: u16 = 41;
+}
+
 impl Encode for msgs::OpenChannelV2 {
 	const TYPE: u16 = 64;
 }
@@ -504,13 +559,13 @@ impl Encode for msgs::AcceptChannelV2 {
 	const TYPE: u16 = 65;
 }
 
-impl Encode for msgs::Splice {
-	// TODO(splicing) Double check with finalized spec; draft spec contains 74, which is probably wrong as it is used by tx_Abort; CLN uses 75
-	const TYPE: u16 = 75;
+impl Encode for msgs::SpliceInit {
+	// TODO(splicing) Double check with finalized spec; draft spec contains 80; previously it was 74 (conflict with tx_abort); CLN used 75
+	const TYPE: u16 = 80;
 }
 
 impl Encode for msgs::SpliceAck {
-	const TYPE: u16 = 76;
+	const TYPE: u16 = 81;
 }
 
 impl Encode for msgs::SpliceLocked {
@@ -555,6 +610,10 @@ impl Encode for msgs::TxAbort {
 
 impl Encode for msgs::OnionMessage {
 	const TYPE: u16 = 513;
+}
+
+impl Encode for msgs::StartBatch {
+	const TYPE: u16 = 127;
 }
 
 impl Encode for msgs::UpdateAddHTLC {
@@ -628,8 +687,8 @@ impl Encode for msgs::GossipTimestampFilter {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::prelude::*;
 	use crate::ln::peer_handler::IgnoringMessageHandler;
+	use crate::prelude::*;
 
 	// Big-endian wire encoding of Pong message (type = 19, byteslen = 2).
 	const ENCODED_PONG: [u8; 6] = [0u8, 19u8, 0u8, 2u8, 0u8, 0u8];
@@ -637,36 +696,31 @@ mod tests {
 	#[test]
 	fn read_empty_buffer() {
 		let buffer = [];
-		let mut reader = io::Cursor::new(buffer);
-		assert!(read(&mut reader, &IgnoringMessageHandler{}).is_err());
+		assert!(read(&mut &buffer[..], &IgnoringMessageHandler {}).is_err());
 	}
 
 	#[test]
 	fn read_incomplete_type() {
 		let buffer = &ENCODED_PONG[..1];
-		let mut reader = io::Cursor::new(buffer);
-		assert!(read(&mut reader, &IgnoringMessageHandler{}).is_err());
+		assert!(read(&mut &buffer[..], &IgnoringMessageHandler {}).is_err());
 	}
 
 	#[test]
 	fn read_empty_payload() {
 		let buffer = &ENCODED_PONG[..2];
-		let mut reader = io::Cursor::new(buffer);
-		assert!(read(&mut reader, &IgnoringMessageHandler{}).is_err());
+		assert!(read(&mut &buffer[..], &IgnoringMessageHandler {}).is_err());
 	}
 
 	#[test]
 	fn read_invalid_message() {
 		let buffer = &ENCODED_PONG[..4];
-		let mut reader = io::Cursor::new(buffer);
-		assert!(read(&mut reader, &IgnoringMessageHandler{}).is_err());
+		assert!(read(&mut &buffer[..], &IgnoringMessageHandler {}).is_err());
 	}
 
 	#[test]
 	fn read_known_message() {
 		let buffer = &ENCODED_PONG[..];
-		let mut reader = io::Cursor::new(buffer);
-		let message = read(&mut reader, &IgnoringMessageHandler{}).unwrap();
+		let message = read(&mut &buffer[..], &IgnoringMessageHandler {}).unwrap();
 		match message {
 			Message::Pong(_) => (),
 			_ => panic!("Expected pong message; found message type: {}", message.type_id()),
@@ -676,8 +730,7 @@ mod tests {
 	#[test]
 	fn read_unknown_message() {
 		let buffer = &::core::u16::MAX.to_be_bytes();
-		let mut reader = io::Cursor::new(buffer);
-		let message = read(&mut reader, &IgnoringMessageHandler{}).unwrap();
+		let message = read(&mut &buffer[..], &IgnoringMessageHandler {}).unwrap();
 		match message {
 			Message::Unknown(::core::u16::MAX) => (),
 			_ => panic!("Expected message type {}; found: {}", ::core::u16::MAX, message.type_id()),
@@ -702,8 +755,7 @@ mod tests {
 		let mut buffer = Vec::new();
 		assert!(write(&message, &mut buffer).is_ok());
 
-		let mut reader = io::Cursor::new(buffer);
-		let decoded_message = read(&mut reader, &IgnoringMessageHandler{}).unwrap();
+		let decoded_message = read(&mut &buffer[..], &IgnoringMessageHandler {}).unwrap();
 		match decoded_message {
 			Message::Pong(msgs::Pong { byteslen: 2u16 }) => (),
 			Message::Pong(msgs::Pong { byteslen }) => {
@@ -735,13 +787,16 @@ mod tests {
 	#[test]
 	fn read_clightning_init_msg() {
 		// Taken from c-lightning v0.8.0.
-		let buffer = vec![0, 16, 0, 2, 34, 0, 0, 3, 2, 170, 162, 1, 32, 6, 34, 110, 70, 17, 26, 11, 89, 202, 175, 18, 96, 67, 235, 91, 191, 40, 195, 79, 58, 94, 51, 42, 31, 199, 178, 183, 60, 241, 136, 145, 15];
+		let buffer = vec![
+			0, 16, 0, 2, 34, 0, 0, 3, 2, 170, 162, 1, 32, 6, 34, 110, 70, 17, 26, 11, 89, 202, 175,
+			18, 96, 67, 235, 91, 191, 40, 195, 79, 58, 94, 51, 42, 31, 199, 178, 183, 60, 241, 136,
+			145, 15,
+		];
 		check_init_msg(buffer, true);
 	}
 
 	fn check_init_msg(buffer: Vec<u8>, expect_unknown: bool) {
-		let mut reader = io::Cursor::new(buffer);
-		let decoded_msg = read(&mut reader, &IgnoringMessageHandler{}).unwrap();
+		let decoded_msg = read(&mut &buffer[..], &IgnoringMessageHandler {}).unwrap();
 		match decoded_msg {
 			Message::Init(msgs::Init { features, .. }) => {
 				assert!(features.supports_variable_length_onion());
@@ -751,45 +806,86 @@ mod tests {
 				assert!(!features.requires_unknown_bits());
 				assert!(!features.initial_routing_sync());
 			},
-			_ => panic!("Expected init message, found message type: {}", decoded_msg.type_id())
+			_ => panic!("Expected init message, found message type: {}", decoded_msg.type_id()),
 		}
 	}
 
 	#[test]
 	fn read_lnd_node_announcement() {
 		// Taken from lnd v0.9.0-beta.
-		let buffer = vec![1, 1, 91, 164, 146, 213, 213, 165, 21, 227, 102, 33, 105, 179, 214, 21, 221, 175, 228, 93, 57, 177, 191, 127, 107, 229, 31, 50, 21, 81, 179, 71, 39, 18, 35, 2, 89, 224, 110, 123, 66, 39, 148, 246, 177, 85, 12, 19, 70, 226, 173, 132, 156, 26, 122, 146, 71, 213, 247, 48, 93, 190, 185, 177, 12, 172, 0, 3, 2, 162, 161, 94, 103, 195, 37, 2, 37, 242, 97, 140, 2, 111, 69, 85, 39, 118, 30, 221, 99, 254, 120, 49, 103, 22, 170, 227, 111, 172, 164, 160, 49, 68, 138, 116, 16, 22, 206, 107, 51, 153, 255, 97, 108, 105, 99, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 1, 172, 21, 0, 2, 38, 7];
-		let mut reader = io::Cursor::new(buffer);
-		let decoded_msg = read(&mut reader, &IgnoringMessageHandler{}).unwrap();
+		let buffer = [
+			1, 1, 91, 164, 146, 213, 213, 165, 21, 227, 102, 33, 105, 179, 214, 21, 221, 175, 228,
+			93, 57, 177, 191, 127, 107, 229, 31, 50, 21, 81, 179, 71, 39, 18, 35, 2, 89, 224, 110,
+			123, 66, 39, 148, 246, 177, 85, 12, 19, 70, 226, 173, 132, 156, 26, 122, 146, 71, 213,
+			247, 48, 93, 190, 185, 177, 12, 172, 0, 3, 2, 162, 161, 94, 103, 195, 37, 2, 37, 242,
+			97, 140, 2, 111, 69, 85, 39, 118, 30, 221, 99, 254, 120, 49, 103, 22, 170, 227, 111,
+			172, 164, 160, 49, 68, 138, 116, 16, 22, 206, 107, 51, 153, 255, 97, 108, 105, 99, 101,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7,
+			1, 172, 21, 0, 2, 38, 7,
+		];
+		let decoded_msg = read(&mut &buffer[..], &IgnoringMessageHandler {}).unwrap();
 		match decoded_msg {
-			Message::NodeAnnouncement(msgs::NodeAnnouncement { contents: msgs::UnsignedNodeAnnouncement { features, ..}, ..}) => {
+			Message::NodeAnnouncement(msgs::NodeAnnouncement {
+				contents: msgs::UnsignedNodeAnnouncement { features, .. },
+				..
+			}) => {
 				assert!(features.supports_variable_length_onion());
 				assert!(features.supports_upfront_shutdown_script());
 				assert!(features.supports_gossip_queries());
 				assert!(!features.requires_unknown_bits());
 			},
-			_ => panic!("Expected node announcement, found message type: {}", decoded_msg.type_id())
+			_ => {
+				panic!("Expected node announcement, found message type: {}", decoded_msg.type_id())
+			},
 		}
 	}
 
 	#[test]
 	fn read_lnd_chan_announcement() {
 		// Taken from lnd v0.9.0-beta.
-		let buffer = vec![1, 0, 82, 238, 153, 33, 128, 87, 215, 2, 28, 241, 140, 250, 98, 255, 56, 5, 79, 240, 214, 231, 172, 35, 240, 171, 44, 9, 78, 91, 8, 193, 102, 5, 17, 178, 142, 106, 180, 183, 46, 38, 217, 212, 25, 236, 69, 47, 92, 217, 181, 221, 161, 205, 121, 201, 99, 38, 158, 216, 186, 193, 230, 86, 222, 6, 206, 67, 22, 255, 137, 212, 141, 161, 62, 134, 76, 48, 241, 54, 50, 167, 187, 247, 73, 27, 74, 1, 129, 185, 197, 153, 38, 90, 255, 138, 39, 161, 102, 172, 213, 74, 107, 88, 150, 90, 0, 49, 104, 7, 182, 184, 194, 219, 181, 172, 8, 245, 65, 226, 19, 228, 101, 145, 25, 159, 52, 31, 58, 93, 53, 59, 218, 91, 37, 84, 103, 17, 74, 133, 33, 35, 2, 203, 101, 73, 19, 94, 175, 122, 46, 224, 47, 168, 128, 128, 25, 26, 25, 214, 52, 247, 43, 241, 117, 52, 206, 94, 135, 156, 52, 164, 143, 234, 58, 185, 50, 185, 140, 198, 174, 71, 65, 18, 105, 70, 131, 172, 137, 0, 164, 51, 215, 143, 117, 119, 217, 241, 197, 177, 227, 227, 170, 199, 114, 7, 218, 12, 107, 30, 191, 236, 203, 21, 61, 242, 48, 192, 90, 233, 200, 199, 111, 162, 68, 234, 54, 219, 1, 233, 66, 5, 82, 74, 84, 211, 95, 199, 245, 202, 89, 223, 102, 124, 62, 166, 253, 253, 90, 180, 118, 21, 61, 110, 37, 5, 96, 167, 0, 0, 6, 34, 110, 70, 17, 26, 11, 89, 202, 175, 18, 96, 67, 235, 91, 191, 40, 195, 79, 58, 94, 51, 42, 31, 199, 178, 183, 60, 241, 136, 145, 15, 0, 2, 65, 0, 0, 1, 0, 0, 2, 37, 242, 97, 140, 2, 111, 69, 85, 39, 118, 30, 221, 99, 254, 120, 49, 103, 22, 170, 227, 111, 172, 164, 160, 49, 68, 138, 116, 16, 22, 206, 107, 3, 54, 61, 144, 88, 171, 247, 136, 208, 99, 9, 135, 37, 201, 178, 253, 136, 0, 185, 235, 68, 160, 106, 110, 12, 46, 21, 125, 204, 18, 75, 234, 16, 3, 42, 171, 28, 52, 224, 11, 30, 30, 253, 156, 148, 175, 203, 121, 250, 111, 122, 195, 84, 122, 77, 183, 56, 135, 101, 88, 41, 60, 191, 99, 232, 85, 2, 36, 17, 156, 11, 8, 12, 189, 177, 68, 88, 28, 15, 207, 21, 179, 151, 56, 226, 158, 148, 3, 120, 113, 177, 243, 184, 17, 173, 37, 46, 222, 16];
-		let mut reader = io::Cursor::new(buffer);
-		let decoded_msg = read(&mut reader, &IgnoringMessageHandler{}).unwrap();
+		let buffer = vec![
+			1, 0, 82, 238, 153, 33, 128, 87, 215, 2, 28, 241, 140, 250, 98, 255, 56, 5, 79, 240,
+			214, 231, 172, 35, 240, 171, 44, 9, 78, 91, 8, 193, 102, 5, 17, 178, 142, 106, 180,
+			183, 46, 38, 217, 212, 25, 236, 69, 47, 92, 217, 181, 221, 161, 205, 121, 201, 99, 38,
+			158, 216, 186, 193, 230, 86, 222, 6, 206, 67, 22, 255, 137, 212, 141, 161, 62, 134, 76,
+			48, 241, 54, 50, 167, 187, 247, 73, 27, 74, 1, 129, 185, 197, 153, 38, 90, 255, 138,
+			39, 161, 102, 172, 213, 74, 107, 88, 150, 90, 0, 49, 104, 7, 182, 184, 194, 219, 181,
+			172, 8, 245, 65, 226, 19, 228, 101, 145, 25, 159, 52, 31, 58, 93, 53, 59, 218, 91, 37,
+			84, 103, 17, 74, 133, 33, 35, 2, 203, 101, 73, 19, 94, 175, 122, 46, 224, 47, 168, 128,
+			128, 25, 26, 25, 214, 52, 247, 43, 241, 117, 52, 206, 94, 135, 156, 52, 164, 143, 234,
+			58, 185, 50, 185, 140, 198, 174, 71, 65, 18, 105, 70, 131, 172, 137, 0, 164, 51, 215,
+			143, 117, 119, 217, 241, 197, 177, 227, 227, 170, 199, 114, 7, 218, 12, 107, 30, 191,
+			236, 203, 21, 61, 242, 48, 192, 90, 233, 200, 199, 111, 162, 68, 234, 54, 219, 1, 233,
+			66, 5, 82, 74, 84, 211, 95, 199, 245, 202, 89, 223, 102, 124, 62, 166, 253, 253, 90,
+			180, 118, 21, 61, 110, 37, 5, 96, 167, 0, 0, 6, 34, 110, 70, 17, 26, 11, 89, 202, 175,
+			18, 96, 67, 235, 91, 191, 40, 195, 79, 58, 94, 51, 42, 31, 199, 178, 183, 60, 241, 136,
+			145, 15, 0, 2, 65, 0, 0, 1, 0, 0, 2, 37, 242, 97, 140, 2, 111, 69, 85, 39, 118, 30,
+			221, 99, 254, 120, 49, 103, 22, 170, 227, 111, 172, 164, 160, 49, 68, 138, 116, 16, 22,
+			206, 107, 3, 54, 61, 144, 88, 171, 247, 136, 208, 99, 9, 135, 37, 201, 178, 253, 136,
+			0, 185, 235, 68, 160, 106, 110, 12, 46, 21, 125, 204, 18, 75, 234, 16, 3, 42, 171, 28,
+			52, 224, 11, 30, 30, 253, 156, 148, 175, 203, 121, 250, 111, 122, 195, 84, 122, 77,
+			183, 56, 135, 101, 88, 41, 60, 191, 99, 232, 85, 2, 36, 17, 156, 11, 8, 12, 189, 177,
+			68, 88, 28, 15, 207, 21, 179, 151, 56, 226, 158, 148, 3, 120, 113, 177, 243, 184, 17,
+			173, 37, 46, 222, 16,
+		];
+		let decoded_msg = read(&mut &buffer[..], &IgnoringMessageHandler {}).unwrap();
 		match decoded_msg {
-			Message::ChannelAnnouncement(msgs::ChannelAnnouncement { contents: msgs::UnsignedChannelAnnouncement { features, ..}, ..}) => {
+			Message::ChannelAnnouncement(msgs::ChannelAnnouncement {
+				contents: msgs::UnsignedChannelAnnouncement { features, .. },
+				..
+			}) => {
 				assert!(!features.requires_unknown_bits());
 			},
-			_ => panic!("Expected node announcement, found message type: {}", decoded_msg.type_id())
+			_ => {
+				panic!("Expected node announcement, found message type: {}", decoded_msg.type_id())
+			},
 		}
 	}
 
 	#[derive(Eq, PartialEq, Debug)]
 	struct TestCustomMessage {}
 
-	const CUSTOM_MESSAGE_TYPE : u16 = 9000;
+	const CUSTOM_MESSAGE_TYPE: u16 = 9000;
 
 	impl Type for TestCustomMessage {
 		fn type_id(&self) -> u16 {
@@ -808,12 +904,10 @@ mod tests {
 	impl CustomMessageReader for TestCustomMessageReader {
 		type CustomMessage = TestCustomMessage;
 		fn read<R: io::Read>(
-			&self,
-			message_type: u16,
-			_: &mut R
+			&self, message_type: u16, _: &mut R,
 		) -> Result<Option<Self::CustomMessage>, msgs::DecodeError> {
 			if message_type == CUSTOM_MESSAGE_TYPE {
-				return Ok(Some(TestCustomMessage{}));
+				return Ok(Some(TestCustomMessage {}));
 			}
 
 			Ok(None)
@@ -822,9 +916,8 @@ mod tests {
 
 	#[test]
 	fn read_custom_message() {
-		let buffer = vec![35, 40];
-		let mut reader = io::Cursor::new(buffer);
-		let decoded_msg = read(&mut reader, &TestCustomMessageReader{}).unwrap();
+		let buffer = [35, 40];
+		let decoded_msg = read(&mut &buffer[..], &TestCustomMessageReader {}).unwrap();
 		match decoded_msg {
 			Message::Custom(custom) => {
 				assert_eq!(custom.type_id(), CUSTOM_MESSAGE_TYPE);
@@ -836,9 +929,8 @@ mod tests {
 
 	#[test]
 	fn read_with_custom_reader_unknown_message_type() {
-		let buffer = vec![35, 42];
-		let mut reader = io::Cursor::new(buffer);
-		let decoded_msg = read(&mut reader, &TestCustomMessageReader{}).unwrap();
+		let buffer = [35, 42];
+		let decoded_msg = read(&mut &buffer[..], &TestCustomMessageReader {}).unwrap();
 		match decoded_msg {
 			Message::Unknown(_) => {},
 			_ => panic!("Expected unknown message, found message type: {}", decoded_msg.type_id()),
@@ -848,8 +940,8 @@ mod tests {
 	#[test]
 	fn custom_reader_unknown_message_type() {
 		let buffer = Vec::new();
-		let mut reader = io::Cursor::new(buffer);
-		let res = TestCustomMessageReader{}.read(CUSTOM_MESSAGE_TYPE + 1, &mut reader).unwrap();
+		let res =
+			TestCustomMessageReader {}.read(CUSTOM_MESSAGE_TYPE + 1, &mut &buffer[..]).unwrap();
 		assert!(res.is_none());
 	}
 }

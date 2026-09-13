@@ -234,7 +234,7 @@ pub fn derive_output_script<C: Signing + Verification>(
         .add_exp_tweak(secp, &t0)
         .map_err(|e| LijError::Node(format!("silent payment: output key: {e}")))?;
     let (xonly, _parity) = p0.x_only_public_key();
-    Ok(ScriptBuf::new_v1_p2tr_tweaked(xonly.dangerous_assume_tweaked()))
+    Ok(ScriptBuf::new_p2tr_tweaked(xonly.dangerous_assume_tweaked()))
 }
 
 #[cfg(test)]

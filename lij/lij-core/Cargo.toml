@@ -17,12 +17,12 @@ default = ["escape_kit"]
 escape_kit = ["lightning/unsafe_revoked_tx_signing"]
 
 [dependencies]
-lightning = { version = "0.0.123", features = ["max_level_trace"] }
-lightning-invoice = "0.31"
-lightning-rapid-gossip-sync = "0.0.123"
-lightning-background-processor = { version = "0.0.123", features = ["futures"] }
+# ldk-0.2 (S45, DP GO 2026-09-11): LDK 0.0.123 → 0.2.6 (bitcoin 0.30 → 0.32). RGS and the
+# background processor were dependencies nothing referenced — dropped here.
+lightning = { version = "0.2.6" }   # 0.2: the max_level_* features are gone; log level is the logger's to filter
+lightning-invoice = "0.34"
 
-bitcoin = { version = "0.30", features = ["rand"] }
+bitcoin = { version = "0.32", features = ["rand"] }
 
 futures = "0.3"
 futures-util = "0.3"

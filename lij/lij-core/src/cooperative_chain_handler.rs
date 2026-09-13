@@ -34,7 +34,7 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use bitcoin::secp256k1::PublicKey;
-use lightning::ln::features::{InitFeatures, NodeFeatures};
+use lightning::types::features::{InitFeatures, NodeFeatures};
 use lightning::ln::msgs::{DecodeError, LightningError};
 use lightning::ln::peer_handler::CustomMessageHandler;
 use lightning::ln::wire::{CustomMessageReader, Type};
@@ -68,7 +68,7 @@ pub enum CooperativeChainMessage {
 }
 
 impl Writeable for CooperativeChainMessage {
-    fn write<W: Writer>(&self, w: &mut W) -> Result<(), std::io::Error> {
+    fn write<W: Writer>(&self, w: &mut W) -> Result<(), lightning::io::Error> {
         match self {
             Self::SubscribeChainData(m) => m.write(w),
             Self::ChainDataBundle(m) => m.write(w),
@@ -193,7 +193,7 @@ impl CooperativeChainHandler {
 impl CustomMessageReader for CooperativeChainHandler {
     type CustomMessage = CooperativeChainMessage;
 
-    fn read<R: std::io::Read>(
+    fn read<R: lightning::io::Read>(
         &self,
         message_type: u16,
         buffer: &mut R,
@@ -241,7 +241,7 @@ impl CustomMessageHandler for CooperativeChainHandler {
     fn handle_custom_message(
         &self,
         msg: Self::CustomMessage,
-        sender_node_id: &PublicKey,
+        sender_node_id: PublicKey,
     ) -> Result<(), LightningError> {
         log::debug!(
             "cooperative_chain: received {:?} from {}",
@@ -249,7 +249,7 @@ impl CustomMessageHandler for CooperativeChainHandler {
             sender_node_id
         );
         self.inbound.lock().unwrap().push_back(ReceivedMessage {
-            sender: *sender_node_id,
+            sender: sender_node_id,
             message: msg,
         });
         Ok(())
@@ -267,7 +267,18 @@ impl CustomMessageHandler for CooperativeChainHandler {
         f
     }
 
-    fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
+    fn peer_disconnected(&self, _their_node_id: PublicKey) {
+        // 0.2: nothing per-peer is held here; the chain bridge tracks peers itself.
+    }
+    fn peer_connected(
+        &self,
+        _their_node_id: PublicKey,
+        _msg: &lightning::ln::msgs::Init,
+        _inbound: bool,
+    ) -> Result<(), ()> {
+        Ok(())
+    }
+    fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
         let mut f = InitFeatures::empty();
         f.set_optional_custom_bit(COOPERATIVE_CHAIN_DATA_FEATURE_BIT)
             .expect("custom bit should be in the optional range");
@@ -326,7 +337,7 @@ mod tests {
             new_height: 880_500,
             new_blockhash: dummy_blockhash(0xab),
         });
-        h.handle_custom_message(msg.clone(), &peer).unwrap();
+        h.handle_custom_message(msg.clone(), peer).unwrap();
         let received = h.take_received();
         assert_eq!(received.len(), 1);
         assert_eq!(received[0].sender, peer);
@@ -344,7 +355,7 @@ mod tests {
         };
         let mut bytes = Vec::new();
         original.write(&mut bytes).unwrap();
-        let mut cursor = std::io::Cursor::new(&bytes);
+        let mut cursor: &[u8] = &bytes;   // 0.2: readers must be length-limited; a byte slice is
         let result = h.read(TYPE_BLOCK_HEIGHT_UPDATE, &mut cursor).unwrap();
         match result {
             Some(CooperativeChainMessage::BlockHeightUpdate(m)) => {
@@ -357,7 +368,7 @@ mod tests {
     #[test]
     fn reader_returns_none_for_unknown_type() {
         let h = CooperativeChainHandler::new();
-        let mut cursor = std::io::Cursor::new(&[0u8; 10][..]);
+        let mut cursor: &[u8] = &[0u8; 10][..];
         let result = h.read(0xFFFF, &mut cursor).unwrap();
         assert!(result.is_none(), "unknown type should return None");
     }
@@ -415,7 +426,7 @@ mod tests {
         // if no bit was set).
         assert!(!bytes.is_empty());
 
-        let init_features = h.provided_init_features(&dummy_pubkey(1));
+        let init_features = h.provided_init_features(dummy_pubkey(1));
         let mut init_bytes = Vec::new();
         init_features.write(&mut init_bytes).unwrap();
         assert!(!init_bytes.is_empty());
@@ -433,7 +444,7 @@ mod tests {
             raw_tx_bytes: vec![1u8, 2, 3, 4],
             tx_index: 0,
         });
-        let result = h.handle_custom_message(msg, &peer);
+        let result = h.handle_custom_message(msg, peer);
         assert!(result.is_ok());
     }
 

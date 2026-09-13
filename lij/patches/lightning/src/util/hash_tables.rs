@@ -1,67 +1,10 @@
-//! Generally LDK uses `std`'s `HashMap`s, however when building for no-std, LDK uses `hashbrown`'s
-//! `HashMap`s with the `std` `SipHasher` and uses `getrandom` to opportunistically randomize it,
-//! if randomization is available.
+//! Generally LDK uses `hashbrown`'s `HashMap`s with the `std` `SipHasher` and uses `getrandom` to
+//! opportunistically randomize it, if randomization is available.
 //!
 //! This module simply re-exports the `HashMap` used in LDK for public consumption.
 
-#[cfg(feature = "hashbrown")]
-extern crate hashbrown;
-#[cfg(feature = "possiblyrandom")]
-extern crate possiblyrandom;
+pub use hashbrown::hash_map;
 
-// For no-std builds, we need to use hashbrown, however, by default, it doesn't randomize the
-// hashing and is vulnerable to HashDoS attacks. Thus, we use the core SipHasher when not using
-// std, but use `getrandom` to randomize it if its available.
-
-#[cfg(not(feature = "hashbrown"))]
-mod std_hashtables {
-	pub use std::collections::hash_map::RandomState;
-	pub use std::collections::HashMap;
-
-	pub(crate) use std::collections::{hash_map, HashSet};
-
-	pub(crate) type OccupiedHashMapEntry<'a, K, V> =
-		std::collections::hash_map::OccupiedEntry<'a, K, V>;
-	pub(crate) type VacantHashMapEntry<'a, K, V> =
-		std::collections::hash_map::VacantEntry<'a, K, V>;
-
-	/// Builds a new [`HashMap`].
-	pub fn new_hash_map<K, V>() -> HashMap<K, V> {
-		HashMap::new()
-	}
-	/// Builds a new [`HashMap`] with the given capacity.
-	pub fn hash_map_with_capacity<K, V>(cap: usize) -> HashMap<K, V> {
-		HashMap::with_capacity(cap)
-	}
-	pub(crate) fn hash_map_from_iter<
-		K: core::hash::Hash + Eq,
-		V,
-		I: IntoIterator<Item = (K, V)>,
-	>(
-		iter: I,
-	) -> HashMap<K, V> {
-		HashMap::from_iter(iter)
-	}
-
-	pub(crate) fn new_hash_set<K>() -> HashSet<K> {
-		HashSet::new()
-	}
-	pub(crate) fn hash_set_with_capacity<K>(cap: usize) -> HashSet<K> {
-		HashSet::with_capacity(cap)
-	}
-	pub(crate) fn hash_set_from_iter<K: core::hash::Hash + Eq, I: IntoIterator<Item = K>>(
-		iter: I,
-	) -> HashSet<K> {
-		HashSet::from_iter(iter)
-	}
-}
-#[cfg(not(feature = "hashbrown"))]
-pub use std_hashtables::*;
-
-#[cfg(feature = "hashbrown")]
-pub(crate) use self::hashbrown::hash_map;
-
-#[cfg(feature = "hashbrown")]
 mod hashbrown_tables {
 	#[cfg(feature = "std")]
 	mod hasher {
@@ -85,7 +28,7 @@ mod hashbrown_tables {
 			/// target platform.
 			pub fn new() -> RandomState {
 				let (k0, k1);
-				#[cfg(all(not(fuzzing), feature = "possiblyrandom"))]
+				#[cfg(not(fuzzing))]
 				{
 					let mut keys = [0; 16];
 					possiblyrandom::getpossiblyrandom(&mut keys);
@@ -97,7 +40,7 @@ mod hashbrown_tables {
 					k0 = u64::from_le_bytes(k0_bytes);
 					k1 = u64::from_le_bytes(k1_bytes);
 				}
-				#[cfg(any(fuzzing, not(feature = "possiblyrandom")))]
+				#[cfg(fuzzing)]
 				{
 					k0 = 0;
 					k1 = 0;
@@ -120,12 +63,12 @@ mod hashbrown_tables {
 		}
 	}
 
-	use super::*;
 	pub use hasher::*;
 
 	/// The HashMap type used in LDK.
 	pub type HashMap<K, V> = hashbrown::HashMap<K, V, RandomState>;
-	pub(crate) type HashSet<K> = hashbrown::HashSet<K, RandomState>;
+	/// The HashSet type used in LDK.
+	pub type HashSet<K> = hashbrown::HashSet<K, RandomState>;
 
 	pub(crate) type OccupiedHashMapEntry<'a, K, V> =
 		hashbrown::hash_map::OccupiedEntry<'a, K, V, RandomState>;
@@ -154,9 +97,11 @@ mod hashbrown_tables {
 		res
 	}
 
-	pub(crate) fn new_hash_set<K>() -> HashSet<K> {
+	/// Builds a new [`HashSet`].
+	pub fn new_hash_set<K>() -> HashSet<K> {
 		HashSet::with_hasher(RandomState::new())
 	}
+	/// Builds a new [`HashSet`] with the given capacity.
 	pub(crate) fn hash_set_with_capacity<K>(cap: usize) -> HashSet<K> {
 		HashSet::with_capacity_and_hasher(cap, RandomState::new())
 	}
@@ -170,5 +115,5 @@ mod hashbrown_tables {
 		res
 	}
 }
-#[cfg(feature = "hashbrown")]
+
 pub use hashbrown_tables::*;

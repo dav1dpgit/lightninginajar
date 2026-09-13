@@ -14,14 +14,19 @@
 
 #[macro_use]
 pub mod offer;
+pub mod flow;
 
+pub mod async_receive_offer_cache;
 pub mod invoice;
 pub mod invoice_error;
+mod invoice_macros;
 pub mod invoice_request;
 pub mod merkle;
+pub mod nonce;
 pub mod parse;
 mod payer;
 pub mod refund;
 pub(crate) mod signer;
+pub mod static_invoice;
 #[cfg(test)]
 pub(crate) mod test_utils;

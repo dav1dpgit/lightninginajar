@@ -31,7 +31,7 @@
 use std::collections::HashSet;
 
 use bitcoin::Txid;
-use lightning::ln::channelmanager::ChannelDetails;
+use lightning::ln::channel_state::ChannelDetails;
 
 /// Default safety window: any timelock expiring within this many blocks
 /// of current chain tip is considered "approaching" and gets priority

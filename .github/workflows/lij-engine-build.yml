@@ -112,8 +112,12 @@ jobs:
           git commit -m "engine + page flip [engine-ci]: $(grep -oE 'phase11-v[0-9]+' lij/lij-wasm/src/lib.rs | head -1) live, busters + LIJ_WASM_EXPECTED + page version advanced atomically"
           git pull --rebase origin main
           git push origin main
+          echo "FLIP_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
-      - name: Dispatch lij-build (GITHUB_TOKEN pushes do not trigger push workflows)
+      # S46: the dispatch carries the flip commit's sha. Without it lij-build checks out whatever
+      # main's head is at that instant; on 2026-09-12 that was the releases-row commit and the
+      # site served page v714 with engine v242 for an hour.
+      - name: Dispatch lij-build for the flip commit (GITHUB_TOKEN pushes do not trigger push workflows)
         if: env.FLIP == '1' && github.repository == 'dav1dpgit/lightning-in-a-jar'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -121,8 +125,8 @@ jobs:
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/lij-build.yml/dispatches" \
-            -d '{"ref":"main"}'
-          echo "lij-build dispatched"
+            -d "{\"ref\":\"main\",\"inputs\":{\"sha\":\"${FLIP_SHA}\"}}"
+          echo "lij-build dispatched for ${FLIP_SHA}"
 
       - name: Surface failure logs as commit comment (any step; pageapp convention)
         if: failure()

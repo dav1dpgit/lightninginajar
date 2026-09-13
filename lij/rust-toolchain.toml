@@ -1,4 +1,4 @@
 [toolchain]
-channel = "nightly-2025-01-01"
+channel = "1.90.0"   # ldk-0.2: stable — the 2025 nightly predates edition-2024 crates in LDK 0.2.6's tree; nothing here needs nightly (no #![feature], no atomics)
 targets = ["wasm32-unknown-unknown"]
 components = ["rust-src", "rustfmt", "clippy"]

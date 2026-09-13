@@ -12,8 +12,8 @@ lij-core = { path = "../lij-core" }
 hex = "0.4"
 bip39 = { version = "2" }
 sha2 = { version = "0.10", default-features = false }
-lightning = { version = "0.0.123" }
-bitcoin = { version = "0.30" }
+lightning = { version = "0.2.6" }
+bitcoin = { version = "0.32" }
 instant = { version = "0.1", features = ["wasm-bindgen"] }
 getrandom = { version = "0.2", features = ["js"] }
 

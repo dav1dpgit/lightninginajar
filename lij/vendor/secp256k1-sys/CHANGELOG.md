@@ -1,4 +1,27 @@
-# 0.8.1 - 2023-13-16
+# 0.10.1 - 2024-09-10
+
+* Minor build changes to eliminate references to stdio.h [#736](https://github.com/rust-bitcoin/rust-secp256k1/pull/736)
+
+# 0.10.0 - 2024-03-28
+
+* Bump MSRV to Rust `v1.56.1` [#693](https://github.com/rust-bitcoin/rust-secp256k1/pull/693)
+* Vendor `secp256k1 v0.4.1` [#688](https://github.com/rust-bitcoin/rust-secp256k1/pull/688)
+
+# 0.9.2 - 2023-12-18
+
+* Fix incorrect FFI binding for `secp256k1_pubkey_combine`
+
+# 0.9.1 - 2023-12-07
+
+* Patch out any instances of printf in upstream [#663](https://github.com/rust-bitcoin/rust-secp256k1/pull/663)
+
+# 0.9.0 - 2023-10-23
+
+* Add bindings to the ElligatorSwift implementation [#627](https://github.com/rust-bitcoin/rust-secp256k1/pull/627)
+* Update vendored lib secp256k1 to v0.4.0 [#653](https://github.com/rust-bitcoin/rust-secp256k1/pull/653)
+* Bump MSRV to 1.48 [#595](https://github.com/rust-bitcoin/rust-secp256k1/pull/595)
+
+# 0.8.1 - 2023-03-16
 
 * [Implement `insecure-erase`](https://github.com/rust-bitcoin/rust-secp256k1/pull/582).
 

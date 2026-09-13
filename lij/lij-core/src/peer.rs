@@ -147,6 +147,7 @@ pub type LijPeerManagerType = PeerManager<
     DynLogger,                           // L
     Arc<CooperativeChainHandler>,        // Custom (was IgnoringMessageHandler before step 4b)
     Arc<KeysManager>,                    // NS
+    Arc<IgnoringMessageHandler>,         // SM — 0.2: send-only message handler (LiJ has none)
 >;
 
 /// Build the MessageHandler struct that PeerManager needs.
@@ -165,12 +166,14 @@ pub fn build_message_handler(
     Arc<IgnoringMessageHandler>,
     Arc<IgnoringMessageHandler>,
     Arc<CooperativeChainHandler>,
+    Arc<IgnoringMessageHandler>,
 > {
     MessageHandler {
         chan_handler: channel_manager,
         route_handler: Arc::clone(&ignoring),
-        onion_message_handler: ignoring,
+        onion_message_handler: Arc::clone(&ignoring),
         custom_message_handler: cooperative_chain,
+        send_only_message_handler: ignoring,   // 0.2
     }
 }
 

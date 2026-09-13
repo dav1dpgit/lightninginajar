@@ -1,11 +1,11 @@
 # Reproducible build — how the served engine is checked against this source
 
-The wallet is a static site: `lij-pwa/frontend/` is served as-is at https://lightninginajar.xyz, and the engine is the WebAssembly module `lij-pwa/frontend/pkg/lij_wasm_bg.wasm` (about 9.4 MB) plus its JS glue `lij_wasm.js`. Both are built by the `lij-build` GitHub Actions workflow in this repository from `lij/` and committed back; the deploy branch is a byte copy of `lij-pwa/frontend/`.
+The wallet is a static site: `lij-pwa/frontend/` is served as-is at https://lightninginajar.xyz, and the engine is the WebAssembly module `lij-pwa/frontend/pkg/lij_wasm_bg.wasm` (about 7.9 MB since the LDK 0.2.6 engine, v241; 9.4 MB before) plus its JS glue `lij_wasm.js`. Both are built by the `lij-build` GitHub Actions workflow in this repository from `lij/` and committed back; the deploy branch is a byte copy of `lij-pwa/frontend/`.
 
 ## Recipe (what CI runs — `.github/workflows/lij-build.yml`)
 
 ```
-# toolchain: lij/rust-toolchain.toml pins nightly-2025-01-01 with the wasm32-unknown-unknown target
+# toolchain: lij/rust-toolchain.toml pins Rust 1.90.0 (stable) with the wasm32-unknown-unknown target
 rustup target add wasm32-unknown-unknown
 curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
 cd lij
@@ -17,8 +17,8 @@ Crate sources are vendored under `lij/vendor` and `lij/.cargo/config.toml` point
 
 ## What is pinned (all of it, since page v710's workflow)
 
-- The Rust toolchain: `lij/rust-toolchain.toml` (nightly-2025-01-01, `rustc 1.85.0-nightly (d117b7f21 2024-12-31)` — that string is in the binary's `producers` section).
-- Every crate: vendored under `lij/vendor`, `Cargo.lock` checksums; `wasm-bindgen` 0.2.116 (crate and CLI).
+- The Rust toolchain: `lij/rust-toolchain.toml` (Rust 1.90.0 stable — `1.90.0 (1159e78c4 2025-09-14)` is the string in the binary's `producers` section; engines ≤ v240 were built with nightly-2025-01-01, `rustc 1.85.0-nightly (d117b7f21 2024-12-31)`). The release profile in `lij/Cargo.toml` is size-first: `opt-level = "z"`, `lto = "fat"`, `codegen-units = 1`, `panic = "abort"` (wasm cannot unwind anyway), `strip = "debuginfo"`.
+- Every crate: vendored under `lij/vendor`, `Cargo.lock` checksums; `wasm-bindgen` 0.2.128 (crate and CLI; 0.2.116 for engines ≤ v240).
 - The `lightning` patch set: in-tree.
 - `wasm-pack` v0.15.0: the release tarball is downloaded from GitHub and refused unless its sha256 is `c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a`.
 - `wasm-opt` (binaryen) version_117 — the version wasm-pack v0.15.0 would fetch itself, now downloaded explicitly and refused unless its sha256 is `3dc677006555b355ea2da5e82602065a161d5e83eaefd3f759afa00b96e83212`; it is put on PATH first, which is what wasm-pack uses when present.
@@ -51,7 +51,7 @@ The page's Content-Security-Policy (`lij-pwa/frontend/_headers`, `/wallet/*` blo
 
 | artifact | sha256 |
 |---|---|
-| `lij-pwa/frontend/pkg/lij_wasm_bg.wasm` (engine phase11-v239) | `6006fcfa3d548d7619526246133df97daea501177e0ce1250d2a788fa269f527` |
-| `lij-pwa/frontend/pkg/lij_wasm.js` | `51d0c0a706bcb12d517921b2294be07290633eb3fc92136a23c80b5ec1809f17` |
-| `lij-pwa/frontend/wallet/index.html` (page phase11-v709) | `f645d1c7c5fc9b81b315ce93845c3712dd1cb564b8d93a1f3e01138f187c72dd` |
-| `lij-pwa/frontend/wallet/sw.js` | `6bb8fe0e5d0933815ea77a235c85be87d0e9b62e54cad78d8590198548c61b93` |
+| `lij-pwa/frontend/pkg/lij_wasm_bg.wasm` (engine phase11-v247) | `22aa641db5cc6e2fa998e46fa87d9a5523440881d9f53593e5a12ecab9964881` |
+| `lij-pwa/frontend/pkg/lij_wasm.js` | `dd441f3093fc7363ad62bef062cd4779d0b1b50f98ee3276ef000a62a188925c` |
+| `lij-pwa/frontend/wallet/index.html` (page phase11-v730) | `1da34f14932c6ae0fe0cc1a1df48a459b00ed93a40170291583fd0f2ac6ffd7b` |
+| `lij-pwa/frontend/wallet/sw.js` | `d39344eed856d689dbd6f4d7dfa0a7af4279f024d90cc7d54127c72cf18b1c5a` |

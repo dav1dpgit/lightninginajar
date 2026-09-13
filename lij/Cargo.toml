@@ -14,3 +14,14 @@ resolver = "2"
 # pristine so `cargo vendor` can regenerate vendor/ safely.
 [patch.crates-io]
 lightning = { path = "patches/lightning" }
+
+# ldk-0.2 (S46): the release profile the wasm is built with. wasm32-unknown-unknown cannot
+# unwind, so `panic = "abort"` changes no behaviour and drops the unwind tables; size-first
+# codegen with fat LTO and one codegen unit is what wasm-opt -Oz then works on. Part of the
+# reproducible-build recipe from this version on.
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"

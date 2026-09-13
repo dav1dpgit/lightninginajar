@@ -1,4 +1,3 @@
-use crate::hash::ShortHash;
 use proc_macro2::{Ident, Span};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -44,7 +43,6 @@ struct Interner {
     bump: bumpalo::Bump,
     files: RefCell<HashMap<String, LocalFile>>,
     root: PathBuf,
-    crate_name: String,
     has_package_json: Cell<bool>,
 }
 
@@ -60,12 +58,10 @@ impl Interner {
         let root = env::var_os("CARGO_MANIFEST_DIR")
             .expect("should have CARGO_MANIFEST_DIR env var")
             .into();
-        let crate_name = env::var("CARGO_PKG_NAME").expect("should have CARGO_PKG_NAME env var");
         Interner {
             bump: bumpalo::Bump::new(),
             files: RefCell::new(HashMap::new()),
             root,
-            crate_name,
             has_package_json: Cell::new(false),
         }
     }
@@ -121,7 +117,7 @@ impl Interner {
     }
 
     fn unique_crate_identifier(&self) -> String {
-        format!("{}-{}", self.crate_name, ShortHash(0))
+        crate::hash::unique_crate_identifier()
     }
 
     fn check_for_package_json(&self) {
@@ -214,7 +210,11 @@ fn shared_export<'a>(
             .as_ref()
             .map(|ns| ns.iter().map(|s| &**s).collect()),
         method_kind,
-        start: export.start,
+        start: match export.start {
+            ast::StartKind::None => StartKind::None,
+            ast::StartKind::Public => StartKind::Public,
+            ast::StartKind::Private => StartKind::Private,
+        },
     })
 }
 
@@ -242,6 +242,13 @@ fn shared_function<'a>(func: &'a ast::Function, _intern: &'a Interner) -> Functi
     Function {
         args,
         asyncness: func.r#async,
+        // Reported truthfully alongside `asyncness`: every jspi export is a
+        // JSPI context root (the CLI wraps its activation with the in-wasm
+        // fiber wrapper), while only sync jspi exports are additionally
+        // promising-wrapped in JS. An async jspi export keeps the plain
+        // async-export JS contract; its internal `spawn_local` inherits the
+        // context from the rooted activation.
+        jspi: func.jspi,
         name: &func.name,
         generate_typescript: func.generate_typescript,
         generate_jsdoc: func.generate_jsdoc,
@@ -270,9 +277,9 @@ fn shared_enum<'a>(e: &'a ast::Enum, intern: &'a Interner) -> Enum<'a> {
     }
 }
 
-fn shared_variant<'a>(v: &'a ast::Variant, intern: &'a Interner) -> EnumVariant<'a> {
+fn shared_variant<'a>(v: &'a ast::Variant, _intern: &'a Interner) -> EnumVariant<'a> {
     EnumVariant {
-        name: intern.intern(&v.name),
+        name: &v.js_name,
         value: v.value,
         comments: v.comments.iter().map(|s| &**s).collect(),
     }
@@ -355,6 +362,9 @@ fn shared_import_kind<'a>(
         ast::ImportKind::String(f) => ImportKind::String(shared_import_string(f, intern)),
         ast::ImportKind::Type(f) => ImportKind::Type(shared_import_type(f, intern)),
         ast::ImportKind::Enum(f) => ImportKind::Enum(shared_import_enum(f, intern)),
+        ast::ImportKind::DynamicUnion(f) => {
+            ImportKind::DynamicUnion(shared_import_dynamic_union(f, intern))
+        }
     })
 }
 
@@ -375,9 +385,15 @@ fn shared_import_function<'a>(
         catch: i.catch,
         method,
         assert_no_shim: i.assert_no_shim,
+        suspending: i.suspending,
         structural: i.structural,
         function: shared_function(&i.function, intern),
         variadic: i.variadic,
+        // Only imports that opted into the per-monomorphisation path are bound
+        // via the `__wbindgen_describe_generic_import` marker rather than a
+        // single named descriptor shim. Type-erasure generic imports keep the
+        // normal binding path.
+        generic_per_mono: i.generic_per_mono,
     })
 }
 
@@ -407,6 +423,7 @@ fn shared_import_enum<'a>(i: &'a ast::StringEnum, _intern: &'a Interner) -> Stri
     StringEnum {
         name: &i.export_name,
         generate_typescript: i.generate_typescript,
+        private: i.private,
         variant_values: i.variant_values.iter().map(|x| &**x).collect(),
         comments: i.comments.iter().map(|s| &**s).collect(),
         js_namespace: i
@@ -416,13 +433,39 @@ fn shared_import_enum<'a>(i: &'a ast::StringEnum, _intern: &'a Interner) -> Stri
     }
 }
 
+fn shared_import_dynamic_union<'a>(
+    i: &'a ast::DynamicUnion,
+    _intern: &'a Interner,
+) -> DynamicUnion<'a> {
+    let mut variant_strings = Vec::new();
+    let mut variant_type_cnt = 0;
+
+    for (idx, fields) in i.variant_fields.iter().enumerate() {
+        if fields.is_empty() {
+            variant_strings.push(&*i.variant_values[idx]);
+        } else {
+            variant_type_cnt += 1;
+        }
+    }
+
+    DynamicUnion {
+        name: &i.js_name,
+        generate_typescript: i.generate_typescript,
+        private: i.private,
+        fallback: i.fallback,
+        variant_strings,
+        variant_type_cnt,
+        comments: i.comments.iter().map(|s| &**s).collect(),
+    }
+}
+
 fn shared_struct<'a>(s: &'a ast::Struct, intern: &'a Interner) -> Struct<'a> {
     Struct {
         name: &s.js_name,
-        rust_name: intern.intern(&s.rust_name),
         fields: s
             .fields
             .iter()
+            .filter(|f| !f.is_parent)
             .map(|s| shared_struct_field(s, intern))
             .collect(),
         comments: s.comments.iter().map(|s| &**s).collect(),
@@ -433,6 +476,16 @@ fn shared_struct<'a>(s: &'a ast::Struct, intern: &'a Interner) -> Struct<'a> {
             .as_ref()
             .map(|ns| ns.iter().map(|s| &**s).collect()),
         private: s.private,
+        extends: s
+            .extends
+            .as_ref()
+            .and_then(|p| p.segments.last())
+            .map(|seg| intern.intern_str(&seg.ident.to_string())),
+        extends_js_class: s.extends_js_class.as_deref().map(|s| intern.intern_str(s)),
+        extends_js_namespace: s
+            .extends_js_namespace
+            .as_ref()
+            .map(|ns| ns.iter().map(|s| &**s).collect()),
     }
 }
 

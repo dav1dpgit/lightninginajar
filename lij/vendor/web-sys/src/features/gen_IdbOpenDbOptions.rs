@@ -4,7 +4,7 @@ use super::*;
 use wasm_bindgen::prelude::*;
 #[wasm_bindgen]
 extern "C" {
-    # [wasm_bindgen (extends = :: js_sys :: Object , js_name = IDBOpenDBOptions)]
+    #[wasm_bindgen(extends = "::js_sys::Object", js_name = "IDBOpenDBOptions")]
     #[derive(Debug, Clone, PartialEq, Eq)]
     #[doc = "The `IdbOpenDbOptions` dictionary."]
     #[doc = ""]
@@ -61,12 +61,12 @@ impl IdbOpenDbOptions {
         ret
     }
     #[cfg(feature = "StorageType")]
-    #[deprecated = "Use `set_storage()` instead."]
+    #[deprecated]
     pub fn storage(&mut self, val: StorageType) -> &mut Self {
         self.set_storage(val);
         self
     }
-    #[deprecated = "Use `set_version()` instead."]
+    #[deprecated]
     pub fn version(&mut self, val: f64) -> &mut Self {
         self.set_version(val);
         self

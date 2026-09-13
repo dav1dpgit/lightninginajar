@@ -4,7 +4,7 @@ use super::*;
 use wasm_bindgen::prelude::*;
 #[wasm_bindgen]
 extern "C" {
-    # [wasm_bindgen (extends = :: js_sys :: Object , js_name = PublicKeyCredentialRpEntity)]
+    #[wasm_bindgen(extends = "::js_sys::Object", js_name = "PublicKeyCredentialRpEntity")]
     #[derive(Debug, Clone, PartialEq, Eq)]
     #[doc = "The `PublicKeyCredentialRpEntity` dictionary."]
     #[doc = ""]
@@ -13,13 +13,13 @@ extern "C" {
     #[doc = "Get the `icon` field of this object."]
     #[doc = ""]
     #[doc = "*This API requires the following crate features to be activated: `PublicKeyCredentialRpEntity`*"]
-    #[deprecated]
+    #[deprecated(note = "Removed from the WebAuthn specification")]
     #[wasm_bindgen(method, getter = "icon")]
     pub fn get_icon(this: &PublicKeyCredentialRpEntity) -> Option<::alloc::string::String>;
     #[doc = "Change the `icon` field of this object."]
     #[doc = ""]
     #[doc = "*This API requires the following crate features to be activated: `PublicKeyCredentialRpEntity`*"]
-    #[deprecated]
+    #[deprecated(note = "Removed from the WebAuthn specification")]
     #[wasm_bindgen(method, setter = "icon")]
     pub fn set_icon(this: &PublicKeyCredentialRpEntity, val: &str);
     #[doc = "Get the `name` field of this object."]
@@ -53,7 +53,7 @@ impl PublicKeyCredentialRpEntity {
         ret.set_name(name);
         ret
     }
-    #[deprecated = "Use `set_icon()` instead."]
+    #[deprecated(note = "Removed from the WebAuthn specification")]
     pub fn icon(&mut self, val: &str) -> &mut Self {
         self.set_icon(val);
         self

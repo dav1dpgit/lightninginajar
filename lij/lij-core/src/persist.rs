@@ -144,12 +144,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use lightning::chain::{
-    chainmonitor::{MonitorUpdateId, Persist},
+    chainmonitor::Persist,
     channelmonitor::{ChannelMonitor, ChannelMonitorUpdate},
     transaction::OutPoint,
     ChannelMonitorUpdateStatus,
 };
-use lightning::sign::ecdsa::WriteableEcdsaChannelSigner;
+use lightning::sign::ecdsa::EcdsaChannelSigner;
+use lightning::util::persist::MonitorName;
+use lightning::ln::types::ChannelId;
 use lightning::util::ser::Writeable;
 
 use crate::storage::LijStorage;
@@ -200,7 +202,7 @@ impl LijChannelMonitorPersister {
         )
     }
 
-    fn write_monitor<S: WriteableEcdsaChannelSigner>(
+    fn write_monitor<S: EcdsaChannelSigner>(
         &self,
         key: &str,
         monitor: &ChannelMonitor<S>,
@@ -214,14 +216,32 @@ impl LijChannelMonitorPersister {
     }
 }
 
-impl<S: WriteableEcdsaChannelSigner> Persist<S> for LijChannelMonitorPersister {
+impl LijChannelMonitorPersister {
+    /// 0.2.6: monitors are addressed by `MonitorName`. A channel funded the classic way
+    /// (every LiJ channel so far) is `V1Channel(funding outpoint)` and keeps EXACTLY the
+    /// key the 0.0.123 persister wrote, so a restored blob finds its monitors; a V2
+    /// (splice/dual-funded) channel is keyed by its channel id.
+    fn key_for(name: &MonitorName) -> String {
+        match name {
+            MonitorName::V1Channel(outpoint) => Self::monitor_key(outpoint),
+            MonitorName::V2Channel(cid) => format!("{MONITOR_KEY_PREFIX}cid:{}", hex::encode(cid.0)),
+        }
+    }
+    fn archived_key_for(name: &MonitorName) -> String {
+        match name {
+            MonitorName::V1Channel(outpoint) => Self::archived_key(outpoint),
+            MonitorName::V2Channel(cid) => format!("{ARCHIVED_MONITOR_KEY_PREFIX}cid:{}", hex::encode(cid.0)),
+        }
+    }
+}
+
+impl<S: EcdsaChannelSigner> Persist<S> for LijChannelMonitorPersister {
     fn persist_new_channel(
         &self,
-        funding_txo: OutPoint,
+        monitor_name: MonitorName,
         monitor: &ChannelMonitor<S>,
-        _update_id: MonitorUpdateId,
     ) -> ChannelMonitorUpdateStatus {
-        let key = Self::monitor_key(&funding_txo);
+        let key = Self::key_for(&monitor_name);
         match self.write_monitor(&key, monitor) {
             Ok(()) => {
                 self.backup_dirty.store(true, Ordering::Relaxed);
@@ -240,14 +260,13 @@ impl<S: WriteableEcdsaChannelSigner> Persist<S> for LijChannelMonitorPersister {
 
     fn update_persisted_channel(
         &self,
-        funding_txo: OutPoint,
+        monitor_name: MonitorName,
         _update: Option<&ChannelMonitorUpdate>,
         monitor: &ChannelMonitor<S>,
-        _update_id: MonitorUpdateId,
     ) -> ChannelMonitorUpdateStatus {
         // Always persist the full monitor — simpler than batching incremental
         // updates, and the size cost is acceptable for browser storage.
-        let key = Self::monitor_key(&funding_txo);
+        let key = Self::key_for(&monitor_name);
         match self.write_monitor(&key, monitor) {
             Ok(()) => {
                 self.backup_dirty.store(true, Ordering::Relaxed);
@@ -263,9 +282,9 @@ impl<S: WriteableEcdsaChannelSigner> Persist<S> for LijChannelMonitorPersister {
         }
     }
 
-    fn archive_persisted_channel(&self, funding_txo: OutPoint) {
-        let key = Self::monitor_key(&funding_txo);
-        let archived_key = Self::archived_key(&funding_txo);
+    fn archive_persisted_channel(&self, monitor_name: MonitorName) {
+        let key = Self::key_for(&monitor_name);
+        let archived_key = Self::archived_key_for(&monitor_name);
         match self.storage.get(&key) {
             Ok(Some(blob)) => {
                 if let Err(e) = self.storage.set(&archived_key, &blob) {
@@ -280,6 +299,10 @@ impl<S: WriteableEcdsaChannelSigner> Persist<S> for LijChannelMonitorPersister {
             Ok(None) => log::warn!("archive_persisted_channel: no monitor at {key}"),
             Err(e) => log::error!("archive read failed for {key}: {e}"),
         }
+    }
+
+    fn get_and_clear_completed_updates(&self) -> Vec<(ChannelId, u64)> {
+        Vec::new()   // every persist above completes synchronously
     }
 }
 
@@ -329,7 +352,7 @@ mod persister_tests {
         // archive_persisted_channel doesn't reference the signer, so the
         // generic must be disambiguated explicitly.
         <LijChannelMonitorPersister as Persist<LijChannelSigner>>::archive_persisted_channel(
-            &persister, op,
+            &persister, MonitorName::V1Channel(op),
         );
 
         assert_eq!(storage.get(&live_key).unwrap(), None);

@@ -210,13 +210,13 @@ pub fn apply_txs(view: &mut Tier2View, scripts: &WalletScripts, txs: &[Transacti
                 {
                     continue;
                 }
-                recv_sats = recv_sats.saturating_add(out.value);
+                recv_sats = recv_sats.saturating_add(out.value.to_sat());
                 view.utxos.push(OnchainUtxo {
                     chain,
                     index,
                     txid: txid.clone(),
                     vout: vout as u32,
-                    value_sats: out.value,
+                    value_sats: out.value.to_sat(),
                     height,
                     spent_height: None,
                 });
@@ -953,11 +953,11 @@ mod tests {
 
     fn tx_paying(spk: ScriptBuf, value: u64) -> Transaction {
         Transaction {
-            version: 2,
+            version: bitcoin::transaction::Version::TWO,
             lock_time: LockTime::ZERO,
             input: vec![],
             output: vec![TxOut {
-                value,
+                value: bitcoin::Amount::from_sat(value),
                 script_pubkey: spk,
             }],
         }
@@ -965,7 +965,7 @@ mod tests {
 
     fn tx_spending(prev_txid: bitcoin::Txid, vout: u32, change_spk: ScriptBuf, change: u64) -> Transaction {
         Transaction {
-            version: 2,
+            version: bitcoin::transaction::Version::TWO,
             lock_time: LockTime::ZERO,
             input: vec![TxIn {
                 previous_output: OutPoint { txid: prev_txid, vout },
@@ -974,7 +974,7 @@ mod tests {
                 witness: Witness::new(),
             }],
             output: vec![TxOut {
-                value: change,
+                value: bitcoin::Amount::from_sat(change),
                 script_pubkey: change_spk,
             }],
         }

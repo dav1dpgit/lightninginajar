@@ -60,22 +60,21 @@
 use std::sync::{Arc, Mutex};
 
 use bitcoin::{
-    bip32::{ChildNumber, DerivationPath, ExtendedPrivKey},
+    bip32::{ChildNumber, DerivationPath, Xpriv},
     secp256k1::{PublicKey, Secp256k1, SecretKey},
     Address, Network, ScriptBuf,
 };
 use lightning::{
     ln::script::ShutdownScript,
     sign::{
-        ecdsa::{EcdsaChannelSigner, WriteableEcdsaChannelSigner},
+        ecdsa::EcdsaChannelSigner,
         ChannelSigner, EntropySource, HTLCDescriptor, InMemorySigner, KeysManager,
         SignerProvider,
     },
-    util::ser::{Writeable, Writer},
 };
 use lightning::ln::chan_utils::{ChannelPublicKeys, ChannelTransactionParameters, ClosingTransaction, CommitmentTransaction, HolderCommitmentTransaction, HTLCOutputInCommitment};
-use lightning::ln::msgs::{DecodeError, UnsignedChannelAnnouncement};
-use lightning::ln::PaymentPreimage;
+use lightning::ln::msgs::UnsignedChannelAnnouncement;
+use lightning::types::payment::PaymentPreimage;
 
 use crate::{
     error::{LijError, LijResult},
@@ -93,7 +92,7 @@ pub struct LijSignerProvider {
     inner: Arc<KeysManager>,
     /// xpriv at m/84h/{coin}h/0h/0 — children are cooperative-close /
     /// destination scripts.
-    shutdown_xpriv: ExtendedPrivKey,
+    shutdown_xpriv: Xpriv,
     /// Persistent counter for shutdown_script and destination_script
     /// allocation. Distinct from per-channel signer indexing
     /// (channel_index is encoded in keys_id and consumed by LDK only).
@@ -127,7 +126,7 @@ impl LijSignerProvider {
 
     pub fn new(
         inner: Arc<KeysManager>,
-        shutdown_xpriv: ExtendedPrivKey,
+        shutdown_xpriv: Xpriv,
         counter: PersistedCounter,
         network: Network,
     ) -> Self {
@@ -290,8 +289,7 @@ impl LijSignerProvider {
             )
             .map_err(|e| LijError::Key(format!("shutdown_xpriv derivation failed: {e}")))?;
         let pubkey = bitcoin::PublicKey::new(child.private_key.public_key(&secp));
-        let address = Address::p2wpkh(&pubkey, self.network)
-            .map_err(|e| LijError::Key(format!("p2wpkh encoding failed: {e}")))?;
+        let address = Address::p2wpkh(&bitcoin::CompressedPublicKey(pubkey.inner), self.network);
         Ok(address.script_pubkey())
     }
 }
@@ -350,12 +348,7 @@ impl SignerProvider for LijSignerProvider {
     #[cfg(taproot)]
     type TaprootSigner = LijChannelSigner;
 
-    fn generate_channel_keys_id(
-        &self,
-        inbound: bool,
-        channel_value_satoshis: u64,
-        user_channel_id: u128,
-    ) -> [u8; 32] {
+    fn generate_channel_keys_id(&self, inbound: bool, user_channel_id: u128) -> [u8; 32] {
         // Allocate the next channel index. On counter write failure
         // we cannot return Result here, so we have to choose: panic or
         // burn an index. Panicking surfaces the bug; silent burning
@@ -364,9 +357,7 @@ impl SignerProvider for LijSignerProvider {
             .counter
             .read_and_increment()
             .expect("PersistedCounter write failed during channel keys id generation");
-        let inner_id =
-            self.inner
-                .generate_channel_keys_id(inbound, channel_value_satoshis, user_channel_id);
+        let inner_id = self.inner.generate_channel_keys_id(inbound, user_channel_id);
         // Terminus v2 (Session 23): callers that guarantee a non-anchors
         // channel request the m/84 payment_point pin via the UCID bit.
         // The marker persists in keys_id, making the pin deterministic
@@ -381,20 +372,14 @@ impl SignerProvider for LijSignerProvider {
         }
     }
 
-    fn derive_channel_signer(
-        &self,
-        channel_value_satoshis: u64,
-        channel_keys_id: [u8; 32],
-    ) -> Self::EcdsaSigner {
+    fn derive_channel_signer(&self, channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
         // Delegate channel-key derivation entirely to inner KeysManager.
         // The keys_id we received still has our channel_index encoded in
         // bytes 0..4 (placed there by generate_channel_keys_id); inner
         // KeysManager's HKDF doesn't care about the first 4 bytes being
         // any particular value, so we pass through verbatim. Bytes 0..4
         // are now metadata for LiJ's own bookkeeping only.
-        let inner_signer =
-            self.inner
-                .derive_channel_signer(channel_value_satoshis, channel_keys_id);
+        let inner_signer = self.inner.derive_channel_signer(channel_keys_id);
         let channel_index = decode_channel_index(channel_keys_id);
         // Terminus v2 (Session 23): marked channels get their
         // payment_point pinned to m/84h/{coin}h/0h/0/{channel_index}.
@@ -405,7 +390,8 @@ impl SignerProvider for LijSignerProvider {
         if keys_id_has_terminus_marker(channel_keys_id) {
             match self.derive_payment_pubkey_at(channel_index) {
                 Ok(pinned_point) => {
-                    let mut pinned = inner_signer.pubkeys().clone();
+                    let secp = Secp256k1::new();
+                    let mut pinned = inner_signer.pubkeys(&secp);
                     pinned.payment_point = pinned_point;
                     log::info!(
                         "[terminus] signer derived WITH m/84 pin at index {channel_index}"
@@ -428,15 +414,6 @@ impl SignerProvider for LijSignerProvider {
         LijChannelSigner::new(inner_signer, channel_index)
     }
 
-    fn read_chan_signer(&self, _reader: &[u8]) -> Result<Self::EcdsaSigner, DecodeError> {
-        // LDK calls this only for objects written by LDK pre-0.0.113.
-        // We're on 0.0.123 with no migration history — should never fire.
-        // Panic loudly if it does so we know something unexpected happened.
-        unimplemented!(
-            "LijSignerProvider::read_chan_signer: LDK pre-0.0.113 not supported. \
-             If this fires, LDK is reading legacy persisted state we don't have."
-        );
-    }
 
     fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
         let index = self.counter.read_and_increment().map_err(|_| ())?;
@@ -512,11 +489,11 @@ impl ChannelSigner for LijChannelSigner {
         &self,
         idx: u64,
         secp_ctx: &Secp256k1<bitcoin::secp256k1::All>,
-    ) -> PublicKey {
+    ) -> Result<PublicKey, ()> {
         self.inner.get_per_commitment_point(idx, secp_ctx)
     }
 
-    fn release_commitment_secret(&self, idx: u64) -> [u8; 32] {
+    fn release_commitment_secret(&self, idx: u64) -> Result<[u8; 32], ()> {
         self.inner.release_commitment_secret(idx)
     }
 
@@ -533,22 +510,28 @@ impl ChannelSigner for LijChannelSigner {
         self.inner.validate_counterparty_revocation(idx, secret)
     }
 
-    fn pubkeys(&self) -> &ChannelPublicKeys {
+    fn pubkeys(&self, secp_ctx: &Secp256k1<bitcoin::secp256k1::All>) -> ChannelPublicKeys {
         // Terminus v2 (Session 23): marked channels return the pinned set
         // (payment_point = m/84 child at channel_index) — LSP force-closes
         // then pay the seed's standard tree directly. Unmarked channels
-        // delegate verbatim to inner, exactly as pre-v176: the
-        // static_remote_key is whatever KeysManager's HKDF produces, and
-        // force-close sweep destinations are decided downstream by
-        // OutputSweeper via ChangeDestinationSource (m/84h/0h/0h/0/n).
-        // The payment KEY is never used in channel-operation signing
-        // (commitments/HTLCs/justice) — only in the descriptor-spend
-        // path, which the node's S6 exemption keeps pinned outputs away
-        // from (they are already spendable by any BIP84 wallet).
+        // delegate verbatim to inner. The payment KEY is never used in
+        // channel-operation signing (commitments/HTLCs/justice) — only in the
+        // descriptor-spend path, which the node keeps pinned outputs away from
+        // (they are already spendable by any BIP84 wallet).
+        // 0.2.6: pubkeys are handed out by value with a secp context.
         match &self.pinned_pubkeys {
-            Some(pinned) => pinned,
-            None => self.inner.pubkeys(),
+            Some(pinned) => pinned.clone(),
+            None => self.inner.pubkeys(secp_ctx),
         }
+    }
+
+    fn new_funding_pubkey(
+        &self,
+        splice_parent_funding_txid: bitcoin::Txid,
+        secp_ctx: &Secp256k1<bitcoin::secp256k1::All>,
+    ) -> PublicKey {
+        // 0.2: splicing derives a fresh funding key per splice — delegated.
+        self.inner.new_funding_pubkey(splice_parent_funding_txid, secp_ctx)
     }
 
     fn channel_keys_id(&self) -> [u8; 32] {
@@ -557,21 +540,21 @@ impl ChannelSigner for LijChannelSigner {
         // so a passthrough delegation is correct.
         self.inner.channel_keys_id()
     }
-
-    fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters) {
-        self.inner.provide_channel_parameters(channel_parameters);
-    }
 }
 
+// 0.2.6: every signing method receives the channel parameters explicitly
+// (provide_channel_parameters is gone). Every method delegates verbatim.
 impl EcdsaChannelSigner for LijChannelSigner {
     fn sign_counterparty_commitment(
         &self,
+        channel_parameters: &ChannelTransactionParameters,
         commitment_tx: &CommitmentTransaction,
         inbound_htlc_preimages: Vec<PaymentPreimage>,
         outbound_htlc_preimages: Vec<PaymentPreimage>,
         secp_ctx: &Secp256k1<bitcoin::secp256k1::All>,
     ) -> Result<(bitcoin::secp256k1::ecdsa::Signature, Vec<bitcoin::secp256k1::ecdsa::Signature>), ()> {
         self.inner.sign_counterparty_commitment(
+            channel_parameters,
             commitment_tx,
             inbound_htlc_preimages,
             outbound_htlc_preimages,
@@ -581,29 +564,26 @@ impl EcdsaChannelSigner for LijChannelSigner {
 
     fn sign_holder_commitment(
         &self,
+        channel_parameters: &ChannelTransactionParameters,
         commitment_tx: &HolderCommitmentTransaction,
         secp_ctx: &Secp256k1<bitcoin::secp256k1::All>,
     ) -> Result<bitcoin::secp256k1::ecdsa::Signature, ()> {
-        self.inner.sign_holder_commitment(commitment_tx, secp_ctx)
+        self.inner.sign_holder_commitment(channel_parameters, commitment_tx, secp_ctx)
     }
 
-    // v211 (escape kit): the `unsafe_revoked_tx_signing` feature — enabled so
-    // the read-only escape export can copy-sign the latest holder commitment
-    // without the once-only lockdown `sign_holder_commitment` enforces — adds
-    // this required trait method. Delegate straight to the inner
-    // InMemorySigner, which implements it under the same gate. Same signing
-    // material, no state, no lockdown flag; used only by escape_export.
     #[cfg(any(test, feature = "escape_kit"))]
     fn unsafe_sign_holder_commitment(
         &self,
+        channel_parameters: &ChannelTransactionParameters,
         commitment_tx: &HolderCommitmentTransaction,
         secp_ctx: &Secp256k1<bitcoin::secp256k1::All>,
     ) -> Result<bitcoin::secp256k1::ecdsa::Signature, ()> {
-        self.inner.unsafe_sign_holder_commitment(commitment_tx, secp_ctx)
+        self.inner.unsafe_sign_holder_commitment(channel_parameters, commitment_tx, secp_ctx)
     }
 
     fn sign_justice_revoked_output(
         &self,
+        channel_parameters: &ChannelTransactionParameters,
         justice_tx: &bitcoin::Transaction,
         input: usize,
         amount: u64,
@@ -611,12 +591,13 @@ impl EcdsaChannelSigner for LijChannelSigner {
         secp_ctx: &Secp256k1<bitcoin::secp256k1::All>,
     ) -> Result<bitcoin::secp256k1::ecdsa::Signature, ()> {
         self.inner.sign_justice_revoked_output(
-            justice_tx, input, amount, per_commitment_key, secp_ctx,
+            channel_parameters, justice_tx, input, amount, per_commitment_key, secp_ctx,
         )
     }
 
     fn sign_justice_revoked_htlc(
         &self,
+        channel_parameters: &ChannelTransactionParameters,
         justice_tx: &bitcoin::Transaction,
         input: usize,
         amount: u64,
@@ -625,12 +606,7 @@ impl EcdsaChannelSigner for LijChannelSigner {
         secp_ctx: &Secp256k1<bitcoin::secp256k1::All>,
     ) -> Result<bitcoin::secp256k1::ecdsa::Signature, ()> {
         self.inner.sign_justice_revoked_htlc(
-            justice_tx,
-            input,
-            amount,
-            per_commitment_key,
-            htlc,
-            secp_ctx,
+            channel_parameters, justice_tx, input, amount, per_commitment_key, htlc, secp_ctx,
         )
     }
 
@@ -647,6 +623,7 @@ impl EcdsaChannelSigner for LijChannelSigner {
 
     fn sign_counterparty_htlc_transaction(
         &self,
+        channel_parameters: &ChannelTransactionParameters,
         htlc_tx: &bitcoin::Transaction,
         input: usize,
         amount: u64,
@@ -655,68 +632,52 @@ impl EcdsaChannelSigner for LijChannelSigner {
         secp_ctx: &Secp256k1<bitcoin::secp256k1::All>,
     ) -> Result<bitcoin::secp256k1::ecdsa::Signature, ()> {
         self.inner.sign_counterparty_htlc_transaction(
-            htlc_tx,
-            input,
-            amount,
-            per_commitment_point,
-            htlc,
-            secp_ctx,
+            channel_parameters, htlc_tx, input, amount, per_commitment_point, htlc, secp_ctx,
         )
     }
 
     fn sign_closing_transaction(
         &self,
+        channel_parameters: &ChannelTransactionParameters,
         closing_tx: &ClosingTransaction,
         secp_ctx: &Secp256k1<bitcoin::secp256k1::All>,
     ) -> Result<bitcoin::secp256k1::ecdsa::Signature, ()> {
-        self.inner.sign_closing_transaction(closing_tx, secp_ctx)
+        self.inner.sign_closing_transaction(channel_parameters, closing_tx, secp_ctx)
     }
 
-    fn sign_holder_anchor_input(
+    fn sign_holder_keyed_anchor_input(
         &self,
+        channel_parameters: &ChannelTransactionParameters,
         anchor_tx: &bitcoin::Transaction,
         input: usize,
         secp_ctx: &Secp256k1<bitcoin::secp256k1::All>,
     ) -> Result<bitcoin::secp256k1::ecdsa::Signature, ()> {
-        self.inner.sign_holder_anchor_input(anchor_tx, input, secp_ctx)
+        self.inner.sign_holder_keyed_anchor_input(channel_parameters, anchor_tx, input, secp_ctx)
     }
 
     fn sign_channel_announcement_with_funding_key(
         &self,
+        channel_parameters: &ChannelTransactionParameters,
         msg: &UnsignedChannelAnnouncement,
         secp_ctx: &Secp256k1<bitcoin::secp256k1::All>,
     ) -> Result<bitcoin::secp256k1::ecdsa::Signature, ()> {
         self.inner
-            .sign_channel_announcement_with_funding_key(msg, secp_ctx)
+            .sign_channel_announcement_with_funding_key(channel_parameters, msg, secp_ctx)
+    }
+
+    fn sign_splice_shared_input(
+        &self,
+        channel_parameters: &ChannelTransactionParameters,
+        tx: &bitcoin::Transaction,
+        input_index: usize,
+        secp_ctx: &Secp256k1<bitcoin::secp256k1::All>,
+    ) -> bitcoin::secp256k1::ecdsa::Signature {
+        self.inner.sign_splice_shared_input(channel_parameters, tx, input_index, secp_ctx)
     }
 }
 
-// ── Writeable ────────────────────────────────────────────────────────────────
-//
-// LDK serializes signers as part of ChannelMonitor and ChannelManager
-// persistence. Our serialization wraps inner's serialization with a
-// 4-byte channel_index prefix. As of v0.2.0 there is no static_remotekey
-// override, so the channel_index is observable metadata only — useful
-// for diagnostics and the deprecated ClosedChannelWatcher path. On
-// deserialization the inner signer is re-derived from KeysManager via
-// the keys_id.
-//
-// (For Phase 4, deserialization is not yet wired — channel manager
-// re-derivation flows through SignerProvider::derive_channel_signer
-// using the channel_keys_id stored in ChannelManager state. This
-// Writeable impl exists to satisfy the trait bound but won't be the
-// hot path until we add read-side deserialization in Phase 5.)
-
-impl Writeable for LijChannelSigner {
-    fn write<W: Writer>(&self, writer: &mut W) -> Result<(), std::io::Error> {
-        // Format: [channel_index: u32 BE][inner: variable]
-        self.channel_index.to_be_bytes().write(writer)?;
-        self.inner.write(writer)?;
-        Ok(())
-    }
-}
-
-impl WriteableEcdsaChannelSigner for LijChannelSigner {}
+// (0.1+: channel signers are re-derived from channel_keys_id and never serialised — the
+// Writeable impl and the WriteableEcdsaChannelSigner marker are gone.)
 
 #[cfg(test)]
 mod tests {
@@ -766,7 +727,7 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
 
         let seed = root.lightning_node_key().unwrap().private_key.secret_bytes();
-        let inner = Arc::new(KeysManager::new(&seed, 0, 0));
+        let inner = Arc::new(KeysManager::new(&seed, 0, 0, false));
         let counter = PersistedCounter::new(storage).unwrap();
 
         let provider = LijSignerProvider::new(

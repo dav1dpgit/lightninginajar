@@ -12,18 +12,21 @@
 [package]
 edition = "2021"
 name = "lightning"
-version = "0.0.123"
+version = "0.2.6"
 authors = ["Matt Corallo"]
 description = """
-A Bitcoin Lightning library in Rust.
-Does most of the hard work, without implying a specific runtime, requiring clients implement basic network logic, chain interactions and disk storage.
-Still missing tons of error-handling. See GitHub issues for suggested projects if you want to contribute. Don't have to bother telling you not to use this for anything serious, because you'd have to build a client around it to even try.
+A Complete Bitcoin Lightning Library in Rust.
+Handles the core functionality of the Lightning Network, allowing clients to implement custom wallet, chain interactions, storage and network logic without enforcing a specific runtime.
 """
+readme = "README.md"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lightningdevkit/rust-lightning/"
 
 [package.metadata.docs.rs]
-features = ["std"]
+features = [
+    "std",
+    "dnssec",
+]
 rustdoc-args = [
     "--cfg",
     "docsrs",
@@ -33,34 +36,44 @@ rustdoc-args = [
 version = "0.3"
 optional = true
 
+[dependencies.bech32]
+version = "0.11.0"
+default-features = false
+
 [dependencies.bitcoin]
-version = "0.30.2"
+version = "0.32.2"
 features = ["secp-recovery"]
 default-features = false
 
-[dependencies.core2]
-version = "0.3.0"
-optional = true
+[dependencies.dnssec-prover]
+version = "0.6"
 default-features = false
 
 [dependencies.hashbrown]
 version = "0.13"
-optional = true
 default-features = false
 
-[dependencies.hex]
-version = "0.1.1"
-default-features = false
-package = "hex-conservative"
+[dependencies.inventory]
+version = "0.3"
+optional = true
 
 [dependencies.libm]
 version = "0.2"
-optional = true
+default-features = false
+
+[dependencies.lightning-invoice]
+version = "0.34.0"
+default-features = false
+
+[dependencies.lightning-macros]
+version = "0.2.1"
+
+[dependencies.lightning-types]
+version = "0.3.5"
 default-features = false
 
 [dependencies.possiblyrandom]
 version = "0.2"
-optional = true
 default-features = false
 
 [dependencies.regex]
@@ -68,41 +81,44 @@ version = "1.5.6"
 optional = true
 
 [dev-dependencies.bitcoin]
-version = "0.30.2"
+version = "0.32.2"
 features = [
     "bitcoinconsensus",
     "secp-recovery",
 ]
 default-features = false
 
+[dev-dependencies.lightning-macros]
+version = "0.2.1"
+
+[dev-dependencies.lightning-types]
+version = "0.3.0"
+features = ["_test_utils"]
+
+[dev-dependencies.parking_lot]
+version = "0.12"
+default-features = false
+
 [dev-dependencies.regex]
 version = "1.5.6"
 
 [features]
+_externalize_tests = [
+    "inventory",
+    "_test_utils",
+]
 _test_utils = [
     "regex",
     "bitcoin/bitcoinconsensus",
+    "lightning-types/_test_utils",
 ]
-_test_vectors = []
 default = [
     "std",
     "grind_signatures",
 ]
+dnssec = ["dnssec-prover/validation"]
 grind_signatures = []
-max_level_debug = []
-max_level_error = []
-max_level_info = []
-max_level_off = []
-max_level_trace = []
-max_level_warn = []
-no-std = [
-    "hashbrown",
-    "possiblyrandom",
-    "bitcoin/no-std",
-    "core2/alloc",
-    "libm",
-]
-std = ["bitcoin/std"]
+std = []
 unsafe_revoked_tx_signing = []
 
 [target."cfg(ldk_bench)".dependencies.criterion]
@@ -110,5 +126,6 @@ version = "0.4"
 optional = true
 default-features = false
 
+# LiJ (re-port): the wasm32 clock shims read the browser clock through js-sys.
 [target."cfg(target_arch = \"wasm32\")".dependencies.js-sys]
 version = "0.3"

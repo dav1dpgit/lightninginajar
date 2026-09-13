@@ -1,9 +1,9 @@
 //! Defines a Taproot-specific signer type.
 
 use alloc::vec::Vec;
-use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::{schnorr::Signature, PublicKey, Secp256k1, SecretKey};
+use bitcoin::transaction::Transaction;
 
 use musig2::types::{PartialSignature, PublicNonce};
 
@@ -11,8 +11,8 @@ use crate::ln::chan_utils::{
 	ClosingTransaction, CommitmentTransaction, HTLCOutputInCommitment, HolderCommitmentTransaction,
 };
 use crate::ln::msgs::PartialSignatureWithNonce;
-use crate::ln::PaymentPreimage;
 use crate::sign::{ChannelSigner, HTLCDescriptor};
+use crate::types::payment::PaymentPreimage;
 
 /// A Taproot-specific signer type that defines signing-related methods that are either unique to
 /// Taproot or have argument or return types that differ from the ones an ECDSA signer would be
@@ -150,12 +150,6 @@ pub trait TaprootChannelSigner: ChannelSigner {
 	fn partially_sign_closing_transaction(
 		&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<PartialSignature, ()>;
-
-	/// Computes the signature for a commitment transaction's anchor output used as an
-	/// input within `anchor_tx`, which spends the commitment transaction, at index `input`.
-	fn sign_holder_anchor_input(
-		&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Result<Signature, ()>;
 
 	// TODO: sign channel announcement
 }

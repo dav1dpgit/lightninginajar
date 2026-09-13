@@ -260,18 +260,17 @@ pub fn build_funding_tx(
         )
         .map_err(|e| LijError::Key(format!("change key derivation: {e}")))?;
     let change_pubkey = bitcoin::PublicKey::new(change_xpriv.private_key.public_key(&secp));
-    let change_spk = Address::p2wpkh(&change_pubkey, network)
-        .map_err(|e| LijError::Key(format!("change p2wpkh encoding: {e}")))?
+    let change_spk = Address::p2wpkh(&bitcoin::CompressedPublicKey(change_pubkey.inner), network)
         .script_pubkey();
 
     // Outputs: funding (LDK's 2-of-2 script), plus change unless it's dust.
     let mut outputs = vec![TxOut {
-        value: channel_value_sats,
+        value: bitcoin::Amount::from_sat(channel_value_sats),
         script_pubkey: output_script,
     }];
     if change_sats >= DUST_THRESHOLD_SATS {
         outputs.push(TxOut {
-            value: change_sats,
+            value: bitcoin::Amount::from_sat(change_sats),
             script_pubkey: change_spk,
         });
     } else {
@@ -294,7 +293,7 @@ pub fn build_funding_tx(
     }
 
     let mut tx = Transaction {
-        version: 2,
+        version: bitcoin::transaction::Version::TWO,
         lock_time: LockTime::ZERO,
         input: tx_inputs,
         output: outputs,
@@ -308,9 +307,9 @@ pub fn build_funding_tx(
         for (i, u) in selected.iter().enumerate() {
             let sk = signing_secret(root_key, &secp, u.chain, u.index)?;
             let pk = bitcoin::PublicKey::new(sk.public_key(&secp));
-            let script_code = ScriptBuf::new_p2pkh(&pk.pubkey_hash());
+            let spk = ScriptBuf::new_p2wpkh(&bitcoin::CompressedPublicKey(pk.inner).wpubkey_hash());   // 0.32: the sighash helper takes the scriptPubKey
             let sighash = cache
-                .segwit_signature_hash(i, &script_code, u.value_sats, EcdsaSighashType::All)
+                .p2wpkh_signature_hash(i, &spk, bitcoin::Amount::from_sat(u.value_sats), EcdsaSighashType::All)
                 .map_err(|e| LijError::Node(format!("segwit sighash at input {i}: {e}")))?;
             let msg = Message::from_slice(&sighash.to_byte_array())
                 .map_err(|e| LijError::Node(format!("sighash->message: {e}")))?;

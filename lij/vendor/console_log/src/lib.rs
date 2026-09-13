@@ -1,5 +1,6 @@
 #![deny(missing_docs)]
-#![doc(html_root_url = "https://docs.rs/console_log/1.0.0")]
+#![doc(html_root_url = "https://docs.rs/console_log/1.1.0")]
+#![no_std]
 
 //! A logger that logs to the browser's console.
 //!
@@ -41,7 +42,7 @@
 //!
 //! `Cargo.toml`
 //! ```toml
-//! console_log = { version = "0.2", features = ["color"] }
+//! console_log = { version = "1", features = ["color"] }
 //! ```
 //!
 //! The styled log messages will be rendered as follows:
@@ -59,7 +60,7 @@
 //! [dependencies]
 //! cfg-if = "0.1"
 //! log = "0.4"
-//! console_log = { version = "0.2", optional = true }
+//! console_log = { version = "1", optional = true }
 //!
 //! [features]
 //! default = ["console_log"]
@@ -97,8 +98,14 @@
 //! [`console_log::log`]: fn.log.html
 //! [`fern`]: https://docs.rs/fern
 
+extern crate alloc;
+
+use alloc::format;
 use log::{Level, Log, Metadata, Record, SetLoggerError};
 use web_sys::console;
+
+#[cfg(feature = "color")]
+use alloc::string::ToString;
 
 #[cfg(feature = "color")]
 use wasm_bindgen::JsValue;
@@ -222,9 +229,7 @@ pub fn init_with_level(level: Level) -> Result<(), SetLoggerError> {
 /// ## Example
 ///
 /// ```
-/// fn main() {
-///     console_log::init().expect("error initializing logger");
-/// }
+/// console_log::init().expect("error initializing logger");
 /// ```
 #[inline]
 pub fn init() -> Result<(), SetLoggerError> {

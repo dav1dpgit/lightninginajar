@@ -1,4 +1,3 @@
-// Written in 2019 by Tammas Blummer.
 // SPDX-License-Identifier: CC0-1.0
 
 // This module was largely copied from https://github.com/rust-bitcoin/murmel/blob/master/src/blockfilter.rs
@@ -40,24 +39,157 @@
 //!
 
 use core::cmp::{self, Ordering};
-use core::convert::TryInto;
+use core::convert::Infallible;
 use core::fmt::{self, Display, Formatter};
 
-use bitcoin_internals::write_err;
+#[cfg(feature = "arbitrary")]
+use actual_arbitrary::{self as arbitrary, Arbitrary, Unstructured};
+#[cfg(feature = "encoding")]
+use encoding::ArrayRefEncoder;
+use hashes::{sha256d, siphash24, Hash};
+use io::{Read, Write};
 
-use crate::blockdata::block::Block;
+use crate::blockdata::block::{Block, BlockHash};
 use crate::blockdata::script::Script;
 use crate::blockdata::transaction::OutPoint;
 use crate::consensus::encode::VarInt;
 use crate::consensus::{Decodable, Encodable};
-use crate::hash_types::{BlockHash, FilterHash, FilterHeader};
-use crate::hashes::{siphash24, Hash};
-use crate::io;
+use crate::internal_macros::{impl_hashencode, write_err};
 use crate::prelude::*;
 
 /// Golomb encoding parameter as in BIP-158, see also https://gist.github.com/sipa/576d5f09c3b86c3b1b75598d799fc845
 const P: u8 = 19;
 const M: u64 = 784931;
+
+hashes::hash_newtype! {
+    /// Filter hash, as defined in BIP-157
+    pub struct FilterHash(sha256d::Hash);
+    /// Filter header, as defined in BIP-157
+    pub struct FilterHeader(sha256d::Hash);
+}
+
+impl_hashencode!(FilterHash);
+impl_hashencode!(FilterHeader);
+
+#[cfg(feature = "encoding")]
+encoding::encoder_newtype_exact! {
+    /// Encoder type for [`FilterHash`].
+    #[derive(Debug, Clone)]
+    pub struct FilterHashEncoder<'e>(ArrayRefEncoder<'e, 32>);
+}
+
+#[cfg(feature = "encoding")]
+impl encoding::Encode for FilterHash {
+    type Encoder<'e> = FilterHashEncoder<'e>;
+
+    fn encoder(&self) -> Self::Encoder<'_> {
+        FilterHashEncoder::new(ArrayRefEncoder::without_length_prefix(self.as_byte_array()))
+    }
+}
+
+#[cfg(feature = "encoding")]
+type HashInnerDecoder = encoding::ArrayDecoder<32>;
+
+#[cfg(feature = "encoding")]
+crate::decoder_newtype! {
+    /// The decoder for the [`FilterHash`] type.
+    #[derive(Debug, Default, Clone)]
+    pub struct FilterHashDecoder(HashInnerDecoder);
+
+    fn end(
+        result: Result<[u8; 32], encoding::UnexpectedEofError>
+    ) -> Result<FilterHash, FilterHashDecoderError> {
+        let arr = result.map_err(FilterHashDecoderError)?;
+        Ok(FilterHash::from_byte_array(arr))
+    }
+}
+
+#[cfg(feature = "encoding")]
+impl encoding::Decode for FilterHash {
+    type Decoder = FilterHashDecoder;
+}
+
+/// Errors occurring when decoding a [`FilterHash`] message.
+#[cfg(feature = "encoding")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilterHashDecoderError(
+    pub(crate) <HashInnerDecoder as encoding::Decoder>::Error,
+);
+
+#[cfg(feature = "encoding")]
+impl From<Infallible> for FilterHashDecoderError {
+    fn from(never: Infallible) -> Self { match never {} }
+}
+
+#[cfg(feature = "encoding")]
+impl fmt::Display for FilterHashDecoderError {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        write_err!(f, "filterhash error"; self.0)
+    }
+}
+
+#[cfg(all(feature = "encoding", feature = "std"))]
+impl std::error::Error for FilterHashDecoderError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.0) }
+}
+
+#[cfg(feature = "encoding")]
+encoding::encoder_newtype_exact! {
+    /// The encoder for the [`FilterHeader`] type.
+    #[derive(Debug, Clone)]
+    pub struct FilterHeaderEncoder<'e>(encoding::ArrayRefEncoder<'e, 32>);
+}
+
+#[cfg(feature = "encoding")]
+impl encoding::Encode for FilterHeader {
+    type Encoder<'e> = FilterHeaderEncoder<'e>;
+
+    fn encoder(&self) -> Self::Encoder<'_> {
+        FilterHeaderEncoder::new(encoding::ArrayRefEncoder::without_length_prefix(
+            self.as_byte_array(),
+        ))
+    }
+}
+
+#[cfg(feature = "encoding")]
+crate::decoder_newtype! {
+    /// Decoder for the [`FilterHeader`] type.
+    #[derive(Debug, Default, Clone)]
+    pub struct FilterHeaderDecoder(HashInnerDecoder);
+
+    fn end(result: Result<[u8; 32], encoding::UnexpectedEofError>) -> Result<FilterHeader, FilterHeaderDecoderError> {
+        Ok(FilterHeader::from_byte_array(result.map_err(FilterHeaderDecoderError)?))
+    }
+}
+
+#[cfg(feature = "encoding")]
+impl encoding::Decode for FilterHeader {
+    type Decoder = FilterHeaderDecoder;
+}
+
+/// Errors occurring when decoding a [`FilterHeader`] message.
+#[cfg(feature = "encoding")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilterHeaderDecoderError(
+    pub(crate) <HashInnerDecoder as encoding::Decoder>::Error
+);
+
+#[cfg(feature = "encoding")]
+impl From<Infallible> for FilterHeaderDecoderError {
+    fn from(never: Infallible) -> Self { match never {} }
+}
+
+#[cfg(feature = "encoding")]
+impl fmt::Display for FilterHeaderDecoderError {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        write_err!(f, "filterheader error"; self.0)
+    }
+}
+
+#[cfg(all(feature = "encoding", feature = "std"))]
+impl std::error::Error for FilterHeaderDecoderError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.0) }
+}
 
 /// Errors for blockfilter.
 #[derive(Debug)]
@@ -69,24 +201,29 @@ pub enum Error {
     Io(io::Error),
 }
 
+impl From<Infallible> for Error {
+    fn from(never: Infallible) -> Self { match never {} }
+}
+
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        use Error::*;
+
         match *self {
-            Error::UtxoMissing(ref coin) => write!(f, "unresolved UTXO {}", coin),
-            Error::Io(ref e) => write_err!(f, "IO error"; e),
+            UtxoMissing(ref coin) => write!(f, "unresolved UTXO {}", coin),
+            Io(ref e) => write_err!(f, "IO error"; e),
         }
     }
 }
 
 #[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        use self::Error::*;
+        use Error::*;
 
-        match self {
+        match *self {
             UtxoMissing(_) => None,
-            Io(e) => Some(e),
+            Io(ref e) => Some(e),
         }
     }
 }
@@ -167,7 +304,7 @@ pub struct BlockFilterWriter<'a, W> {
     writer: GcsFilterWriter<'a, W>,
 }
 
-impl<'a, W: io::Write> BlockFilterWriter<'a, W> {
+impl<'a, W: Write> BlockFilterWriter<'a, W> {
     /// Creates a new [`BlockFilterWriter`] from `block`.
     pub fn new(writer: &'a mut W, block: &'a Block) -> BlockFilterWriter<'a, W> {
         let block_hash_as_int = block.block_hash().to_byte_array();
@@ -202,10 +339,8 @@ impl<'a, W: io::Write> BlockFilterWriter<'a, W> {
             .flat_map(|t| t.input.iter().map(|i| &i.previous_output))
             .map(script_for_coin)
         {
-            match script {
-                Ok(script) => self.add_element(script.borrow().as_bytes()),
-                Err(e) => return Err(e),
-            }
+            let script = script?;
+            self.add_element(script.borrow().as_bytes())
         }
         Ok(())
     }
@@ -236,7 +371,7 @@ impl BlockFilterReader {
     where
         I: Iterator,
         I::Item: Borrow<[u8]>,
-        R: io::Read + ?Sized,
+        R: Read + ?Sized,
     {
         self.reader.match_any(reader, query)
     }
@@ -246,7 +381,7 @@ impl BlockFilterReader {
     where
         I: Iterator,
         I::Item: Borrow<[u8]>,
-        R: io::Read + ?Sized,
+        R: Read + ?Sized,
     {
         self.reader.match_all(reader, query)
     }
@@ -269,11 +404,9 @@ impl GcsFilterReader {
     where
         I: Iterator,
         I::Item: Borrow<[u8]>,
-        R: io::Read + ?Sized,
+        R: Read + ?Sized,
     {
-        let mut decoder = reader;
-        let n_elements: VarInt = Decodable::consensus_decode(&mut decoder).unwrap_or(VarInt(0));
-        let reader = &mut decoder;
+        let n_elements: VarInt = Decodable::consensus_decode(reader).unwrap_or(VarInt(0));
         // map hashes to [0, n_elements << grp]
         let nm = n_elements.0 * self.m;
         let mut mapped =
@@ -281,7 +414,7 @@ impl GcsFilterReader {
         // sort
         mapped.sort_unstable();
         if mapped.is_empty() {
-            return Ok(true);
+            return Ok(false);
         }
         if n_elements.0 == 0 {
             return Ok(false);
@@ -314,11 +447,9 @@ impl GcsFilterReader {
     where
         I: Iterator,
         I::Item: Borrow<[u8]>,
-        R: io::Read + ?Sized,
+        R: Read + ?Sized,
     {
-        let mut decoder = reader;
-        let n_elements: VarInt = Decodable::consensus_decode(&mut decoder).unwrap_or(VarInt(0));
-        let reader = &mut decoder;
+        let n_elements: VarInt = Decodable::consensus_decode(reader).unwrap_or(VarInt(0));
         // map hashes to [0, n_elements << grp]
         let nm = n_elements.0 * self.m;
         let mut mapped =
@@ -367,7 +498,7 @@ pub struct GcsFilterWriter<'a, W> {
     m: u64,
 }
 
-impl<'a, W: io::Write> GcsFilterWriter<'a, W> {
+impl<'a, W: Write> GcsFilterWriter<'a, W> {
     /// Creates a new [`GcsFilterWriter`] wrapping a generic writer, with specific seed to siphash.
     pub fn new(writer: &'a mut W, k0: u64, k1: u64, m: u64, p: u8) -> GcsFilterWriter<'a, W> {
         GcsFilterWriter { filter: GcsFilter::new(k0, k1, p), writer, elements: BTreeSet::new(), m }
@@ -393,7 +524,7 @@ impl<'a, W: io::Write> GcsFilterWriter<'a, W> {
         mapped.sort_unstable();
 
         // write number of elements as varint
-        let mut wrote = VarInt(mapped.len() as u64).consensus_encode(&mut self.writer)?;
+        let mut wrote = VarInt::from(mapped.len()).consensus_encode(self.writer)?;
 
         // write out deltas of sorted values into a Golonb-Rice coded bit stream
         let mut writer = BitStreamWriter::new(self.writer);
@@ -425,7 +556,7 @@ impl GcsFilter {
         n: u64,
     ) -> Result<usize, io::Error>
     where
-        W: io::Write,
+        W: Write,
     {
         let mut wrote = 0;
         let mut q = n >> self.p;
@@ -442,7 +573,7 @@ impl GcsFilter {
     /// Golomb-Rice decodes a number from a bit stream (parameter 2^k).
     fn golomb_rice_decode<R>(&self, reader: &mut BitStreamReader<R>) -> Result<u64, io::Error>
     where
-        R: io::Read,
+        R: Read + ?Sized,
     {
         let mut q = 0u64;
         while reader.read(1)? == 1 {
@@ -459,13 +590,13 @@ impl GcsFilter {
 }
 
 /// Bitwise stream reader.
-pub struct BitStreamReader<'a, R> {
+pub struct BitStreamReader<'a, R: ?Sized> {
     buffer: [u8; 1],
     offset: u8,
     reader: &'a mut R,
 }
 
-impl<'a, R: io::Read> BitStreamReader<'a, R> {
+impl<'a, R: Read + ?Sized> BitStreamReader<'a, R> {
     /// Creates a new [`BitStreamReader`] that reads bitwise from a given `reader`.
     pub fn new(reader: &'a mut R) -> BitStreamReader<'a, R> {
         BitStreamReader { buffer: [0u8], reader, offset: 8 }
@@ -512,7 +643,7 @@ pub struct BitStreamWriter<'a, W> {
     writer: &'a mut W,
 }
 
-impl<'a, W: io::Write> BitStreamWriter<'a, W> {
+impl<'a, W: Write> BitStreamWriter<'a, W> {
     /// Creates a new [`BitStreamWriter`] that writes bitwise to a given `writer`.
     pub fn new(writer: &'a mut W) -> BitStreamWriter<'a, W> {
         BitStreamWriter { buffer: [0u8], writer, offset: 0 }
@@ -552,16 +683,29 @@ impl<'a, W: io::Write> BitStreamWriter<'a, W> {
     }
 }
 
+#[cfg(feature = "arbitrary")]
+impl<'a> Arbitrary<'a> for FilterHash {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(FilterHash::from_byte_array(u.arbitrary()?))
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'a> Arbitrary<'a> for FilterHeader {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(FilterHeader::from_byte_array(u.arbitrary()?))
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::collections::HashMap;
 
+    use hex::test_hex_unwrap as hex;
     use serde_json::Value;
 
     use super::*;
     use crate::consensus::encode::deserialize;
-    use crate::hash_types::BlockHash;
-    use crate::internal_macros::hex;
     use crate::ScriptBuf;
 
     #[test]
@@ -609,7 +753,7 @@ mod test {
             assert!(filter
                 .match_all(
                     block_hash,
-                    &mut txmap.iter().filter_map(|(_, s)| if !s.is_empty() {
+                    &mut txmap.values().filter_map(|s| if !s.is_empty() {
                         Some(s.as_bytes())
                     } else {
                         None

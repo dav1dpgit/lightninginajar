@@ -13,18 +13,23 @@
 #[macro_use]
 pub mod functional_test_utils;
 
-pub mod onion_payment;
-pub mod channelmanager;
+pub mod chan_utils;
 pub mod channel_keys;
+pub mod channel_state;
+pub mod channelmanager;
+mod features;
+pub mod funding;
 pub mod inbound_payment;
 pub mod msgs;
+pub mod onion_payment;
+pub mod our_peer_storage;
 pub mod peer_handler;
-pub mod chan_utils;
-pub mod features;
 pub mod script;
 pub mod types;
 
-pub use types::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
+// TODO: These modules were moved from lightning-invoice and need to be better integrated into this
+// crate now:
+pub mod invoice_utils;
 
 #[cfg(fuzzing)]
 pub mod peer_channel_encryptor;
@@ -36,21 +41,60 @@ pub mod channel;
 #[cfg(not(fuzzing))]
 pub(crate) mod channel;
 
-pub(crate) mod onion_utils;
+pub mod onion_utils;
 mod outbound_payment;
 pub mod wire;
 
-pub use onion_utils::create_payment_onion;
+#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
+pub(crate) mod interactivetxs;
+
+pub use onion_utils::{create_payment_onion, LocalHTLCFailureReason};
 // Older rustc (which we support) refuses to let us call the get_payment_preimage_hash!() macro
 // without the node parameter being mut. This is incorrect, and thus newer rustcs will complain
 // about an unnecessary mut. Thus, we silence the unused_mut warning in two test modules below.
 
 #[cfg(test)]
 #[allow(unused_mut)]
+mod async_payments_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod async_signer_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
 mod blinded_payment_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
-mod functional_tests;
+pub mod bolt11_payment_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod chanmon_update_fail_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod channel_open_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod channel_type_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod dual_funding_tests;
+#[cfg(any(test, feature = "_externalize_tests"))]
+#[allow(unused_mut)]
+pub mod functional_tests;
+#[cfg(any(test, feature = "_externalize_tests"))]
+#[allow(unused_mut)]
+pub mod htlc_reserve_unit_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod max_payment_path_len_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod monitor_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod offers_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod onion_route_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod payment_tests;
@@ -58,30 +102,22 @@ mod payment_tests;
 #[allow(unused_mut)]
 mod priv_short_conf_tests;
 #[cfg(test)]
-#[allow(unused_mut)]
-mod chanmon_update_fail_tests;
-#[cfg(test)]
-#[allow(unused_mut)]
-mod reorg_tests;
+mod quiescence_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod reload_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
-mod onion_route_tests;
-#[cfg(test)]
-#[allow(unused_mut)]
-mod monitor_tests;
+mod reorg_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod shutdown_tests;
-#[cfg(all(test, async_signing))]
+#[cfg(any(feature = "_test_utils", test))]
+pub mod splicing_tests;
+#[cfg(any(test, feature = "_externalize_tests"))]
 #[allow(unused_mut)]
-mod async_signer_tests;
+pub mod update_fee_tests;
 #[cfg(test)]
-#[allow(unused_mut)]
-mod offers_tests;
-#[allow(dead_code)] // TODO(dual_funding): Exchange for dual_funding cfg
-pub(crate) mod interactivetxs;
+mod zero_fee_commitment_tests;
 
 pub use self::peer_channel_encryptor::LN_MAX_MSG_LEN;

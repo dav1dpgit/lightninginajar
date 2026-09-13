@@ -1,6 +1,6 @@
-use std::sync::{LockResult, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockResult};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use super::{LockHeldState, LockTestExt};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{LockResult, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockResult};
 
 /// Rust libstd's RwLock does not provide any fairness guarantees (and, in fact, when used on
 /// Linux with pthreads under the hood, readers trivially and completely starve writers).
@@ -26,14 +26,14 @@ impl<T> FairRwLock<T> {
 	// Note that all atomic accesses are relaxed, as we do not rely on the atomics here for any
 	// ordering at all, instead relying on the underlying RwLock to provide ordering of unrelated
 	// memory.
-	pub fn write(&self) -> LockResult<RwLockWriteGuard<T>> {
+	pub fn write(&self) -> LockResult<RwLockWriteGuard<'_, T>> {
 		self.waiting_writers.fetch_add(1, Ordering::Relaxed);
 		let res = self.lock.write();
 		self.waiting_writers.fetch_sub(1, Ordering::Relaxed);
 		res
 	}
 
-	pub fn read(&self) -> LockResult<RwLockReadGuard<T>> {
+	pub fn read(&self) -> LockResult<RwLockReadGuard<'_, T>> {
 		if self.waiting_writers.load(Ordering::Relaxed) != 0 {
 			let _write_queue_lock = self.lock.write();
 		}

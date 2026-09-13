@@ -56,7 +56,7 @@ pub(crate) use arr_newtype_fmt_impl;
 ///
 /// * `$bits` - number of bits this hash type has
 /// * `$reverse` - `bool`  - `true` if the hash type should be displayed backwards, `false`
-///    otherwise.
+///   otherwise.
 /// * `$gen: $gent` - generic type(s) and trait bound(s)
 ///
 /// Restrictions on usage:
@@ -192,9 +192,17 @@ macro_rules! hash_type {
 
         #[cfg(feature = "schemars")]
         impl schemars::JsonSchema for Hash {
-            fn schema_name() -> String { "Hash".to_owned() }
+            fn schema_name() -> alloc::string::String {
+                use alloc::borrow::ToOwned;
+
+                "Hash".to_owned()
+            }
 
             fn json_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+                use alloc::borrow::ToOwned;
+                use alloc::string::String;
+                use alloc::boxed::Box;
+
                 let len = $bits / 8;
                 let mut schema: schemars::schema::SchemaObject = <String>::json_schema(gen).into();
                 schema.string = Some(Box::new(schemars::schema::StringValidation {

@@ -156,7 +156,8 @@ impl FeeQuote {
             ConfirmationTarget::AnchorChannelFee => self.anchor_channel,
             ConfirmationTarget::NonAnchorChannelFee => self.non_anchor_channel,
             ConfirmationTarget::ChannelCloseMinimum => self.channel_close_minimum,
-            ConfirmationTarget::OnChainSweep => self.on_chain_sweep,
+            ConfirmationTarget::UrgentOnChainSweep => self.on_chain_sweep,
+            ConfirmationTarget::MaximumFeeEstimate => self.on_chain_sweep,   // 0.2: the ceiling LDK will ever pay — our urgent rate is the highest we quote
             ConfirmationTarget::OutputSpendingFee => self.output_spending,
         }
     }

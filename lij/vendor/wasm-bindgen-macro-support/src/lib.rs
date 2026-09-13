@@ -20,8 +20,44 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use quote::ToTokens;
 use quote::TokenStreamExt;
+use syn::parse::Parser;
 use syn::parse::{Parse, ParseStream, Result as SynResult};
 use syn::Token;
+
+fn cfg_gate_conditions(meta: &syn::Meta) -> Vec<TokenStream> {
+    if meta.path().is_ident("cfg") {
+        return match meta {
+            syn::Meta::List(list) => vec![list.tokens.clone()],
+            _ => Vec::new(),
+        };
+    }
+    let syn::Meta::List(list) = meta else {
+        return Vec::new();
+    };
+    if !list.path.is_ident("cfg_attr") {
+        return Vec::new();
+    }
+    let Ok(args) = syn::punctuated::Punctuated::<syn::Meta, Token![,]>::parse_terminated
+        .parse2(list.tokens.clone())
+    else {
+        return Vec::new();
+    };
+    let mut args = args.iter();
+    let Some(predicate) = args.next() else {
+        return Vec::new();
+    };
+    args.flat_map(cfg_gate_conditions)
+        .map(|condition| quote! { any(not(#predicate), #condition) })
+        .collect()
+}
+
+pub(crate) fn cfg_gate_attrs(attrs: &[syn::Attribute]) -> Vec<syn::Attribute> {
+    attrs
+        .iter()
+        .flat_map(|attr| cfg_gate_conditions(&attr.meta))
+        .map(|condition| syn::parse_quote! { #[cfg(#condition)] })
+        .collect()
+}
 
 /// Takes the parsed input from a `#[wasm_bindgen]` macro and returns the generated bindings
 pub fn expand(attr: TokenStream, input: TokenStream) -> Result<TokenStream, Diagnostic> {
@@ -29,16 +65,45 @@ pub fn expand(attr: TokenStream, input: TokenStream) -> Result<TokenStream, Diag
     // if struct is encountered, add `derive` attribute and let everything happen there (workaround
     // to help parsing cfg_attr correctly).
     let item = syn::parse2::<syn::Item>(input)?;
-    if let syn::Item::Struct(s) = item {
+    if let syn::Item::Struct(mut s) = item {
         let opts: BindgenAttrs = syn::parse2(attr.clone())?;
+
+        // If the emitted `#[derive(<path>::__rt::BindgenedStruct)]` below
+        // fails to resolve — most commonly because `wasm-bindgen` is not a
+        // direct dependency, so `::wasm_bindgen` is not in the extern
+        // prelude — rustc strips the failed derive and, since
+        // `#[wasm_bindgen(#attr)]` is then no longer an inert derive helper,
+        // falls back to re-invoking this attribute macro on the struct with
+        // identical input, recursing until the recursion limit. The emitted
+        // `__wasm_bindgen_retried` marker attribute survives that round trip
+        // (and is otherwise an inert helper of the derive), letting us detect
+        // the re-invocation and report a proper error instead.
+        if strip_retry_marker(&mut s.attrs) {
+            bail_span!(
+                s.ident,
+                "cannot resolve a path to the `wasm_bindgen` crate: add `wasm-bindgen` \
+                 as a direct dependency, or specify an explicit path with \
+                 `#[wasm_bindgen(wasm_bindgen = path::to::wasm_bindgen)]`"
+            );
+        }
         let wasm_bindgen = opts
             .wasm_bindgen()
             .cloned()
             .unwrap_or_else(|| syn::parse_quote! { ::wasm_bindgen });
 
+        // Inject `parent: <wasm_bindgen>::Parent<Parent>` when the struct
+        // declares `#[wasm_bindgen(extends = Parent)]`, so users never write
+        // the field themselves. Also rejects user-declared `Parent<T>` fields.
+        let extends_path = opts.attrs.iter().find_map(|(_, a)| match a {
+            parser::BindgenAttr::Extends(_, path) => Some(path.clone()),
+            _ => None,
+        });
+        parser::inject_parent_field(&mut s, extends_path.as_ref(), &wasm_bindgen)?;
+
         let item = quote! {
             #[derive(#wasm_bindgen::__rt::BindgenedStruct)]
             #[wasm_bindgen(#attr)]
+            #[__wasm_bindgen_retried]
             #s
         };
         return Ok(item);
@@ -56,6 +121,14 @@ pub fn expand(attr: TokenStream, input: TokenStream) -> Result<TokenStream, Diag
     parser::check_unused_attrs(&mut tokens);
 
     Ok(tokens)
+}
+
+/// Finds and removes the `#[__wasm_bindgen_retried]` marker attribute left by
+/// a previous expansion attempt whose emitted derive path failed to resolve.
+fn strip_retry_marker(attrs: &mut Vec<syn::Attribute>) -> bool {
+    let before = attrs.len();
+    attrs.retain(|attr| !attr.path().is_ident("__wasm_bindgen_retried"));
+    before != attrs.len()
 }
 
 /// Takes the parsed input from a `wasm_bindgen::link_to` macro and returns the generated link
@@ -125,8 +198,10 @@ pub fn expand_class_marker(
 struct ClassMarker {
     class: syn::Ident,
     js_class: String,
+    js_namespace: Option<Vec<String>>,
     wasm_bindgen: syn::Path,
     wasm_bindgen_futures: syn::Path,
+    js_sys: syn::Path,
 }
 
 impl Parse for ClassMarker {
@@ -139,14 +214,29 @@ impl Parse for ClassMarker {
             .map(String::from)
             .unwrap_or(js_class);
 
+        let mut js_namespace: Option<Vec<String>> = None;
         let mut wasm_bindgen = None;
         let mut wasm_bindgen_futures = None;
+        let mut js_sys = None;
 
         loop {
             if input.parse::<Option<Token![,]>>()?.is_some() {
                 let ident = input.parse::<syn::Ident>()?;
 
-                if ident == "wasm_bindgen" {
+                if ident == "js_namespace" {
+                    if js_namespace.is_some() {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            "found duplicate `js_namespace`",
+                        ));
+                    }
+                    input.parse::<Token![=]>()?;
+                    let content;
+                    syn::bracketed!(content in input);
+                    let segs: syn::punctuated::Punctuated<syn::LitStr, Token![,]> = content
+                        .parse_terminated(|p: ParseStream| p.parse::<syn::LitStr>(), Token![,])?;
+                    js_namespace = Some(segs.into_iter().map(|s| s.value()).collect());
+                } else if ident == "wasm_bindgen" {
                     if wasm_bindgen.is_some() {
                         return Err(syn::Error::new(
                             ident.span(),
@@ -166,10 +256,17 @@ impl Parse for ClassMarker {
 
                     input.parse::<Token![=]>()?;
                     wasm_bindgen_futures = Some(input.parse::<syn::Path>()?);
+                } else if ident == "js_sys" {
+                    if js_sys.is_some() {
+                        return Err(syn::Error::new(ident.span(), "found duplicate `js_sys`"));
+                    }
+
+                    input.parse::<Token![=]>()?;
+                    js_sys = Some(input.parse::<syn::Path>()?);
                 } else {
                     return Err(syn::Error::new(
                         ident.span(),
-                        "expected `wasm_bindgen` or `wasm_bindgen_futures`",
+                        "expected `js_namespace`, `wasm_bindgen`, `wasm_bindgen_futures`, or `js_sys`",
                     ));
                 }
             } else {
@@ -180,9 +277,11 @@ impl Parse for ClassMarker {
         Ok(ClassMarker {
             class,
             js_class,
+            js_namespace,
             wasm_bindgen: wasm_bindgen.unwrap_or_else(|| syn::parse_quote! { wasm_bindgen }),
             wasm_bindgen_futures: wasm_bindgen_futures
                 .unwrap_or_else(|| syn::parse_quote! { wasm_bindgen_futures }),
+            js_sys: js_sys.unwrap_or_else(|| syn::parse_quote! { js_sys }),
         })
     }
 }

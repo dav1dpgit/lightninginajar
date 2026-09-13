@@ -9,18 +9,21 @@
 
 //! Structs and traits which allow other parts of rust-lightning to interact with the blockchain.
 
-use bitcoin::blockdata::block::{Block, Header};
-use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::blockdata::script::{Script, ScriptBuf};
+use bitcoin::block::{Block, Header};
+use bitcoin::constants::genesis_block;
 use bitcoin::hash_types::{BlockHash, Txid};
-use bitcoin::network::constants::Network;
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::network::Network;
+use bitcoin::script::{Script, ScriptBuf};
 use bitcoin::secp256k1::PublicKey;
 
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, MonitorEvent};
-use crate::ln::types::ChannelId;
-use crate::sign::ecdsa::WriteableEcdsaChannelSigner;
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::impl_writeable_tlv_based;
+use crate::ln::types::ChannelId;
+use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::HTLCDescriptor;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -28,9 +31,9 @@ use crate::prelude::*;
 pub mod chaininterface;
 pub mod chainmonitor;
 pub mod channelmonitor;
-pub mod transaction;
 pub(crate) mod onchaintx;
 pub(crate) mod package;
+pub mod transaction;
 
 /// The best known block as identified by its hash and height.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -45,13 +48,13 @@ impl BestBlock {
 	/// Constructs a `BestBlock` that represents the genesis block at height 0 of the given
 	/// network.
 	pub fn from_network(network: Network) -> Self {
-		BestBlock {
-			block_hash: genesis_block(network).header.block_hash(),
-			height: 0,
-		}
+		BestBlock { block_hash: genesis_block(network).header.block_hash(), height: 0 }
 	}
 
 	/// Returns a `BestBlock` as identified by the given block hash and height.
+	///
+	/// This is not exported to bindings users directly as the bindings auto-generate an
+	/// equivalent `new`.
 	pub fn new(block_hash: BlockHash, height: u32) -> Self {
 		BestBlock { block_hash, height }
 	}
@@ -61,7 +64,6 @@ impl_writeable_tlv_based!(BestBlock, {
 	(0, block_hash, required),
 	(2, height, required),
 });
-
 
 /// The `Listen` trait is used to notify when blocks have been connected or disconnected from the
 /// chain.
@@ -74,6 +76,24 @@ impl_writeable_tlv_based!(BestBlock, {
 /// By using [`Listen::filtered_block_connected`] this interface supports clients fetching the
 /// entire header chain and only blocks with matching transaction data using BIP 157 filters or
 /// other similar filtering.
+///
+/// # Requirements
+///
+/// Each block must be connected in chain order with one call to either
+/// [`Listen::block_connected`] or [`Listen::filtered_block_connected`]. If a call to the
+/// [`Filter`] interface was made during block processing and further transaction(s) from the same
+/// block now match the filter, a second call to [`Listen::filtered_block_connected`] should be
+/// made immediately for the same block (prior to any other calls to the [`Listen`] interface).
+///
+/// In case of a reorg, you must call [`Listen::blocks_disconnected`] once with information on the
+/// "fork point" block, i.e. the highest block that is in both forks. You may call
+/// [`Listen::blocks_disconnected`] multiple times as you walk the chain backwards, but each must
+/// include a fork point block that is before the last.
+///
+/// # Object Birthday
+///
+/// Note that most implementations take a [`BestBlock`] on construction and blocks only need to be
+/// applied starting from that point.
 pub trait Listen {
 	/// Notifies the listener that a block was added at the given height, with the transaction data
 	/// possibly filtered.
@@ -85,8 +105,13 @@ pub trait Listen {
 		self.filtered_block_connected(&block.header, &txdata, height);
 	}
 
-	/// Notifies the listener that a block was removed at the given height.
-	fn block_disconnected(&self, header: &Header, height: u32);
+	/// Notifies the listener that one or more blocks were removed in anticipation of a reorg.
+	///
+	/// The provided [`BestBlock`] is the new best block after disconnecting blocks in the reorg
+	/// but before connecting new ones (i.e. the "fork point" block). For backwards compatibility,
+	/// you may instead walk the chain backwards, calling `blocks_disconnected` for each block
+	/// that is disconnected in a reorg.
+	fn blocks_disconnected(&self, fork_point_block: BestBlock);
 }
 
 /// The `Confirm` trait is used to notify LDK when relevant transactions have been confirmed on
@@ -206,6 +231,12 @@ pub enum ChannelMonitorUpdateStatus {
 	///
 	/// This includes performing any `fsync()` calls required to ensure the update is guaranteed to
 	/// be available on restart even if the application crashes.
+	///
+	/// If you return this variant, you cannot later return [`InProgress`] from the same instance of
+	/// [`Persist`]/[`Watch`] without first restarting.
+	///
+	/// [`InProgress`]: ChannelMonitorUpdateStatus::InProgress
+	/// [`Persist`]: chainmonitor::Persist
 	Completed,
 	/// Indicates that the update will happen asynchronously in the background or that a transient
 	/// failure occurred which is being retried in the background and will eventually complete.
@@ -231,7 +262,12 @@ pub enum ChannelMonitorUpdateStatus {
 	/// reliable, this feature is considered beta, and a handful of edge-cases remain. Until the
 	/// remaining cases are fixed, in rare cases, *using this feature may lead to funds loss*.
 	///
+	/// If you return this variant, you cannot later return [`Completed`] from the same instance of
+	/// [`Persist`]/[`Watch`] without first restarting.
+	///
 	/// [`InProgress`]: ChannelMonitorUpdateStatus::InProgress
+	/// [`Completed`]: ChannelMonitorUpdateStatus::Completed
+	/// [`Persist`]: chainmonitor::Persist
 	InProgress,
 	/// Indicates that an update has failed and will not complete at any point in the future.
 	///
@@ -257,25 +293,27 @@ pub enum ChannelMonitorUpdateStatus {
 /// application crashes.
 ///
 /// See method documentation and [`ChannelMonitorUpdateStatus`] for specific requirements.
-pub trait Watch<ChannelSigner: WriteableEcdsaChannelSigner> {
-	/// Watches a channel identified by `funding_txo` using `monitor`.
+pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
+	/// Watches a channel identified by `channel_id` using `monitor`.
 	///
 	/// Implementations are responsible for watching the chain for the funding transaction along
 	/// with any spends of outputs returned by [`get_outputs_to_watch`]. In practice, this means
-	/// calling [`block_connected`] and [`block_disconnected`] on the monitor.
+	/// calling [`block_connected`] and [`blocks_disconnected`] on the monitor.
 	///
 	/// A return of `Err(())` indicates that the channel should immediately be force-closed without
 	/// broadcasting the funding transaction.
 	///
-	/// If the given `funding_txo` has previously been registered via `watch_channel`, `Err(())`
+	/// If the given `channel_id` has previously been registered via `watch_channel`, `Err(())`
 	/// must be returned.
 	///
 	/// [`get_outputs_to_watch`]: channelmonitor::ChannelMonitor::get_outputs_to_watch
 	/// [`block_connected`]: channelmonitor::ChannelMonitor::block_connected
-	/// [`block_disconnected`]: channelmonitor::ChannelMonitor::block_disconnected
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> Result<ChannelMonitorUpdateStatus, ()>;
+	/// [`blocks_disconnected`]: channelmonitor::ChannelMonitor::blocks_disconnected
+	fn watch_channel(
+		&self, channel_id: ChannelId, monitor: ChannelMonitor<ChannelSigner>,
+	) -> Result<ChannelMonitorUpdateStatus, ()>;
 
-	/// Updates a channel identified by `funding_txo` by applying `update` to its monitor.
+	/// Updates a channel identified by `channel_id` by applying `update` to its monitor.
 	///
 	/// Implementations must call [`ChannelMonitor::update_monitor`] with the given update. This
 	/// may fail (returning an `Err(())`), in which case this should return
@@ -290,7 +328,9 @@ pub trait Watch<ChannelSigner: WriteableEcdsaChannelSigner> {
 	/// [`ChannelMonitorUpdateStatus::UnrecoverableError`], see its documentation for more info.
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-	fn update_channel(&self, funding_txo: OutPoint, update: &ChannelMonitorUpdate) -> ChannelMonitorUpdateStatus;
+	fn update_channel(
+		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate,
+	) -> ChannelMonitorUpdateStatus;
 
 	/// Returns any monitor events since the last call. Subsequent calls must only return new
 	/// events.
@@ -301,7 +341,9 @@ pub trait Watch<ChannelSigner: WriteableEcdsaChannelSigner> {
 	///
 	/// For details on asynchronous [`ChannelMonitor`] updating and returning
 	/// [`MonitorEvent::Completed`] here, see [`ChannelMonitorUpdateStatus::InProgress`].
-	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, Option<PublicKey>)>;
+	fn release_pending_monitor_events(
+		&self,
+	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)>;
 }
 
 /// The `Filter` trait defines behavior for indicating chain activity of interest pertaining to
@@ -327,6 +369,11 @@ pub trait Watch<ChannelSigner: WriteableEcdsaChannelSigner> {
 pub trait Filter {
 	/// Registers interest in a transaction with `txid` and having an output with `script_pubkey` as
 	/// a spending condition.
+	///
+	/// This may be used, for example, to monitor for when a funding transaction confirms.
+	///
+	/// The `script_pubkey` is provided for informational purposes and may be useful for block
+	/// sources which only support filtering on scripts.
 	fn register_tx(&self, txid: &Txid, script_pubkey: &Script);
 
 	/// Registers interest in spends of a transaction output.
@@ -335,6 +382,9 @@ pub trait Filter {
 	/// to ensure that also dependent output spents within an already connected block are correctly
 	/// handled, e.g., by re-scanning the block in question whenever new outputs have been
 	/// registered mid-processing.
+	///
+	/// This may be used, for example, to monitor for when a funding output is spent (by any
+	/// transaction).
 	fn register_output(&self, output: WatchedOutput);
 }
 
@@ -346,6 +396,9 @@ pub trait Filter {
 ///
 /// If `block_hash` is `Some`, this indicates the output was created in the corresponding block and
 /// may have been spent there. See [`Filter::register_output`] for details.
+///
+/// Depending on your block source, you may need one or both of either [`Self::outpoint`] or
+/// [`Self::script_pubkey`].
 ///
 /// [`ChannelMonitor`]: channelmonitor::ChannelMonitor
 /// [`ChannelMonitor::block_connected`]: channelmonitor::ChannelMonitor::block_connected
@@ -366,8 +419,8 @@ impl<T: Listen> Listen for dyn core::ops::Deref<Target = T> {
 		(**self).filtered_block_connected(header, txdata, height);
 	}
 
-	fn block_disconnected(&self, header: &Header, height: u32) {
-		(**self).block_disconnected(header, height);
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
+		(**self).blocks_disconnected(fork_point);
 	}
 }
 
@@ -381,9 +434,9 @@ where
 		self.1.filtered_block_connected(header, txdata, height);
 	}
 
-	fn block_disconnected(&self, header: &Header, height: u32) {
-		self.0.block_disconnected(header, height);
-		self.1.block_disconnected(header, height);
+	fn blocks_disconnected(&self, fork_point: BestBlock) {
+		self.0.blocks_disconnected(fork_point);
+		self.1.blocks_disconnected(fork_point);
 	}
 }
 
@@ -392,3 +445,20 @@ where
 /// This is not exported to bindings users as we just use [u8; 32] directly.
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ClaimId(pub [u8; 32]);
+
+impl ClaimId {
+	pub(crate) fn from_htlcs(htlcs: &[HTLCDescriptor]) -> ClaimId {
+		let mut engine = Sha256::engine();
+		for htlc in htlcs {
+			engine.input(&htlc.commitment_txid.to_byte_array());
+			engine.input(&htlc.htlc.transaction_output_index.unwrap().to_be_bytes());
+		}
+		ClaimId(Sha256::from_engine(engine).to_byte_array())
+	}
+	pub(crate) fn step_with_bytes(&self, bytes: &[u8]) -> ClaimId {
+		let mut engine = Sha256::engine();
+		engine.input(&self.0);
+		engine.input(bytes);
+		ClaimId(Sha256::from_engine(engine).to_byte_array())
+	}
+}

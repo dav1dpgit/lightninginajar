@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 name = "lightning-invoice"
-version = "0.31.0"
+version = "0.34.1"
 authors = ["Sebastian Geisler <sgeisler@wh2.tu-dresden.de>"]
 description = "Data structures to parse and serialize BOLT11 lightning invoices"
 documentation = "https://docs.rs/lightning-invoice/"
@@ -34,51 +34,30 @@ rustdoc-args = [
 ]
 
 [dependencies.bech32]
-version = "0.9.0"
+version = "0.11.0"
 default-features = false
 
 [dependencies.bitcoin]
-version = "0.30.2"
+version = "0.32.2"
+features = ["secp-recovery"]
 default-features = false
 
-[dependencies.lightning]
-version = "0.0.123"
-default-features = false
-
-[dependencies.secp256k1]
-version = "0.27.0"
-features = [
-    "recovery",
-    "alloc",
-]
+[dependencies.lightning-types]
+version = "0.3.0"
 default-features = false
 
 [dependencies.serde]
-version = "1.0.118"
+version = "1.0"
+features = ["alloc"]
 optional = true
+default-features = false
 
 [dev-dependencies.hashbrown]
 version = "0.13"
-default-features = false
-
-[dev-dependencies.hex]
-version = "0.1.1"
-default-features = false
-package = "hex-conservative"
-
-[dev-dependencies.lightning]
-version = "0.0.123"
-features = ["_test_utils"]
 default-features = false
 
 [dev-dependencies.serde_json]
 version = "1"
 
 [features]
-default = ["std"]
-no-std = ["lightning/no-std"]
-std = [
-    "bitcoin/std",
-    "lightning/std",
-    "bech32/std",
-]
+std = []

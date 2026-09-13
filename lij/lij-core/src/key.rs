@@ -289,7 +289,7 @@ mod tests {
             .derive_priv(&secp, &"m/0".parse::<DerivationPath>().unwrap())
             .unwrap();
         let pubkey = bitcoin::PublicKey::new(child_0.private_key.public_key(&secp));
-        let address = bitcoin::Address::p2wpkh(&pubkey, Network::Bitcoin).unwrap();
+        let address = bitcoin::Address::p2wpkh(&bitcoin::CompressedPublicKey(pubkey.inner), Network::Bitcoin);
 
         // Verified externally (Check 1, April 2026):
         //   m/84'/0'/0'/0/0 for abandon...about → bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu
@@ -321,7 +321,7 @@ mod tests {
             .derive_priv(&secp, &"m/0".parse::<DerivationPath>().unwrap())
             .unwrap();
         let pubkey = bitcoin::PublicKey::new(child_0.private_key.public_key(&secp));
-        let address = bitcoin::Address::p2wpkh(&pubkey, Network::Bitcoin).unwrap();
+        let address = bitcoin::Address::p2wpkh(&bitcoin::CompressedPublicKey(pubkey.inner), Network::Bitcoin);
 
         assert_eq!(
             address.to_string(),

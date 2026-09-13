@@ -288,18 +288,17 @@ pub async fn build_and_send(
         )
         .map_err(|e| LijError::Key(format!("change key derivation: {e}")))?;
     let change_pubkey = bitcoin::PublicKey::new(change_xpriv.private_key.public_key(&secp));
-    let change_spk = Address::p2wpkh(&change_pubkey, network)
-        .map_err(|e| LijError::Key(format!("change p2wpkh encoding: {e}")))?
+    let change_spk = Address::p2wpkh(&bitcoin::CompressedPublicKey(change_pubkey.inner), network)
         .script_pubkey();
 
     // Outputs: destination, plus change unless it's dust (then it goes to fee).
     let mut outputs = vec![TxOut {
-        value: amount_sats,
+        value: bitcoin::Amount::from_sat(amount_sats),
         script_pubkey: dest_spk,
     }];
     if change_sats >= DUST_THRESHOLD_SATS {
         outputs.push(TxOut {
-            value: change_sats,
+            value: bitcoin::Amount::from_sat(change_sats),
             script_pubkey: change_spk,
         });
     } else {
@@ -323,7 +322,7 @@ pub async fn build_and_send(
     }
 
     let mut tx = Transaction {
-        version: 2,
+        version: bitcoin::transaction::Version::TWO,
         lock_time: LockTime::ZERO,
         input: tx_inputs,
         output: outputs,
@@ -339,9 +338,9 @@ pub async fn build_and_send(
             let sk = signing_secret(root_key, &secp, u.chain, u.index)?;
             let pk = bitcoin::PublicKey::new(sk.public_key(&secp));
             // BIP143 scriptCode for P2WPKH is the corresponding p2pkh script.
-            let script_code = ScriptBuf::new_p2pkh(&pk.pubkey_hash());
+            let spk = ScriptBuf::new_p2wpkh(&bitcoin::CompressedPublicKey(pk.inner).wpubkey_hash());   // 0.32: the sighash helper takes the scriptPubKey
             let sighash = cache
-                .segwit_signature_hash(i, &script_code, u.value_sats, EcdsaSighashType::All)
+                .p2wpkh_signature_hash(i, &spk, bitcoin::Amount::from_sat(u.value_sats), EcdsaSighashType::All)
                 .map_err(|e| LijError::Node(format!("segwit sighash at input {i}: {e}")))?;
             let msg = Message::from_slice(&sighash.to_byte_array())
                 .map_err(|e| LijError::Node(format!("sighash->message: {e}")))?;
@@ -510,17 +509,16 @@ pub async fn build_and_send_bump(
         )
         .map_err(|e| LijError::Key(format!("change key derivation: {e}")))?;
     let change_pubkey = bitcoin::PublicKey::new(change_xpriv.private_key.public_key(&secp));
-    let change_spk = Address::p2wpkh(&change_pubkey, network)
-        .map_err(|e| LijError::Key(format!("change p2wpkh encoding: {e}")))?
+    let change_spk = Address::p2wpkh(&bitcoin::CompressedPublicKey(change_pubkey.inner), network)
         .script_pubkey();
 
     let mut outputs = vec![TxOut {
-        value: amount_sats,
+        value: bitcoin::Amount::from_sat(amount_sats),
         script_pubkey: dest_spk,
     }];
     if change_sats >= DUST_THRESHOLD_SATS {
         outputs.push(TxOut {
-            value: change_sats,
+            value: bitcoin::Amount::from_sat(change_sats),
             script_pubkey: change_spk,
         });
     } else {
@@ -542,7 +540,7 @@ pub async fn build_and_send_bump(
         });
     }
     let mut tx = Transaction {
-        version: 2,
+        version: bitcoin::transaction::Version::TWO,
         lock_time: LockTime::ZERO,
         input: tx_inputs,
         output: outputs,
@@ -555,9 +553,9 @@ pub async fn build_and_send_bump(
         for (i, u) in selected.iter().enumerate() {
             let sk = signing_secret(root_key, &secp, u.chain, u.index)?;
             let pk = bitcoin::PublicKey::new(sk.public_key(&secp));
-            let script_code = ScriptBuf::new_p2pkh(&pk.pubkey_hash());
+            let spk = ScriptBuf::new_p2wpkh(&bitcoin::CompressedPublicKey(pk.inner).wpubkey_hash());   // 0.32: the sighash helper takes the scriptPubKey
             let sighash = cache
-                .segwit_signature_hash(i, &script_code, u.value_sats, EcdsaSighashType::All)
+                .p2wpkh_signature_hash(i, &spk, bitcoin::Amount::from_sat(u.value_sats), EcdsaSighashType::All)
                 .map_err(|e| LijError::Node(format!("segwit sighash at input {i}: {e}")))?;
             let msg = Message::from_slice(&sighash.to_byte_array())
                 .map_err(|e| LijError::Node(format!("sighash->message: {e}")))?;
@@ -614,7 +612,7 @@ pub async fn build_and_send_cpfp(
         .output
         .get(parent_vout as usize)
         .ok_or_else(|| LijError::Node(format!("cpfp: parent has no output {parent_vout}")))?;
-    let parent_value_sats = out.value;
+    let parent_value_sats = out.value.to_sat();
     let parent_vsize = parent.vsize() as u64;
     let sat_per_vb = (((target_sat_per_kw as u64) + 249) / 250).max(1);
     let child_vsize: u64 = 11 + 68 + 31;
@@ -631,7 +629,7 @@ pub async fn build_and_send_cpfp(
     let sk = signing_secret(root_key, &secp, crate::tier2::CHAIN_RECEIVE, dest_index)?;
     let pk = bitcoin::PublicKey::new(sk.public_key(&secp));
     let mut tx = Transaction {
-        version: 2,
+        version: bitcoin::transaction::Version::TWO,
         lock_time: LockTime::ZERO,
         input: vec![TxIn {
             previous_output: OutPoint { txid: parent.txid(), vout: parent_vout },
@@ -640,16 +638,16 @@ pub async fn build_and_send_cpfp(
             witness: Witness::new(),
         }],
         output: vec![TxOut {
-            value: parent_value_sats - child_fee,
+            value: bitcoin::Amount::from_sat(parent_value_sats - child_fee),
             script_pubkey: out.script_pubkey.clone(),
         }],
     };
     let w = {
         let cache_tx = tx.clone();
         let mut cache = SighashCache::new(&cache_tx);
-        let script_code = ScriptBuf::new_p2pkh(&pk.pubkey_hash());
+        let spk = ScriptBuf::new_p2wpkh(&bitcoin::CompressedPublicKey(pk.inner).wpubkey_hash());   // 0.32: the sighash helper takes the scriptPubKey
         let sighash = cache
-            .segwit_signature_hash(0, &script_code, parent_value_sats, EcdsaSighashType::All)
+            .p2wpkh_signature_hash(0, &spk, bitcoin::Amount::from_sat(parent_value_sats), EcdsaSighashType::All)
             .map_err(|e| LijError::Node(format!("cpfp sighash: {e}")))?;
         let msg = Message::from_slice(&sighash.to_byte_array())
             .map_err(|e| LijError::Node(format!("cpfp sighash->message: {e}")))?;
@@ -694,8 +692,7 @@ pub(crate) fn receive_scripts(
             )
             .map_err(|e| LijError::Key(format!("receive key derivation: {e}")))?;
         let pk = bitcoin::PublicKey::new(xpriv.private_key.public_key(&secp));
-        let spk = Address::p2wpkh(&pk, network)
-            .map_err(|e| LijError::Key(format!("receive p2wpkh encoding: {e}")))?
+        let spk = Address::p2wpkh(&bitcoin::CompressedPublicKey(pk.inner), network)
             .script_pubkey();
         v.push((i, spk));
     }

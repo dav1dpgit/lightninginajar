@@ -34,7 +34,7 @@ use lightning::{
             ProbabilisticScoringFeeParameters,
         },
     },
-    ln::ChannelId,
+    ln::types::ChannelId,
     sign::KeysManager,
     util::{
         config::UserConfig,
@@ -45,7 +45,7 @@ use lightning::{
 use lightning::routing::router::{Route, RouteHop, Path};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
-use lightning::ln::features::{NodeFeatures, ChannelFeatures};
+use lightning::types::features::{NodeFeatures, ChannelFeatures};
 
 /// v195 (S30): wallet-storage key for the LNURLp preimage pool (JSON map
 /// hash_hex -> preimage_hex). Never leaves the device.
@@ -55,6 +55,13 @@ const KEY_LNURLP_NEXT_INDEX: &str = "lij_lnurlp_next_index";
 /// v229 (DP: "decades"): how long a registered static-address hash stays
 /// valid in the wallet's own engine — 30 years. The same number is handed
 /// to the LSP as `expires`, so the two sides can never disagree again.
+/// v247 (S46): the final CLTV delta on every invoice this wallet mints. LDK 0.2.6 raised its
+/// claim buffer (CLTV_CLAIM_BUFFER 18 → 36 blocks), so the least a wallet will ACCEPT is now
+/// 42; the 24 carried over from 0.0.123 made every invoice unpayable by a payer that honours
+/// it (LND, WoS, the chit rail) while LiJ senders, which use 144 regardless, hid it
+/// (2026-09-12, chit spend: FAILURE_REASON_INCORRECT_PAYMENT_DETAILS ×2). 144 is what the
+/// engine already puts on its own routes and what the LSP's LNURL hold invoices carry.
+const LIJ_INVOICE_FINAL_CLTV: u64 = 144;
 const LNURLP_HASH_EXPIRY_SECS: u32 = 946_080_000;
 /// v229: how far the claim path searches derived indices when the local
 /// cache lacks a hash (a restore, a wiped pool): ~25 ms of hashing in WASM.
@@ -154,7 +161,14 @@ type LijChainMonitor = ChainMonitor<
     DynFeeEst,
     DynLogger,
     Arc<LijChannelMonitorPersister>,
+    Arc<KeysManager>,   // 0.2: the monitor needs an entropy source
 >;
+
+/// 0.2: the ChannelManager takes a MessageRouter (onion-message routing for BOLT 12 /
+/// async payments). LiJ uses neither; the default router over our graph satisfies the bound.
+type LijMessageRouter = Arc<lightning::onion_message::messenger::DefaultMessageRouter<
+    LijNetworkGraph, DynLogger, Arc<KeysManager>,
+>>;
 
 type LijRouter = Arc<DefaultRouter<
     LijNetworkGraph,
@@ -173,8 +187,25 @@ pub type LijChannelManager = ChannelManager<
     Arc<LijSignerProvider>,
     DynFeeEst,
     LijRouter,
+    LijMessageRouter,
     DynLogger,
 >;
+
+/// 0.2 replacement for `lightning_invoice::payment::payment_parameters_from_invoice`
+/// (the helper moved into rust-lightning and changed shape). Same tuple as before.
+fn payment_parameters_from_invoice(
+    invoice: &Bolt11Invoice,
+) -> Result<(lightning::types::payment::PaymentHash, lightning::ln::channelmanager::RecipientOnionFields, lightning::routing::router::RouteParameters), ()> {
+    use lightning::routing::router::{PaymentParameters, RouteParameters};
+    use lightning::ln::channelmanager::RecipientOnionFields;
+    use bitcoin::hashes::Hash;
+    let amt_msat = invoice.amount_milli_satoshis().ok_or(())?;
+    let payment_hash = lightning::types::payment::PaymentHash(invoice.payment_hash().to_byte_array());
+    let recipient_onion = RecipientOnionFields::secret_only(*invoice.payment_secret());
+    let params = PaymentParameters::from_bolt11_invoice(invoice);
+    let route_params = RouteParameters::from_payment_params_and_value(params, amt_msat);
+    Ok((payment_hash, recipient_onion, route_params))
+}
 
 // ── SpendableOutputs diagnostic log (temp) ──────────────────────────────────
 // Records every SpendableOutputDescriptor as it arrives at the event handler —
@@ -227,9 +258,9 @@ pub fn close_event_dump() -> Vec<String> {
 fn descriptor_value_sats(d: &lightning::sign::SpendableOutputDescriptor) -> u64 {
     use lightning::sign::SpendableOutputDescriptor as SOD;
     match d {
-        SOD::StaticOutput { output, .. } => output.value,
-        SOD::DelayedPaymentOutput(o) => o.output.value,
-        SOD::StaticPaymentOutput(o) => o.output.value,
+        SOD::StaticOutput { output, .. } => output.value.to_sat(),
+        SOD::DelayedPaymentOutput(o) => o.output.value.to_sat(),
+        SOD::StaticPaymentOutput(o) => o.output.value.to_sat(),
     }
 }
 fn descriptor_kind(d: &lightning::sign::SpendableOutputDescriptor) -> &'static str {
@@ -545,7 +576,7 @@ pub struct LspRoutePreparation {
     /// Serialized JSON body to POST.
     pub request_body: String,
     /// PaymentHash extracted from the invoice — also the key for the outcome map.
-    pub payment_hash: lightning::ln::PaymentHash,
+    pub payment_hash: lightning::types::payment::PaymentHash,
     /// Recipient onion fields needed by cm.send_payment_with_route.
     pub recipient_onion: lightning::ln::channelmanager::RecipientOnionFields,
     /// LDK PaymentId — used to correlate the HTLC with PaymentSent / PaymentFailed.
@@ -591,7 +622,7 @@ impl LijNode {
         let root_key = Arc::new(root_key);
         let seed = root_key.lightning_node_key()?.private_key.secret_bytes();
         let ts = current_time_secs();
-        let keys_manager = Arc::new(KeysManager::new(&seed, ts, (ts * 1000) as u32));
+        let keys_manager = Arc::new(KeysManager::new(&seed, ts, (ts * 1000) as u32, false /* 0.2 v2_remote_key_derivation: LiJ pins to_remote to m/84 itself; the old derivation keeps existing channels' keys */));
         let counter = PersistedCounter::new(storage.clone())?;
         let signer_provider = Arc::new(LijSignerProvider::new(
             keys_manager.clone(),
@@ -713,7 +744,7 @@ impl LijNode {
         let enc_key = root_key.encryption_key();
         let seed = root_key.lightning_node_key()?.private_key.secret_bytes();
         let ts = current_time_secs();
-        let keys_manager = Arc::new(KeysManager::new(&seed, ts, (ts * 1000) as u32));
+        let keys_manager = Arc::new(KeysManager::new(&seed, ts, (ts * 1000) as u32, false /* 0.2 v2_remote_key_derivation: LiJ pins to_remote to m/84 itself; the old derivation keeps existing channels' keys */));
         let counter = PersistedCounter::new(storage.clone())?;
         let signer_provider = Arc::new(LijSignerProvider::new(
             keys_manager.clone(),
@@ -774,6 +805,8 @@ impl LijNode {
             logger.clone(),
             fee_estimator.clone(),
             persister,
+            keys_manager.clone(),                                   // 0.2: entropy source
+            lightning::sign::NodeSigner::get_peer_storage_key(&*keys_manager),   // 0.2: peer-storage key
         ));
         // OutputSweeper: restores from persisted KVStore state if present,
         // otherwise initializes fresh against BestBlock::from_network. Event
@@ -866,14 +899,22 @@ impl LijNode {
             // would let any peer open inbound (and we'd reject browser-wallet
             // unfriendly defaults like announced channels at handshake time).
             c.manually_accept_inbound_channels = true;
+            // ldk-0.2 phase 4: a splice changes a channel's funding outpoint, and the escape kit,
+            // recover-close, the registry records, the chain coordinator's watch set and the
+            // adapter's lease all key on it. Inbound splices stay REJECTED (LDK's default,
+            // stated here on purpose) until docs/ldk-0.2-splice-readiness.md is worked off.
+            c.reject_inbound_splices = true;
             c
         };
         // Phase F-3 diagnostic: log what LDK considers its supported channel_type
         // features given our UserConfig. Cross-reference with what LND sends in
         // open_channel (enable LND PEER=debug logging to capture LND's side).
         // Diagnostic-only — no behavioral change.
-        let monitor_refs: Vec<&mut ChannelMonitor<crate::signer::LijChannelSigner>> =
-            monitors.iter_mut().map(|(_, m)| m).collect();
+        let monitor_refs: Vec<&ChannelMonitor<crate::signer::LijChannelSigner>> =
+            monitors.iter().map(|(_, m)| m).collect();   // 0.2: read args take shared refs
+        let message_router: LijMessageRouter = Arc::new(
+            lightning::onion_message::messenger::DefaultMessageRouter::new(network_graph.clone(), keys_manager.clone()),
+        );
         let read_args = ChannelManagerReadArgs::new(
             keys_manager.clone(),
             keys_manager.clone(),
@@ -882,6 +923,7 @@ impl LijNode {
             chain_monitor.clone(),
             broadcaster.clone(),
             router.clone(),
+            message_router,   // 0.2
             logger.clone(),
             user_config,
             monitor_refs,
@@ -921,11 +963,18 @@ impl LijNode {
                 .map_err(|e| LijError::Storage(format!("CM deser failed: {:?}", e)))?;
         let channel_manager = Arc::new(channel_manager);
 
+        // v243 (S46): re-label closures v241/v242 mis-filed as Force (one pass, idempotent).
+        match crate::closed_channel_log::ClosedChannelLog::new(storage.clone()).relabel_misfiled_cooperative() {
+            Ok(n) if n > 0 => log::info!("closed-history: {n} cooperative closure(s) re-labelled (v241/v242 mis-filing)"),
+            Ok(_) => {}
+            Err(e) => log::warn!("closed-history relabel skipped: {e}"),
+        }
+
         // Re-watch each monitor in the chain monitor (consumes the monitor).
         for (_block_hash, monitor) in monitors {
-            let outpoint = monitor.get_funding_txo().0;
+            let channel_id = monitor.channel_id();   // 0.2: watch_channel is keyed by channel id
             chain_monitor
-                .watch_channel(outpoint, monitor)
+                .watch_channel(channel_id, monitor)
                 .map_err(|e| LijError::Storage(format!("watch_channel failed: {:?}", e)))?;
         }
 
@@ -1062,6 +1111,8 @@ impl LijNode {
 
         let chain_monitor: Arc<LijChainMonitor> = Arc::new(ChainMonitor::new(
             Some(chain_filter), broadcaster.clone(), logger.clone(), fee_estimator.clone(), persister,
+            self.keys_manager.clone(),                                          // 0.2: entropy source
+            lightning::sign::NodeSigner::get_peer_storage_key(&*self.keys_manager),   // 0.2: peer-storage key
         ));
         self.chain_monitor = Some(chain_monitor.clone());
 
@@ -1092,11 +1143,15 @@ impl LijNode {
         let best_block = BestBlock::from_network(self.network);
         let chain_params = ChainParameters { network: self.network, best_block };
 
+        let message_router: LijMessageRouter = Arc::new(
+            lightning::onion_message::messenger::DefaultMessageRouter::new(self.network_graph.clone(), self.keys_manager.clone()),
+        );
         let cm = ChannelManager::new(
             fee_estimator,
             chain_monitor,
             broadcaster,
             router,
+            message_router,   // 0.2
             logger,
             self.keys_manager.clone(),
             self.keys_manager.clone(),
@@ -1128,6 +1183,7 @@ impl LijNode {
                 log::info!("[Phase F-2 diag] create-path UserConfig.negotiate_scid_privacy = {}", config.channel_handshake_config.negotiate_scid_privacy);
                 // Phase E (LSPS2): see restore-path config — same reasoning.
                 config.manually_accept_inbound_channels = true;
+                config.reject_inbound_splices = true;   // ldk-0.2 phase 4 — see the restore-path note
                 // Phase F-3 diagnostic: see restore-path block.
                 config
             },
@@ -1286,7 +1342,7 @@ impl LijNode {
     /// Reports total sats vs fee so the small-output-vs-fee hypothesis is testable.
     pub fn sweeper_spend_attempt_diag(&self, real_tip: u32) -> String {
         use lightning::chain::chaininterface::{ConfirmationTarget, FeeEstimator};
-        use lightning::sign::{OutputSpender, ChangeDestinationSource};
+        use lightning::sign::{OutputSpender, ChangeDestinationSourceSync};   // 0.2: the Sync flavour
         use lightning::util::sweep::OutputSpendStatus as St;
 
         let sweeper = match self.output_sweeper.as_ref() {
@@ -1558,7 +1614,7 @@ impl LijNode {
         // channel_keys_id read via our LDK patch (see channelmonitor.rs:1450).
         // The upstream `do_signer_call` API is #[cfg(test)] gated and not
         // usable from production code.
-        let channel_keys_id: [u8; 32] = match chain_monitor.get_monitor(funding_outpoint) {
+        let channel_keys_id: [u8; 32] = match chain_monitor.get_monitor(channel_id) {   // 0.2: by channel id
             Ok(monitor) => monitor.channel_keys_id(),
             Err(()) => {
                 log::warn!(
@@ -1764,13 +1820,13 @@ impl LijNode {
         let event_seen = AtomicBool::new(false);
         // Collect preimages from PaymentClaimable events so we can call
         // claim_funds() AFTER the closure exits (can't re-borrow cm inside it).
-        let preimages_to_claim: std::sync::Mutex<Vec<lightning::ln::PaymentPreimage>> =
+        let preimages_to_claim: std::sync::Mutex<Vec<lightning::types::payment::PaymentPreimage>> =
             std::sync::Mutex::new(Vec::new());
         // v228: hashes we provably hold no preimage for — failed back after the
         // closure so the sender learns in a second instead of after expiry.
-        let hashes_to_fail: std::sync::Mutex<Vec<lightning::ln::PaymentHash>> =
+        let hashes_to_fail: std::sync::Mutex<Vec<lightning::types::payment::PaymentHash>> =
             std::sync::Mutex::new(Vec::new());
-        cm.process_pending_events(&|event| {
+        cm.process_pending_events(&|event| -> Result<(), lightning::events::ReplayEvent> {
             log::info!("[Event] {:?}", event);
             event_seen.store(true, Ordering::Relaxed);
             match event {
@@ -1811,7 +1867,7 @@ impl LijNode {
                                         preimages_to_claim
                                             .lock()
                                             .unwrap()
-                                            .push(lightning::ln::PaymentPreimage(arr));
+                                            .push(lightning::types::payment::PaymentPreimage(arr));
                                         self.lnurlp_save_pool(&pool);
                                     }
                                     _ => log::warn!(
@@ -1829,7 +1885,7 @@ impl LijNode {
                                 preimages_to_claim
                                     .lock()
                                     .unwrap()
-                                    .push(lightning::ln::PaymentPreimage(pre));
+                                    .push(lightning::types::payment::PaymentPreimage(pre));
                                 if idx.saturating_add(1) > self.lnurlp_next_index() {
                                     self.lnurlp_set_next_index(idx.saturating_add(1));
                                 }
@@ -1985,8 +2041,8 @@ impl LijNode {
                                 funding.inputs, funding.fee_sats, funding.change_sats
                             );
                             match cm.funding_transaction_generated(
-                                &temporary_channel_id,
-                                &counterparty_node_id,
+                                temporary_channel_id,
+                                counterparty_node_id,
                                 funding.tx,
                             ) {
                                 Ok(()) => {
@@ -2050,10 +2106,15 @@ impl LijNode {
                     temporary_channel_id,
                     counterparty_node_id,
                     funding_satoshis,
-                    push_msat,
+                    channel_negotiation_type,
                     channel_type,
                     ..
                 } => {
+                    // 0.2: push_msat moved into channel_negotiation_type (dual-funded opens carry none)
+                    let push_msat = match channel_negotiation_type {
+                        lightning::events::InboundChannelFunds::PushMsat(m) => m,
+                        lightning::events::InboundChannelFunds::DualFunded => 0,
+                    };
                     let counterparty_hex = hex::encode(counterparty_node_id.serialize());
                     let active_lsp_pubkey = self.active_lsp
                         .as_ref()
@@ -2076,6 +2137,7 @@ impl LijNode {
                             let _ = cm.force_close_broadcasting_latest_txn(
                                 &temporary_channel_id,
                                 &counterparty_node_id,
+                                "LiJ: funding could not be completed".to_string(),   // 0.2: error message to the peer
                             );
                         }
                     } else if is_active_lsp {
@@ -2112,6 +2174,7 @@ impl LijNode {
                                 &temporary_channel_id,
                                 &counterparty_node_id,
                                 ucid,
+                                None,   // 0.2: no per-channel config overrides
                             ) {
                                 Ok(()) => log::info!(
                                     "Accepted 0-conf channel from LSP (temp_chan={:?})",
@@ -2138,6 +2201,7 @@ impl LijNode {
                             let _ = cm.force_close_broadcasting_latest_txn(
                                 &temporary_channel_id,
                                 &counterparty_node_id,
+                                "LiJ: funding could not be completed".to_string(),   // 0.2: error message to the peer
                             );
                         }
                     }
@@ -2192,11 +2256,15 @@ impl LijNode {
                     use lightning::events::ClosureReason::*;
                     let kind = match (&reason, &attempt) {
                         // We force-closed.
-                        (HolderForceClosed, Some(a)) if a.kind == CloseAttemptKind::Force => {
+                        // v243 (S46): HolderForceClosed became a struct variant in LDK 0.1, so the
+                        // bare name here was a CATCH-ALL BINDING in v241/v242 — every closure
+                        // (the cooperative ones included) was filed as Force. `{ .. }` restores
+                        // the variant match.
+                        (HolderForceClosed { .. }, Some(a)) if a.kind == CloseAttemptKind::Force => {
                             CloseKind::Force
                         }
                         // We force-closed without an attempt record (restart loss).
-                        (HolderForceClosed, _) => CloseKind::Force,
+                        (HolderForceClosed { .. }, _) => CloseKind::Force,
                         // Counterparty force-closed (their commitment hit chain).
                         (CounterpartyForceClosed { .. }, _) => CloseKind::Force,
                         (CommitmentTxConfirmed, _) => CloseKind::Force,
@@ -2261,7 +2329,7 @@ impl LijNode {
                                         .map(|raw| hex::encode(raw));
                                 }
                                 if let Some(cm) = self.chain_monitor.as_ref() {
-                                    if let Ok(monitor) = cm.get_monitor(*outpoint) {
+                                    if let Ok(monitor) = cm.get_monitor(channel_id) {   // 0.2: by channel id
                                         let logger = std::sync::Arc::new(LijLogger);
                                         let (txs, _to_local, _delay) = monitor.lij_export_escape(&logger);
                                         holder = txs.first().map(|t| t.txid().to_string());
@@ -2323,6 +2391,7 @@ impl LijNode {
                     // Other events logged generically above; no specific action needed.
                 }
             }
+            Ok(())
         });
         // Now claim any payments outside the event-handling closure.
         for preimage in preimages_to_claim.into_inner().unwrap() {
@@ -2380,7 +2449,7 @@ impl LijNode {
         // call closes the latent gap that existed prior to v0.2.0.
         if let Some(chain_monitor) = self.chain_monitor.as_ref() {
             let sweeper_opt = self.output_sweeper.as_ref();
-            chain_monitor.process_pending_events(&|event| {
+            chain_monitor.process_pending_events(&|event| -> Result<(), lightning::events::ReplayEvent> {
                 match event {
                     lightning::events::Event::SpendableOutputs { outputs, channel_id } => {
                         log::info!(
@@ -2398,11 +2467,11 @@ impl LijNode {
                             for d in outputs.iter() {
                                 let (variant, value, spk) = match d {
                                     SOD::StaticOutput { output, .. } =>
-                                        ("StaticOutput", output.value, hex::encode(output.script_pubkey.as_bytes())),
+                                        ("StaticOutput", output.value.to_sat(), hex::encode(output.script_pubkey.as_bytes())),
                                     SOD::DelayedPaymentOutput(x) =>
-                                        ("DelayedPaymentOutput", x.output.value, hex::encode(x.output.script_pubkey.as_bytes())),
+                                        ("DelayedPaymentOutput", x.output.value.to_sat(), hex::encode(x.output.script_pubkey.as_bytes())),
                                     SOD::StaticPaymentOutput(x) =>
-                                        ("StaticPaymentOutput", x.output.value, hex::encode(x.output.script_pubkey.as_bytes())),
+                                        ("StaticPaymentOutput", x.output.value.to_sat(), hex::encode(x.output.script_pubkey.as_bytes())),
                                 };
                                 // excluded = StaticOutput under the current v128 rule.
                                 let excluded = matches!(d, SOD::StaticOutput { .. });
@@ -2437,17 +2506,17 @@ impl LijNode {
                                             if crate::signer::keys_id_has_terminus_marker(
                                                 x.channel_keys_id,
                                             ) {
-                                                if x.output.script_pubkey.is_v0_p2wpkh() {
+                                                if x.output.script_pubkey.is_p2wpkh() {
                                                     log::info!(
                                                         "[terminus] pinned to_remote already home at m/84 — {} sats, no sweep needed",
-                                                        x.output.value
+                                                        x.output.value.to_sat()
                                                     );
                                                     return false; // drop: already home
                                                 }
                                                 log::error!(
                                                     "[terminus] marked StaticPaymentOutput is NOT plain P2WPKH ({} sats) — \
                                                      invariant breach, tracking for visibility",
-                                                    x.output.value
+                                                    x.output.value.to_sat()
                                                 );
                                             }
                                         }
@@ -2509,6 +2578,7 @@ impl LijNode {
                         log::debug!("[Event/ChainMonitor] {:?} (no handler)", other);
                     }
                 }
+                Ok(())
             });
         }
 
@@ -3242,7 +3312,7 @@ impl LijNode {
         #[cfg(target_arch = "wasm32")]
         if tick_count % 30 == 29 {
             if let Some(cm) = self.channel_manager.as_ref() {
-                let mut dead: Vec<(lightning::ln::ChannelId, bitcoin::secp256k1::PublicKey, String)> = Vec::new();
+                let mut dead: Vec<(lightning::ln::types::ChannelId, bitcoin::secp256k1::PublicKey, String)> = Vec::new();
                 if let Ok(view) = crate::tier2_wallet::load_view(&*self.storage) {
                     let pending = crate::tier2_wallet::load_pending(&*self.storage);
                     let tracked: std::collections::HashSet<String> = view
@@ -3272,7 +3342,7 @@ impl LijNode {
                         "[CONFLICT-AUDIT] cancelled unfunded open {} — funding never reached the chain; funds never left",
                         &ftx[..16.min(ftx.len())]
                     );
-                    let _ = cm.force_close_without_broadcasting_txn(&chan_id, &peer);
+                    let _ = cm.force_close_without_broadcasting_txn(&chan_id, &peer, "LiJ: stale channel abandoned locally".to_string());
                 }
             }
         }
@@ -3555,7 +3625,7 @@ impl LijNode {
         config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
         config.channel_handshake_config.negotiate_scid_privacy = true;
         // Private / non-routing: do not announce the channel to the gossip network.
-        config.channel_handshake_config.announced_channel = false;
+        config.channel_handshake_config.announce_for_forwarding = false;
 
         cm.create_channel(lsp_pubkey, amount_sats, 0, user_channel_id, None, Some(config))
             .map(|chan_id| {
@@ -3732,7 +3802,7 @@ impl LijNode {
             next = next.saturating_add(1);
             let pre: [u8; 32] = self.root_key.lnurlp_preimage(index);
             let hash = bitcoin::hashes::sha256::Hash::hash(&pre);
-            let payment_hash = lightning::ln::PaymentHash(hash.to_byte_array());
+            let payment_hash = lightning::types::payment::PaymentHash(hash.to_byte_array());
             let secret = cm
                 .create_inbound_payment_for_hash(payment_hash, None, LNURLP_HASH_EXPIRY_SECS, None)
                 .map_err(|()| {
@@ -3793,7 +3863,7 @@ impl LijNode {
         let lsp_default_cltv_expiry_delta: u16 = 80;
 
         let route_hints: Vec<RouteHint> = cm.list_usable_channels().into_iter()
-            .filter(|ch| !ch.is_public)
+            .filter(|ch| !ch.is_announced)
             .filter(|ch| ch.inbound_capacity_msat >= amt_msat.unwrap_or(0))
             .filter_map(|ch| {
                 let scid = ch.inbound_scid_alias.or(ch.short_channel_id)?;
@@ -3831,7 +3901,7 @@ impl LijNode {
             .payment_hash(payment_hash_obj)
             .payment_secret(payment_secret)
             .basic_mpp()
-            .min_final_cltv_expiry_delta(24)
+            .min_final_cltv_expiry_delta(LIJ_INVOICE_FINAL_CLTV)
             .expiry_time(std::time::Duration::from_secs(expiry_seconds));
 
         if let Some(amt) = amt_msat {
@@ -4004,7 +4074,7 @@ impl LijNode {
             .payment_hash(payment_hash_obj)
             .payment_secret(payment_secret)
             .basic_mpp()
-            .min_final_cltv_expiry_delta(24)
+            .min_final_cltv_expiry_delta(LIJ_INVOICE_FINAL_CLTV)
             .expiry_time(std::time::Duration::from_secs(expiry_seconds))
             .amount_milli_satoshis(gross_msat)
             .private_route(jit_hint);
@@ -4138,7 +4208,7 @@ impl LijNode {
             .payment_hash(payment_hash_obj)
             .payment_secret(payment_secret)
             .basic_mpp()
-            .min_final_cltv_expiry_delta(24)
+            .min_final_cltv_expiry_delta(LIJ_INVOICE_FINAL_CLTV)
             .expiry_time(std::time::Duration::from_secs(expiry_seconds))
             .private_route(jit_hint);
 
@@ -4205,7 +4275,7 @@ impl LijNode {
     }
 
     let (payment_hash, recipient_onion, route_params) =
-        lightning_invoice::payment::payment_parameters_from_invoice(&invoice)
+        payment_parameters_from_invoice(&invoice)
         .map_err(|e| LijError::Payment(format!("Invoice params error: {:?}", e)))?;
 
     let payment_id = lightning::ln::channelmanager::PaymentId(payment_hash.0);
@@ -4320,13 +4390,13 @@ impl LijNode {
         // (prime directive: working sends are untouchable).
         let (payment_hash, recipient_onion) = if invoice.amount_milli_satoshis().is_some() {
             let (h, o, _route_params) =
-                lightning_invoice::payment::payment_parameters_from_invoice(&invoice)
+                payment_parameters_from_invoice(&invoice)
                 .map_err(|e| LijError::Payment(format!("Invoice params error: {:?}", e)))?;
             (h, o)
         } else {
             use bitcoin::hashes::Hash as _;
             (
-                lightning::ln::PaymentHash(invoice.payment_hash().to_byte_array()),
+                lightning::types::payment::PaymentHash(invoice.payment_hash().to_byte_array()),
                 lightning::ln::channelmanager::RecipientOnionFields::secret_only(
                     *invoice.payment_secret(),
                 ),
@@ -4476,7 +4546,7 @@ impl LijNode {
                 route_params: None,
             };
             return match cm.send_payment_with_route(
-                &route,
+                route.clone(),   // 0.2: by value
                 prep.payment_hash,
                 prep.recipient_onion.clone(),
                 prep.payment_id,
@@ -4592,7 +4662,7 @@ impl LijNode {
         // Clone recipient_onion since send_payment_with_route consumes it and
         // we want to keep prep usable for the retry caller's record-keeping.
         match cm.send_payment_with_route(
-            &route,
+            route.clone(),   // 0.2: by value
             prep.payment_hash,
             prep.recipient_onion.clone(),
             prep.payment_id,
@@ -4899,7 +4969,7 @@ impl LijNode {
     fn send_assembled_mpp(
         &self,
         paths: Vec<Path>,
-        payment_hash: lightning::ln::PaymentHash,
+        payment_hash: lightning::types::payment::PaymentHash,
         recipient_onion: lightning::ln::channelmanager::RecipientOnionFields,
         payment_id: lightning::ln::channelmanager::PaymentId,
     ) -> LijResult<PaymentResult> {
@@ -4915,7 +4985,7 @@ impl LijNode {
         log::info!("MPP send: {} shard(s), ~{} msat delivered total",
             route.paths.len(), total_msat);
 
-        match cm.send_payment_with_route(&route, payment_hash, recipient_onion, payment_id) {
+        match cm.send_payment_with_route(route.clone(), payment_hash, recipient_onion, payment_id) {
             Ok(_) => {
                 log::info!("MPP: multipath payment initiated (hash={:?})", payment_hash);
                 self.pump_outbound();   // v227: every shard leaves now, not on the next tick
@@ -4955,13 +5025,13 @@ impl LijNode {
         // the delivered total never touched the invoice in this chain.
         let (payment_hash, recipient_onion) = if invoice.amount_milli_satoshis().is_some() {
             let (h, o, _route_params) =
-                lightning_invoice::payment::payment_parameters_from_invoice(&invoice)
+                payment_parameters_from_invoice(&invoice)
                 .map_err(|e| LijError::Payment(format!("Invoice params error: {:?}", e)))?;
             (h, o)
         } else {
             use bitcoin::hashes::Hash as _;
             (
-                lightning::ln::PaymentHash(invoice.payment_hash().to_byte_array()),
+                lightning::types::payment::PaymentHash(invoice.payment_hash().to_byte_array()),
                 lightning::ln::channelmanager::RecipientOnionFields::secret_only(
                     *invoice.payment_secret(),
                 ),
@@ -4997,7 +5067,7 @@ impl LijNode {
                 spendable_msat: c.outbound_capacity_msat.min(c.next_outbound_htlc_limit_msat),
                 inbound_capacity_sats: c.inbound_capacity_msat / 1000,
                 is_usable: c.is_usable,
-                is_public: c.is_public,
+                is_public: c.is_announced,
                 // v178 (close-awareness): unconfirmed funding-spend sighting
                 // from the walker — "a close is in the mempool". Display-only.
                 closing_seen_mempool: c
@@ -5024,7 +5094,7 @@ impl LijNode {
                 our_reserve_sats: c.unspendable_punishment_reserve,
                 // v212: full our-side balance incl. reserve — the ledger's
                 // "built up so far" reads min(gross, reserve).
-                our_balance_gross_sats: c.balance_msat / 1000,
+                our_balance_gross_sats: (c.outbound_capacity_msat + c.unspendable_punishment_reserve.unwrap_or(0) * 1000) / 1000   /* 0.2: balance_msat is gone; outbound capacity plus our reserve is the gross local side */,
                 their_reserve_sats: c.counterparty.unspendable_punishment_reserve,
                 inbound_unlock_after_sats: {
                     // remote_total = capacity − our full balance (balance_msat
@@ -5032,7 +5102,7 @@ impl LijNode {
                     // reserve is what our sends must fill before inbound can
                     // exceed zero (verified to the msat, session 19).
                     let remote_msat = (c.channel_value_satoshis * 1000)
-                        .saturating_sub(c.balance_msat);
+                        .saturating_sub((c.outbound_capacity_msat + c.unspendable_punishment_reserve.unwrap_or(0) * 1000));
                     let deficit_msat = (c.counterparty.unspendable_punishment_reserve * 1000)
                         .saturating_sub(remote_msat);
                     if c.inbound_capacity_msat == 0 && deficit_msat > 0 {
@@ -5043,7 +5113,7 @@ impl LijNode {
                 // absent) is treated as not-shutting-down.
                 is_shutting_down: !matches!(
                     c.channel_shutdown_state,
-                    None | Some(lightning::ln::channelmanager::ChannelShutdownState::NotShuttingDown)
+                    None | Some(lightning::ln::channel_state::ChannelShutdownState::NotShuttingDown)
                 ),
             }).collect()
         }).unwrap_or_default())
@@ -5072,13 +5142,13 @@ impl LijNode {
                     "scid_privacy":       t.supports_scid_privacy(),
                 })),
                 "terminus_pinned": (c.user_channel_id & crate::signer::UCID_TERMINUS_PIN_BIT) != 0,
-                "is_shutting_down":         !matches!(c.channel_shutdown_state, None | Some(lightning::ln::channelmanager::ChannelShutdownState::NotShuttingDown)),
+                "is_shutting_down":         !matches!(c.channel_shutdown_state, None | Some(lightning::ln::channel_state::ChannelShutdownState::NotShuttingDown)),
                 "counterparty_pubkey":      hex::encode(c.counterparty.node_id.serialize()),
                 "short_channel_id":         c.short_channel_id,
                 "outbound_scid_alias":      c.outbound_scid_alias,
                 "inbound_scid_alias":       c.inbound_scid_alias,
                 "is_usable":                c.is_usable,
-                "is_public":                c.is_public,
+                "is_public":                c.is_announced,
                 "channel_value_satoshis":   c.channel_value_satoshis,
                 "outbound_capacity_msat":   c.outbound_capacity_msat,
                 "next_outbound_htlc_limit_msat":   c.next_outbound_htlc_limit_msat,
@@ -5088,7 +5158,7 @@ impl LijNode {
                 // remote_balance minus THEIR reserve minus (when they funded,
                 // e.g. LSPS1) the funder's commit-fee/anchor obligation. These
                 // make the zero-inbound arithmetic exact instead of inferred.
-                "balance_msat":             c.balance_msat,
+                "balance_msat":             (c.outbound_capacity_msat + c.unspendable_punishment_reserve.unwrap_or(0) * 1000),
                 "our_reserve_sats":         c.unspendable_punishment_reserve,
                 "their_reserve_sats":       c.counterparty.unspendable_punishment_reserve,
                 "inbound_htlc_minimum_msat": c.inbound_htlc_minimum_msat,
@@ -5304,7 +5374,7 @@ impl LijNode {
             "{{\"ts\":{},\"event\":\"invoke_force_close\",\"channel\":\"{}\"}}",
             current_time_secs(), channel_id_hex
         ));
-        cm.force_close_broadcasting_latest_txn(&channel_id, &counterparty)
+        cm.force_close_broadcasting_latest_txn(&channel_id, &counterparty, "LiJ: force close requested by the wallet".to_string())
             .map_err(|e| LijError::Node(format!("force_close: LDK error {:?}", e)))?;
         Ok(())
     }
@@ -5356,7 +5426,7 @@ impl LijNode {
             current_time_secs(),
             channel_id_hex
         ));
-        cm.force_close_without_broadcasting_txn(&channel_id, &counterparty)
+        cm.force_close_without_broadcasting_txn(&channel_id, &counterparty, "LiJ: abandoned locally without broadcast".to_string())
             .map_err(|e| {
                 LijError::Node(format!(
                     "force_close_without_broadcasting: LDK error {:?}",
@@ -5473,8 +5543,9 @@ impl LijNode {
         // transactions_confirmed call above lands -- no synthetic jump
         // to confirmed_at_height + 6 needed.
 
-        cm.process_pending_events(&|event| {
+        cm.process_pending_events(&|event| -> Result<(), lightning::events::ReplayEvent> {
             log::info!("[Event after mark_funding_confirmed] {:?}", event);
+            Ok(())
         });
         self.persist_channel_manager()?;
         Ok(())
@@ -5563,8 +5634,8 @@ impl LijNode {
             })
             .unwrap_or_default();
         let mut channels = Vec::new();
-        for (funding_txo, channel_id) in chain_monitor.list_monitors() {
-            let monitor = match chain_monitor.get_monitor(funding_txo) {
+        for channel_id in chain_monitor.list_monitors() {   // 0.2: keyed by channel id
+            let monitor = match chain_monitor.get_monitor(channel_id) {
                 Ok(m) => m,
                 Err(()) => continue, // monitor evicted between list and get
             };
@@ -5574,9 +5645,7 @@ impl LijNode {
                 .iter()
                 .map(|b| b.claimable_amount_satoshis())
                 .sum();
-            let counterparty = monitor
-                .get_counterparty_node_id()
-                .map(|pk| pk.to_string());
+            let counterparty = Some(monitor.get_counterparty_node_id().to_string());   // 0.2: always known
             let commitment_txid = txs
                 .get(0)
                 .map(|tx| tx.txid().to_string())
@@ -5587,7 +5656,7 @@ impl LijNode {
             let (our_to_local_sats, sweeps) = match &to_local {
                 Some(desc) => {
                     let value = match desc {
-                        SOD::DelayedPaymentOutput(d) => d.output.value,
+                        SOD::DelayedPaymentOutput(d) => d.output.value.to_sat(),
                         _ => 0,
                     };
                     // Per-variant degradation: a to_local too small to pay a
@@ -5611,6 +5680,7 @@ impl LijNode {
                 None => (0, (None, None)),
             };
             let (sweep_normal, sweep_high) = sweeps;
+            let funding_txo = monitor.get_funding_txo();   // 0.2: list_monitors yields ids only
             channels.push(serde_json::json!({
                 "channel_id": channel_id.to_string(),
                 "open": open_txos.contains(&funding_txo),
@@ -5666,12 +5736,14 @@ impl LijNode {
             None => return "[]".to_string(),
         };
         let mut items: Vec<String> = Vec::new();
-        for (funding_outpoint, channel_id) in cm.list_monitors() {
-            if let Ok(monitor) = cm.get_monitor(funding_outpoint) {
+        for channel_id in cm.list_monitors() {   // 0.2: keyed by channel id
+            if let Ok(monitor) = cm.get_monitor(channel_id) {
+                let funding_outpoint = monitor.get_funding_txo();
                 for bal in monitor.get_claimable_balances() {
                     if let Balance::ClaimableAwaitingConfirmations {
                         amount_satoshis,
                         confirmation_height,
+                        ..
                     } = bal
                     {
                         items.push(format!(
@@ -5701,13 +5773,15 @@ impl LijNode {
             None => return "[]".to_string(),
         };
         let mut items: Vec<String> = Vec::new();
-        for (funding_outpoint, channel_id) in cm.list_monitors() {
-            if let Ok(monitor) = cm.get_monitor(funding_outpoint) {
+        for channel_id in cm.list_monitors() {   // 0.2: keyed by channel id
+            if let Ok(monitor) = cm.get_monitor(channel_id) {
+                let funding_outpoint = monitor.get_funding_txo();
                 let mut close_sats: u64 = 0;
                 let mut seen = false;
                 for bal in monitor.get_claimable_balances() {
-                    if let Balance::ClaimableOnChannelClose { amount_satoshis, .. } = bal {
-                        close_sats += amount_satoshis;
+                    if let Balance::ClaimableOnChannelClose { balance_candidates, .. } = bal {
+                        // 0.2: one candidate per valid holder commitment; the last is the latest
+                        if let Some(c) = balance_candidates.last() { close_sats += c.amount_satoshis; }
                         seen = true;
                     }
                 }
@@ -5833,9 +5907,9 @@ impl LijNode {
                     .collect();
                 let monitors = mon.list_monitors();
                 let total = monitors.len();
-                let open = monitors
+                let open = monitors   // 0.2: ids only — look each monitor's funding outpoint up
                     .iter()
-                    .filter(|(op, _)| live.contains(&(op.txid, op.index)))
+                    .filter(|cid| mon.get_monitor(**cid).map(|m| { let op = m.get_funding_txo(); live.contains(&(op.txid, op.index)) }).unwrap_or(false))
                     .count();
                 (total, open)
             }
@@ -5901,11 +5975,11 @@ impl LijNode {
     /// verifies via LND /v1/verifymessage and requires the recovered key to
     /// equal this wallet's node_pubkey(). Sync, no I/O.
     pub fn sign_message(&self, msg: &str) -> LijResult<String> {
-        lightning::util::message_signing::sign(
+        let sig = lightning::util::message_signing::sign(
             msg.as_bytes(),
             &self.keys_manager.get_node_secret_key(),
-        )
-        .map_err(|e| LijError::Node(format!("message signing failed: {:?}", e)))
+        );
+        Ok(sig)   // 0.2: message signing is infallible
     }
 
     /// Gather the full local channel state — the ChannelManager blob plus every
@@ -6058,6 +6132,7 @@ impl LijNode {
             match cm.force_close_without_broadcasting_txn(
                 &ch.channel_id,
                 &ch.counterparty.node_id,
+                "LiJ: stale state — abandoned locally without broadcast".to_string(),
             ) {
                 Ok(()) => {
                     closed += 1;
@@ -6241,11 +6316,10 @@ async fn check_funding_outpoints_for_spends(
     let outpoints: Vec<(bitcoin::Txid, u16)> = chain_monitor
         .list_monitors()
         .into_iter()
-        .filter(|(op, _cid)| match chain_monitor.get_monitor(*op) {
-            Ok(m) => !m.lij_is_resolved_awaiting_archive(),
-            Err(()) => false, // evicted between list and get — nothing to walk
+        .filter_map(|cid| match chain_monitor.get_monitor(cid) {   // 0.2: ids only
+            Ok(m) if !m.lij_is_resolved_awaiting_archive() => { let op = m.get_funding_txo(); Some((op.txid, op.index)) },
+            _ => None, // resolved, or evicted between list and get — nothing to walk
         })
-        .map(|(op, _cid)| (op.txid, op.index))
         .collect();
 
     if outpoints.is_empty() {
@@ -6542,6 +6616,38 @@ async fn fetch_with_macaroon(url: &str, macaroon_hex: &str) -> LijResult<String>
 ///
 /// Identical error-handling and response shape as the GET helper above —
 /// caller gets the response body text or a LijError::Lsp on any failure.
+#[cfg(target_arch = "wasm32")]
+/// v245 (S46): a GET with the route token — used for the LSP's `/v1/outcome` hold verdict
+/// before an internal send. (v244 sent it bare and got `Unauthorized`: every `/v1/` route
+/// is token-gated, the page's own calls carry it, the engine's first one did not.)
+pub async fn fetch_get_with_macaroon(url: &str, macaroon_hex: &str) -> LijResult<String> {
+    use web_sys::{Request, RequestInit, RequestMode, Response};
+    use wasm_bindgen_futures::JsFuture;
+    let mut opts = RequestInit::new();
+    #[allow(deprecated)]
+    opts.method("GET");
+    #[allow(deprecated)]
+    opts.mode(RequestMode::Cors);
+    let request = Request::new_with_str_and_init(url, &opts)
+        .map_err(|e| LijError::Lsp(format!("Failed to build request: {:?}", e)))?;
+    request.headers().set("Grpc-Metadata-macaroon", macaroon_hex)
+        .map_err(|e| LijError::Lsp(format!("Failed to set macaroon header: {:?}", e)))?;
+    let window = web_sys::window()
+        .ok_or_else(|| LijError::Lsp("No window object available".into()))?;
+    let resp_value = JsFuture::from(window.fetch_with_request(&request)).await
+        .map_err(|e| LijError::Lsp(format!("Fetch failed: {:?}", e)))?;
+    let resp: Response = resp_value.dyn_into()
+        .map_err(|_| LijError::Lsp("Response cast failed".into()))?;
+    if !resp.ok() {
+        return Err(LijError::Lsp(format!("HTTP {}: {}", resp.status(), resp.status_text())));
+    }
+    let text_promise = resp.text()
+        .map_err(|e| LijError::Lsp(format!("text() failed: {:?}", e)))?;
+    let text_value = JsFuture::from(text_promise).await
+        .map_err(|e| LijError::Lsp(format!("text() await failed: {:?}", e)))?;
+    text_value.as_string().ok_or_else(|| LijError::Lsp("Response text not a string".into()))
+}
+
 #[cfg(target_arch = "wasm32")]
 pub async fn fetch_post_with_macaroon(url: &str, macaroon_hex: &str, body: &str) -> LijResult<String> {
     use wasm_bindgen::JsValue;
@@ -7014,16 +7120,16 @@ pub async fn coop_cpfp(
             }
         }
     }
-    let out_sum: u64 = parent.output.iter().map(|o| o.value).sum();
+    let out_sum: u64 = parent.output.iter().map(|o| o.value.to_sat()).sum();
     let parent_fee = r.channel_capacity_sats.unwrap_or(out_sum).saturating_sub(out_sum);
     let parent_vsize = parent.vsize() as u64;
     let parent_rate_vb = if parent_vsize > 0 { parent_fee / parent_vsize } else { 0 };
-    let target_kw = h.fee_estimator.get_est_sat_per_1000_weight(lightning::chain::chaininterface::ConfirmationTarget::OnChainSweep);
+    let target_kw = h.fee_estimator.get_est_sat_per_1000_weight(lightning::chain::chaininterface::ConfirmationTarget::UrgentOnChainSweep);
     let target_vb = ((target_kw as u64) + 249) / 250;
     let Some((vout, idx)) = found else {
         return Ok(done(true, false, "no output of ours in the cooperative tx", 0, parent_rate_vb, target_vb, None));
     };
-    let out_value = parent.output[vout as usize].value;
+    let out_value = parent.output[vout as usize].value.to_sat();
     let child_vsize: u64 = 11 + 68 + 31;
     let child_fee = (target_vb * (parent_vsize + child_vsize))
         .saturating_sub(parent_fee)
@@ -7125,7 +7231,9 @@ async fn coop_hold_maintain(
             let outpoint = lightning::chain::transaction::OutPoint { txid: funding_txid, index: vout as u16 };
             let mut broadcast = false;
             if let Some(cm) = cm.as_ref() {
-                if let Ok(monitor) = cm.get_monitor(outpoint) {
+                // 0.2: monitors are keyed by channel id; find the one on this funding outpoint
+                let found = cm.list_monitors().into_iter().find_map(|cid| cm.get_monitor(cid).ok().filter(|m| m.get_funding_txo() == outpoint));
+                if let Some(monitor) = found {
                     let logger = std::sync::Arc::new(LijLogger);
                     monitor.broadcast_latest_holder_commitment_txn(&bc, &fee, &logger);
                     broadcast = true;

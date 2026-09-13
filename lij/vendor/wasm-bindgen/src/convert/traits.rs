@@ -2,7 +2,7 @@ use core::borrow::Borrow;
 use core::ops::{Deref, DerefMut};
 use core::panic::AssertUnwindSafe;
 
-use crate::sys::JsOption;
+use crate::sys::{JsNullable, JsOption};
 use crate::{describe::*, JsCast};
 use crate::{ErasableGeneric, JsValue};
 
@@ -470,8 +470,40 @@ where
 {
 }
 
-// Reference impls using UpcastFrom
-impl<'a, T, Target> UpcastFrom<&'a mut T> for &'a mut Target where Target: UpcastFrom<T> {}
+// Reference impls using UpcastFrom.
+//
+// &mut T references are invariant. If you accept &mut T, you cannot upcast it
+// and write back a different type the caller could see.
+// Eg. this is not valid:
+// ```ignore
+// let mut string = JsString::from("valid");
+// let string_ref: &mut JsString = &mut string;
+// // If &mut T was modeled as just covariant, we could upcast this to
+// // &mut JsValue.
+// let js_value_ref: &mut JsValue = string_ref.upcast_into();
+// *js_value_ref = Object::new().into();
+// // string is still typed as JsString, but it now wraps a plain object.
+// // Converting it to a Rust String throws because the value is not a string.
+// let _ = String::from(&string);
+// ```
+//
+// Requiring `UpcastFrom` in *both* directions means `T` and `Target` have to be
+// mutually upcastable -- i.e. equivalent, with the same set of valid values.
+// That is exactly what makes a `&mut` cast sound: anything written back through
+// the wider `&mut Target` view is still a valid `T`. So this rejects every
+// widening (the `JsString` -> `JsValue` case above, where `JsValue` does not
+// upcast back to `JsString`), while still allowing casts between genuinely
+// equivalent types in either direction. For example `()` and `Undefined` both
+// model "nothing" and upcast to each other, so a
+// `&mut Closure<dyn Fn(Undefined)>` can be upcast to a `&mut Closure<dyn Fn(())>`
+// and back.
+impl<'a, T: ?Sized, Target: ?Sized> UpcastFrom<&'a mut T> for &'a mut Target
+where
+    Target: UpcastFrom<T>,
+    T: UpcastFrom<Target>,
+{
+}
+// &T references are covariant, so we can allow from a specific type to a more general type
 impl<'a, T, Target> UpcastFrom<&'a T> for &'a Target where Target: UpcastFrom<T> {}
 
 // Tuple upcasts with structural covariance
@@ -485,6 +517,12 @@ macro_rules! impl_tuple_upcast {
         {
         }
         impl<$($T: JsGeneric,)+ $($Target: JsGeneric,)+> UpcastFrom<($($T,)+)> for JsOption<($($Target,)+)>
+        where
+            $($Target: JsGeneric + UpcastFrom<$T>,)+
+            $($T: JsGeneric,)+
+        {
+        }
+        impl<$($T: JsGeneric,)+ $($Target: JsGeneric,)+> UpcastFrom<($($T,)+)> for JsNullable<($($Target,)+)>
         where
             $($Target: JsGeneric + UpcastFrom<$T>,)+
             $($T: JsGeneric,)+
@@ -543,3 +581,91 @@ impl<T: ErasableGeneric<Repr = JsValue> + UpcastFrom<T> + Upcast<JsValue> + JsCa
     JsGeneric for T
 {
 }
+
+/// Value conversion from a type into its canonical [`JsGeneric`] form.
+///
+/// This trait allows types to be converted into JsGeneric supported types, which
+/// are required to be erasably generic with JsValue.
+///
+/// The single associated type — rather than a free type parameter bounded by
+/// `AsRef<T>` — is what makes collection-style APIs infer annotation-free.
+/// Given an input `A`, there is exactly one `A::JsCanon`, so rustc never has
+/// to search across multiple `AsRef` impls to pick a target element type.
+///
+/// # Implementations
+///
+/// Provided impls:
+/// - [`JsValue`] in this crate.
+/// - Every `#[wasm_bindgen]`-imported type (identity — emitted by the macro).
+/// - Every generic `js_sys` container (`Array<T>`, `Promise<T>`, `Set<T>`, …)
+///   provides its own identity impl owned by `js_sys`.
+/// - References to cloneable implementors, so borrowed iteration can still
+///   produce owned JS-generic values.
+///
+/// This trait is deliberately *not* blanket-implemented over all [`JsGeneric`]
+/// types: each implementor explicitly opts in, which leaves room for future
+/// wrapper types to pick a non-identity [`Self::JsCanon`].
+///
+/// # Example
+///
+/// ```ignore
+/// use js_sys::{Array, Number};
+///
+/// let arr: Array<Number> = (0..10).map(Number::from).collect();
+/// ```
+pub trait IntoJsGeneric {
+    /// The canonical [`JsGeneric`] form of this type.
+    type JsCanon: JsGeneric;
+
+    /// Produce the canonical [`JsGeneric`] value for `self`.
+    fn to_js(self) -> Self::JsCanon;
+}
+
+impl IntoJsGeneric for JsValue {
+    type JsCanon = JsValue;
+    #[inline]
+    fn to_js(self) -> JsValue {
+        self
+    }
+}
+
+// Reference iteration clones the borrowed wrapper to produce an owned value,
+// then delegates to that type's canonical conversion.
+impl<T: IntoJsGeneric + Clone> IntoJsGeneric for &T {
+    type JsCanon = T::JsCanon;
+    #[inline]
+    fn to_js(self) -> T::JsCanon {
+        self.clone().to_js()
+    }
+}
+
+// Intentionally not a blanket `impl<T: JsGeneric> IntoJsGeneric for T`:
+// that would lock in identity for every current and future `JsGeneric` type
+// and prevent wrapper types from canonicalising to a different target.
+// Instead, implementations are provided explicitly by each owning crate
+// (macro-generated for user types; hand-written for `js_sys` containers).
+
+/// Marker for types that cross the ABI as a JavaScript string.
+///
+/// Use as a bound on an `experimental_generic_mono` import's type parameter to
+/// accept any Rust or JS string shape, each at its native wire format:
+/// `String` and `&str` cross as UTF-8 buffers, `js_sys::JsString` and
+/// `&js_sys::JsString` as handles — all arriving in JS as a string value.
+///
+/// This trait is sealed: it is implemented only for the string shapes above,
+/// each of which is guaranteed to produce a JS string on the other side.
+///
+/// `OptionIntoWasmAbi` is a supertrait so that nullable string positions
+/// (`Option<T>`) work under the same bound.
+///
+/// This trait is experimental, like `experimental_generic_mono` itself, and
+/// may change or be removed as that feature stabilizes.
+pub trait JsStringLike:
+    IntoWasmAbi + OptionIntoWasmAbi + crate::__rt::marker::JsStringLikeSealed
+{
+}
+
+impl crate::__rt::marker::JsStringLikeSealed for alloc::string::String {}
+impl crate::__rt::marker::JsStringLikeSealed for &str {}
+impl JsStringLike for alloc::string::String {}
+impl JsStringLike for &str {}

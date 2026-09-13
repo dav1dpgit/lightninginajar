@@ -36,15 +36,15 @@
 //! `Event::SpendableOutputs`, or call `chain_monitor.process_pending_events`.
 //! Those steps land in subsequent commits.
 
-use std::io;
+use lightning::io;   // 0.2: the KVStore/sweeper traits speak LDK's io (bitcoin-io), not std's
 use std::sync::Arc;
 
 use bitcoin::{Network, ScriptBuf, Txid, Script};
 
 use lightning::chain::{BestBlock, Filter, WatchedOutput};
-use lightning::sign::{ChangeDestinationSource, KeysManager};
+use lightning::sign::{ChangeDestinationSourceSync, KeysManager};
 use lightning::util::persist::{
-    KVStore,
+    KVStoreSync,
     OUTPUT_SWEEPER_PERSISTENCE_KEY,
     OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
     OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -92,7 +92,7 @@ impl LijKVStore {
     }
 }
 
-impl KVStore for LijKVStore {
+impl KVStoreSync for LijKVStore {
     fn read(
         &self,
         primary_namespace: &str,
@@ -119,10 +119,10 @@ impl KVStore for LijKVStore {
         primary_namespace: &str,
         secondary_namespace: &str,
         key: &str,
-        buf: &[u8],
+        buf: Vec<u8>,   // 0.2: owned
     ) -> Result<(), io::Error> {
         let full = Self::full_key(primary_namespace, secondary_namespace, key);
-        self.inner.set(&full, buf).map_err(|e| {
+        self.inner.set(&full, &buf).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::Other,
                 format!("LijKVStore::write: LijStorage::set failed: {e}"),
@@ -189,7 +189,7 @@ impl LijChangeDestinationSource {
     }
 }
 
-impl ChangeDestinationSource for LijChangeDestinationSource {
+impl ChangeDestinationSourceSync for LijChangeDestinationSource {
     fn get_change_destination_script(&self) -> Result<ScriptBuf, ()> {
         // v185 (Session 27): route through the signer's memoized sweep
         // destination. The OutputSweeper calls this on EVERY per-block
@@ -258,7 +258,7 @@ impl Filter for UnusedFilter {
 /// sweeper moves everything to m/84. The "legacy m/525-override channel" framing
 /// above no longer applies to current channels — do not use it to explain stuck
 /// sweeps. TODO: delete the override branches + manual-tool references.
-pub type LijOutputSweeper = lightning::util::sweep::OutputSweeper<
+pub type LijOutputSweeper = lightning::util::sweep::OutputSweeperSync<
     Arc<LijBroadcaster>,
     Arc<LijChangeDestinationSource>,
     Arc<LijFeeEstimator>,
@@ -332,7 +332,7 @@ pub fn build_output_sweeper(
                 kv_store,
                 logger,
             );
-            <LijOutputSweeper as ReadableArgs<_>>::read(&mut cursor, args).map_err(|e| {
+            <(BestBlock, LijOutputSweeper) as ReadableArgs<_>>::read(&mut cursor, args).map(|(_best_block, sweeper)| sweeper).map_err(|e| {
                 LijError::Storage(format!(
                     "OutputSweeper restore deserialization failed: {e:?}. \
                      If you have in-flight sweeps, do NOT overwrite this state.",

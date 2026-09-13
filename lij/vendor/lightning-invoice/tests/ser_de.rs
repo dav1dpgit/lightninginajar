@@ -1,19 +1,15 @@
 extern crate bech32;
-extern crate lightning;
 extern crate lightning_invoice;
-extern crate secp256k1;
-extern crate hex;
 
-use bitcoin::address::WitnessVersion;
-use bitcoin::{PubkeyHash, ScriptHash};
-use bitcoin::hashes::hex::FromHex;
 use bitcoin::hashes::{sha256, Hash};
+use bitcoin::hex::FromHex;
+use bitcoin::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
+use bitcoin::secp256k1::PublicKey;
+use bitcoin::{PubkeyHash, ScriptHash, WitnessVersion};
 use lightning_invoice::*;
-use secp256k1::PublicKey;
-use secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use std::collections::HashSet;
-use std::time::Duration;
 use std::str::FromStr;
+use std::time::Duration;
 
 fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 	vec![
@@ -377,13 +373,34 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 			false, // Different features than set in InvoiceBuilder
 			true, // Some unknown fields
 		),
+		(
+			"lnbc1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpl2pkx2ctnv5sxxmmwwd5kgetjypeh2ursdae8g6twvus8g6rfwvs8qun0dfjkxaq9qrsgq357wnc5r2ueh7ck6q93dj32dlqnls087fxdwk8qakdyafkq3yap2r09nt4ndd0unm3z9u5t48y6ucv4r5sg7lk98c77ctvjczkspk5qprc90gx".to_owned(),
+			InvoiceBuilder::new(Currency::Bitcoin)
+				.duration_since_epoch(Duration::from_secs(1496314658))
+				.payment_secret(PaymentSecret([0x11; 32]))
+				.payment_hash(sha256::Hash::from_str(
+					"0001020304050607080900010203040506070809000102030405060708090102"
+				).unwrap())
+				.description("Please consider supporting this project".to_owned())
+				.build_raw()
+				.unwrap()
+				.sign(|_| {
+					RecoverableSignature::from_compact(
+						&<Vec<u8>>::from_hex("8d3ce9e28357337f62da0162d9454df827f83cfe499aeb1c1db349d4d8112742a1bcb35d66d6bf93dc445e51753935cc32a3a411efd8a7c7bd85b25815a01b50").unwrap(),
+						RecoveryId::from_i32(1).unwrap()
+					)
+				}).unwrap(),
+			false, // Different features than set in InvoiceBuilder
+			false, // Some unknown fields
+		),
 
 	]
 }
 
 #[test]
 fn invoice_deserialize() {
-	for (serialized, deserialized, ignore_feature_diff, ignore_unknown_fields) in get_test_tuples() {
+	for (serialized, deserialized, ignore_feature_diff, ignore_unknown_fields) in get_test_tuples()
+	{
 		eprintln!("Testing invoice {}...", serialized);
 		let parsed = serialized.parse::<SignedRawBolt11Invoice>().unwrap();
 
@@ -394,17 +411,33 @@ fn invoice_deserialize() {
 		assert_eq!(deserialized_invoice.hrp, parsed_invoice.hrp);
 		assert_eq!(deserialized_invoice.data.timestamp, parsed_invoice.data.timestamp);
 
-		let mut deserialized_hunks: HashSet<_> = deserialized_invoice.data.tagged_fields.iter().collect();
+		let mut deserialized_hunks: HashSet<_> =
+			deserialized_invoice.data.tagged_fields.iter().collect();
 		let mut parsed_hunks: HashSet<_> = parsed_invoice.data.tagged_fields.iter().collect();
 		if ignore_feature_diff {
-			deserialized_hunks.retain(|h|
-				if let RawTaggedField::KnownSemantics(TaggedField::Features(_)) = h { false } else { true });
-			parsed_hunks.retain(|h|
-				if let RawTaggedField::KnownSemantics(TaggedField::Features(_)) = h { false } else { true });
+			deserialized_hunks.retain(|h| {
+				if let RawTaggedField::KnownSemantics(TaggedField::Features(_)) = h {
+					false
+				} else {
+					true
+				}
+			});
+			parsed_hunks.retain(|h| {
+				if let RawTaggedField::KnownSemantics(TaggedField::Features(_)) = h {
+					false
+				} else {
+					true
+				}
+			});
 		}
 		if ignore_unknown_fields {
-			parsed_hunks.retain(|h|
-				if let RawTaggedField::UnknownSemantics(_) = h { false } else { true });
+			parsed_hunks.retain(|h| {
+				if let RawTaggedField::UnknownSemantics(_) = h {
+					false
+				} else {
+					true
+				}
+			});
 		}
 		assert_eq!(deserialized_hunks, parsed_hunks);
 
@@ -414,19 +447,23 @@ fn invoice_deserialize() {
 
 #[test]
 fn test_bolt_invalid_invoices() {
+	use bech32::primitives::decode::{
+		CharError, CheckedHrpstringError, ChecksumError, UncheckedHrpstringError,
+	};
+
 	// Tests the BOLT 11 invalid invoice test vectors
 	assert_eq!(Bolt11Invoice::from_str(
 		"lnbc25m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5vdhkven9v5sxyetpdeessp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q4psqqqqqqqqqqqqqqqqsgqtqyx5vggfcsll4wu246hz02kp85x4katwsk9639we5n5yngc3yhqkm35jnjw4len8vrnqnf5ejh0mzj9n3vz2px97evektfm2l6wqccp3y7372"
 		), Err(ParseOrSemanticError::SemanticError(Bolt11SemanticError::InvalidFeatures)));
 	assert_eq!(Bolt11Invoice::from_str(
 		"lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrnt"
-		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::Bech32Error(bech32::Error::InvalidChecksum))));
+		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::Bech32Error(CheckedHrpstringError::Checksum(ChecksumError::InvalidResidue)))));
 	assert_eq!(Bolt11Invoice::from_str(
 		"pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrny"
-		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::Bech32Error(bech32::Error::MissingSeparator))));
+		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::Bech32Error(CheckedHrpstringError::Parse(UncheckedHrpstringError::Char(CharError::MissingSeparator))))));
 	assert_eq!(Bolt11Invoice::from_str(
 		"LNBC2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrny"
-		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::Bech32Error(bech32::Error::MixedCase))));
+		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::Bech32Error(CheckedHrpstringError::Parse(UncheckedHrpstringError::Char(CharError::MixedCase))))));
 	assert_eq!(Bolt11Invoice::from_str(
 		"lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgqwgt7mcn5yqw3yx0w94pswkpq6j9uh6xfqqqtsk4tnarugeektd4hg5975x9am52rz4qskukxdmjemg92vvqz8nvmsye63r5ykel43pgz7zq0g2"
 		), Err(ParseOrSemanticError::SemanticError(Bolt11SemanticError::InvalidSignature)));

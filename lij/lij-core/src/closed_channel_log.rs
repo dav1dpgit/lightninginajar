@@ -281,6 +281,29 @@ impl ClosedChannelLog {
         }
     }
 
+    /// v243 (S46): engine v241/v242 filed EVERY closure as Force (a bare-name pattern
+    /// on LDK 0.1's struct variant became a catch-all). Records whose stored LDK reason
+    /// text names a cooperative closure are re-labelled Cooperative, once, at boot.
+    /// Returns how many were changed.
+    pub fn relabel_misfiled_cooperative(&self) -> LijResult<usize> {
+        let mut records = self.list()?;
+        let mut changed = 0usize;
+        for r in records.iter_mut() {
+            let coop = r.reason_description.contains("CooperativeClosure")
+                || r.reason_description.contains("CoopClosed");
+            if coop && !matches!(r.kind, CloseKind::Cooperative) {
+                r.kind = CloseKind::Cooperative;
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            let json = serde_json::to_string(&records)
+                .map_err(|e| LijError::Storage(format!("Closed log serialize: {e}")))?;
+            self.storage.set(KEY_CLOSED_CHANNELS, json.as_bytes())?;
+        }
+        Ok(changed)
+    }
+
     pub fn update_by_channel_id(
         &self,
         channel_id_hex: &str,

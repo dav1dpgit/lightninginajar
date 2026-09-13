@@ -1,17 +1,269 @@
-# 0.30.3 - 2025-12-09
+# unreleased
 
-- Bump the MSRV to Rust 1.56.1
+# 0.32.102 - 2026-07-06
 
-Sorry, we accidentally raised it to 1.51.1 2 years ago in 0.30.2, since no-one
-complained we decided to keep it even though it is a semver violation.
-And now we cannot even get that toolchain to build so we are bumping
-to `Rust v1.56.1`.
+- Backport: Make `SendCmpct` idempotent [#6525](https://github.com/rust-bitcoin/rust-bitcoin/pull/6525)
+- Add `consensus_encoding` to block/compact-block p2p message types [#6457](https://github.com/rust-bitcoin/rust-bitcoin/pull/6457)
+- Add `consensus_encoding` support to types in `bitcoin-primitives` [#6333](https://github.com/rust-bitcoin/rust-bitcoin/pull/6333)
+- Add `consensus_encoding` support to core p2p message types [#6443](https://github.com/rust-bitcoin/rust-bitcoin/pull/6443)
+- Add `consensus_encoding` support to BIP157/158 filter message types [#6444](https://github.com/rust-bitcoin/rust-bitcoin/pull/6444)
+- Use `write!` in `ParseNetwork` and `UnknownAddressType` error displays [#6386](https://github.com/rust-bitcoin/rust-bitcoin/pull/6386)
 
-If you need to build with Rust 1.41 please pin to `v0.30.1`.
+# 0.32.101 - 2026-06-24
 
-# 0.30.2 - 2023-11-16
+**Bump the MSRV to Rust 1.60.0**
 
-- Expose valid (min, max) difficulty transition thresholds [#1820](Expose valid (min, max) difficulty transition thresholds)
+Exposes the new stabilized encoding library through the optional `encoding` feature. Note that enabling it bumps the MSRV to 1.74.0.
+
+- Remove mutagen [#6337](https://github.com/rust-bitcoin/rust-bitcoin/pull/6337)
+- Use `write!` in `ParseNetwork` and `UnknownAddressType` error displays [#6386](https://github.com/rust-bitcoin/rust-bitcoin/pull/6386)
+- Add `consensus_encoding` to types present in units 1.0 [#6184](https://github.com/rust-bitcoin/rust-bitcoin/pull/6184)
+
+# 0.32.100 - 2025-05-26 [YANKED]
+
+> This release was yanked because the MSRV bump to 1.74.0 was too aggressive for some users. See version 0.32.101 for a smaller upgrade to 1.60.0.
+
+**Bump the MSRV to Rust 1.74.0**
+
+Note the version number jump. We jumped to `v0.32.100` when doing the MSRV bump so as to
+leave room for a bunch of secuity releases up to this number if needed.
+
+- Our primary users (BDK and LDK) are at 1.85 already well ahead of `1.74`.
+- We would like to deliver the new sans-IO `consensus_encoding` crate in a point release.
+- The would like to later support ergonomic conversion to other 1.0 types (from `bitcoin-units`, and
+  and `bitcoin-primitives`) without forcing the whole ecosystem to upgrade.
+- Opens the door to the possibility of doing releases and then using the semver trick.
+
+# 0.32.10 - 2026-04-23
+
+- Fix bug in `LeafVerison::Future`'s `Display` output [#6208](https://github.com/rust-bitcoin/rust-bitcoin/pull/6208)
+- Manually revert `VarInt` range check [#6182](https://github.com/rust-bitcoin/rust-bitcoin/pull/6182)
+- Backport - p2p: Add a hash value to `Inventory`'s `Error` variant [#6147](https://github.com/rust-bitcoin/rust-bitcoin/pull/6147)
+- Backport - p2p: Error on `RawNetworkMessage` decode if payload partly consumed [#6140](https://github.com/rust-bitcoin/rust-bitcoin/pull/6140)
+- Backport - p2p: Error on invalid `FeeRate` in `FeeFilter` decode [#6142](https://github.com/rust-bitcoin/rust-bitcoin/pull/6142)
+- Backport - Validate ASCII and preserve embedded nulls in `CommandString` parsing [#6136](https://github.com/rust-bitcoin/rust-bitcoin/pull/6136)
+- Remove the `internals` dependency [#6200](https://github.com/rust-bitcoin/rust-bitcoin/pull/6200)
+
+# 0.32.9 - 2025-03-26
+
+- Backport - Fix `Unknown` `NetworkMessage` encoding [#6106](https://github.com/rust-bitcoin/rust-bitcoin/pull/6106)
+- Backport - `Arbitrary` [#5085](https://github.com/rust-bitcoin/rust-bitcoin/pull/5085)
+- Backport - Add `CompactSize` range check to deserialization [#5921](https://github.com/rust-bitcoin/rust-bitcoin/pull/5921)
+
+# 0.32.8 - 2025-11-24
+
+- Backport - bip158: Return no match for empty query [#4972](https://github.com/rust-bitcoin/rust-bitcoin/pull/4972)
+- Remove `doc_auto_cfg`
+
+# 0.32.7 - 2025-07-30
+
+- Backport - Use `_u32` in `FeeRate` constructor instead of `_unchecked` [#4552](https://github.com/rust-bitcoin/rust-bitcoin/pull/4552)
+- Backport - Add support for pay to anchor outputs [#4691](https://github.com/rust-bitcoin/rust-bitcoin/pull/4691)
+- Backport - Remove `non_exhaustive` from `Network` [#4658](https://github.com/rust-bitcoin/rust-bitcoin/pull/4658)
+
+# 0.32.6 - 2025-05-06
+
+- Backport - Fix `is_invalid_use_of_sighash_single()` incompatibility with Bitcoin Core [#4122](https://github.com/rust-bitcoin/rust-bitcoin/pull/4122)
+- Backport - Backport witness fixes [#4101](https://github.com/rust-bitcoin/rust-bitcoin/pull/4101)
+- Backport - bip32: Return error when attempting to derive past maximum depth [#4434](https://github.com/rust-bitcoin/rust-bitcoin/pull/4434)
+- Backport - Add `XOnlyPublicKey` support for PSBT key retrieval and improve Taproot signing [#4443](https://github.com/rust-bitcoin/rust-bitcoin/pull/4443)
+- Backport - Add methods to retrieve inner types [#4450](https://github.com/rust-bitcoin/rust-bitcoin/pull/4450)
+
+# 0.32.5 - 2024-11-27
+
+- Backport - Re-export `bech32` crate [#3662](https://github.com/rust-bitcoin/rust-bitcoin/pull/3662)
+- Backport - Add API for extracting the inner payload of `RawNetworkMessage` [#3523](https://github.com/rust-bitcoin/rust-bitcoin/pull/3523)
+- Backport - Fix bug in witness stack getters [#3626](https://github.com/rust-bitcoin/rust-bitcoin/pull/3626)
+- Backport - address: Add `Address::into_unchecked` [#3655](https://github.com/rust-bitcoin/rust-bitcoin/pull/3655)
+
+# 0.32.4 - 2024-10-24
+
+- Bound decode methods on `Read`, rather than `BufRead` [#3173](https://github.com/rust-bitcoin/rust-bitcoin/pull/3173)
+- Backport - Some additional inspectors on `Script` and `Witness` [#2646](https://github.com/rust-bitcoin/rust-bitcoin/pull/2646)
+- Backport - Add difficulty adjustment calculation [#3494](https://github.com/rust-bitcoin/rust-bitcoin/pull/3494)
+- Backport - Add testnet 4 support [#3453](https://github.com/rust-bitcoin/rust-bitcoin/pull/3453)
+- Backport - CI: Copy main workflow from master [#3418](https://github.com/rust-bitcoin/rust-bitcoin/pull/3418)
+
+# 0.32.3 - 2024-09-27
+
+- Backport BIP-32 alias' without typo [#3252](https://github.com/rust-bitcoin/rust-bitcoin/pull/3252)
+
+# 0.32.2 - 2024-06-07
+
+- Fix a bug when parsing 256-bit numeric types [#2837](https://github.com/rust-bitcoin/rust-bitcoin/pull/2837)
+
+# 0.32.1 - 2024-05-29
+
+Fix things we broke/removed from the `Address` API in the last release.
+
+- Enable getting the witness program from an address [#2804](https://github.com/rust-bitcoin/rust-bitcoin/pull/2804)
+- Make `Address:p2sh_from_hash` public [#2806](https://github.com/rust-bitcoin/rust-bitcoin/pull/2806)
+- Add an `AddressData` type [#2810](https://github.com/rust-bitcoin/rust-bitcoin/pull/2810)
+
+If you are looking for the `address::Payload` type we removed in `v0.32.0` then the `AddressData` type
+might be what you are after.
+
+# 0.32.0 - 2024-04-23
+
+- Bump MSRV to Rust 1.56.1 [#2188](https://github.com/rust-bitcoin/rust-bitcoin/pull/2188)
+- Remove "no-std" feature [#2233](https://github.com/rust-bitcoin/rust-bitcoin/pull/2233)
+- Enforce displaying `Amount` with trailing zeros [#2604](https://github.com/rust-bitcoin/rust-bitcoin/pull/2604)
+
+## Things you will almost certainly hit when upgrading
+
+- Rename `Signature` field names [#2338](https://github.com/rust-bitcoin/rust-bitcoin/pull/2338)
+  - `sig` becomes `signature`
+  - `hash_ty` becomes `sighash_type`
+- Rename `txid` to `compute_txid` [#2366](https://github.com/rust-bitcoin/rust-bitcoin/pull/2366)
+
+## Crate smashing
+
+This release we continued our effort to split up the library into
+smaller crates AKA crate smashing.
+
+- Release new `bitcoin-units` crate [docs](https://docs.rs/bitcoin-units/0.1.1/bitcoin_units/)
+- Release new `base58ck` crate [docs](https://docs.rs/base58ck/0.1.0/base58ck/)
+- Release new `bitcoin-io` crate [docs](https://docs.rs/bitcoin-io/0.1.2/bitcoin_io/)
+
+## Bug fixes
+
+- Fix `FeeRate::checked_mul_by_weight` [#2182](https://github.com/rust-bitcoin/rust-bitcoin/pull/2182)
+- Use network when calculating difficulty [#2168](https://github.com/rust-bitcoin/rust-bitcoin/pull/2168)
+- Fix `InputWeightPrediction::P2WPKH_MAX` constant DER sig length [#2213](https://github.com/rust-bitcoin/rust-bitcoin/pull/2213)
+- Fix CJDNS marker byte check [#2546](https://github.com/rust-bitcoin/rust-bitcoin/pull/2546)
+- Add resource limit check during deserialization of merkle block [#2607](https://github.com/rust-bitcoin/rust-bitcoin/pull/2607)
+- Allow `m/` prefix in BIP-32 in derivation path strings but do not enforce it [#2684](https://github.com/rust-bitcoin/rust-bitcoin/pull/2684)
+
+## Changes to and involving the `Network` type
+
+In release 0.31.0 we managed to annoy a lot of people by the addition of `non_exhaustive` to the
+`Network` type. After much discussion, and in an effort to cater to multiple camps, we did a bunch
+of changes this release. To sum up, "network" is ill defined and it means different things to
+different devs/software. Your software should probably have some custom handling of whatever
+"network" means to you.
+
+In particular consider having some type that implements `AsRef<Params>`, we have attempted to
+ replace `Network` in much of the API ([#2541](https://github.com/rust-bitcoin/rust-bitcoin/pull/2541)).
+
+- Add `NetworkKind` [#2232](https://github.com/rust-bitcoin/rust-bitcoin/pull/2232)
+- Reduce usage of `Network` in the public API [#2541](https://github.com/rust-bitcoin/rust-bitcoin/pull/2541)
+- Remove `Network` from `AddressInner` [#1832](https://github.com/rust-bitcoin/rust-bitcoin/pull/1832)
+- Add consts to `Params` for individual networks [#2396](https://github.com/rust-bitcoin/rust-bitcoin/pull/2396)
+- Add `params()` method to `Network` [#2172](https://github.com/rust-bitcoin/rust-bitcoin/pull/2172)
+- Use `KnowHrp`` instead of `Network` [#2387](https://github.com/rust-bitcoin/rust-bitcoin/pull/2387)
+- Add check to max difficulty transition threshold [#2337](https://github.com/rust-bitcoin/rust-bitcoin/pull/2337)
+
+## Other API additions
+
+- Add `CompressedPublicKey` [#2277](https://github.com/rust-bitcoin/rust-bitcoin/pull/2277)
+- Add a `consensus::deserialize_hex` function [#2039](https://github.com/rust-bitcoin/rust-bitcoin/pull/2039)
+- Add `Witness::p2tr_key_spend` function [#2097](https://github.com/rust-bitcoin/rust-bitcoin/pull/2097)
+- Add `taproot::SerializedSignature` [#2156](https://github.com/rust-bitcoin/rust-bitcoin/pull/2156)
+- Add input weight predictions for p2pkh outputs [#2185](https://github.com/rust-bitcoin/rust-bitcoin/pull/2185)
+- Add `Weight::from_vb_weight function` function (added in [#2206](https://github.com/rust-bitcoin/rust-bitcoin/pull/2206),
+  renamed in [#2228](https://github.com/rust-bitcoin/rust-bitcoin/pull/2228)
+- Implement `LowerHex` and `UpperHex` for `CompactTarget` [#2221](https://github.com/rust-bitcoin/rust-bitcoin/pull/2221)
+- Add conversions from TXIDs to merkle nodes [#2227](https://github.com/rust-bitcoin/rust-bitcoin/pull/2227)
+- Add `transaction::effective_value()` function [#2230](https://github.com/rust-bitcoin/rust-bitcoin/pull/2230)
+- Improve `LockTime`s and related types:
+   - Improve relative locktime API [#2549](https://github.com/rust-bitcoin/rust-bitcoin/pull/2549)
+   - Implement `ordered::ArbitraryOrd` for absolute and relative locktimes, introducing the "ordered" feature:
+     - [#2581](https://github.com/rust-bitcoin/rust-bitcoin/pull/2581)
+     - [#2248](https://github.com/rust-bitcoin/rust-bitcoin/pull/2248)
+- Add and use custom `ArrayVec` 
+   - [#2287](https://github.com/rust-bitcoin/rust-bitcoin/pull/2287)
+   - [#2286](https://github.com/rust-bitcoin/rust-bitcoin/pull/2286)
+   - [#2310](https://github.com/rust-bitcoin/rust-bitcoin/pull/2310)
+- Add the implementation of `Display` for `transaction::Version` [#2309](https://github.com/rust-bitcoin/rust-bitcoin/pull/2309)
+- Add functionality to serialize signatures to a writer [#2392](https://github.com/rust-bitcoin/rust-bitcoin/pull/2392)
+- Add unchecked integer operations to `Amount` and `SignedAmount` (add, sum etc.) [#2436](https://github.com/rust-bitcoin/rust-bitcoin/pull/2436)
+- Add methods `p2wpkh_script_code` to `Script` and `ScriptBuf` [#2445](https://github.com/rust-bitcoin/rust-bitcoin/pull/2445)
+- Improve API for signing Taproot inputs in PSBTs [#2458](https://github.com/rust-bitcoin/rust-bitcoin/pull/2458)
+- Add `TapNodeHash` getter method on `TapTree` and `NodeInfo` [#2467](https://github.com/rust-bitcoin/rust-bitcoin/pull/2467)
+- Add hex parsing to pow types [#2514](https://github.com/rust-bitcoin/rust-bitcoin/pull/2514)
+- Implement `From<core::convert::Infallible>` for errors [#2516](https://github.com/rust-bitcoin/rust-bitcoin/pull/2516)
+- Add ServiceFlags::P2P_V2 [#2555](https://github.com/rust-bitcoin/rust-bitcoin/pull/2555)
+
+## Other API breaking changes
+
+- Require `io::BufRead` instead of `io::Read` in consensus decode trait [#2240](https://github.com/rust-bitcoin/rust-bitcoin/pull/2240)
+- Make `Payload` and `AddressEncoding` private [#1979](https://github.com/rust-bitcoin/rust-bitcoin/pull/1979)
+- Remove `bech32` from the public API [#2381](https://github.com/rust-bitcoin/rust-bitcoin/pull/2381)
+- Make from_hex inherent for byte-like types [#2491](https://github.com/rust-bitcoin/rust-bitcoin/pull/2491)
+- Remove the FromHexStr trait [#2492](https://github.com/rust-bitcoin/rust-bitcoin/pull/2492)
+
+## Error handling
+
+- Split `Prevouts` errors out into specific error types [#2042](https://github.com/rust-bitcoin/rust-bitcoin/pull/2042)
+- Improve error handling in the `sighash` module [#2329](https://github.com/rust-bitcoin/rust-bitcoin/pull/2329)
+- Improve lock time errors [#2417](https://github.com/rust-bitcoin/rust-bitcoin/pull/2417)
+- Split relative locktime error up [#2433](https://github.com/rust-bitcoin/rust-bitcoin/pull/2433)
+- Improve `amount` module errors [#2487](https://github.com/rust-bitcoin/rust-bitcoin/pull/2487)
+- Add the `FromScriptError` for handling errors in address [#2497](https://github.com/rust-bitcoin/rust-bitcoin/pull/2497)
+- Add `NetworkValidationError` [#2508](https://github.com/rust-bitcoin/rust-bitcoin/pull/2508) but don't return it [#2610](https://github.com/rust-bitcoin/rust-bitcoin/pull/2610)
+- Improve leaf errors ("leaf" means not enum with nested error type) [#2530](https://github.com/rust-bitcoin/rust-bitcoin/pull/2530)
+
+# 0.31.1 - 2023-10-18
+
+- Bump MSRV to Rust 1.48.0 [#1729](https://github.com/rust-bitcoin/rust-bitcoin/pull/1729)
+- Add new example code for signature verification [#1776](https://github.com/rust-bitcoin/rust-bitcoin/pull/1776)
+- Manually implement `Debug` on `Witness` [#1913](https://github.com/rust-bitcoin/rust-bitcoin/pull/1913)
+- Use new bech32 API [#1951](https://github.com/rust-bitcoin/rust-bitcoin/pull/1951) and [#2117](https://github.com/rust-bitcoin/rust-bitcoin/pull/2117)
+- Upgrade to `secp256k1 v0.28.0` [#2098](https://github.com/rust-bitcoin/rust-bitcoin/pull/2098)
+- Upgrade to `base64 v0.21.3` [#2032](https://github.com/rust-bitcoin/rust-bitcoin/pull/2032)
+
+- API Improvements:
+  - Add kilo weight unit conversion [#1735](https://github.com/rust-bitcoin/rust-bitcoin/pull/1735)
+  - Add `ChainHash::from_genesis_block_hash`[#1753](https://github.com/rust-bitcoin/rust-bitcoin/pull/1753)
+  - Add implementation of `PartialEq` trait for `Address<NetworkUnchecked>` [#1757](https://github.com/rust-bitcoin/rust-bitcoin/pull/1757)
+  - Add unsafe address type conversions [#1765](https://github.com/rust-bitcoin/rust-bitcoin/pull/1765)
+  - Add `Inventory::network_hash()` method [#515](https://github.com/rust-bitcoin/rust-bitcoin/pull/515)
+  - Implement `serde::Serialize` for `Address` [#1785](https://github.com/rust-bitcoin/rust-bitcoin/pull/1785)
+  - Expose valid (min, max) difficulty transition thresholds [#1820](https://github.com/rust-bitcoin/rust-bitcoin/pull/1820)
+  - Add functionality to generate `PrivateKey` [#1837](https://github.com/rust-bitcoin/rust-bitcoin/pull/1837)
+  - Allow parsing sub-sat denominations with decimal points [#1768](https://github.com/rust-bitcoin/rust-bitcoin/pull/1768)
+  - Fix associated constants of `InputWeightPrediction` [#1835](https://github.com/rust-bitcoin/rust-bitcoin/pull/1835)
+  - Add `FeeRate::checked_mul_by_weight` [#1864](https://github.com/rust-bitcoin/rust-bitcoin/pull/1864)
+  - Use `Amount` type for the `TxOut` value field [#1811](https://github.com/rust-bitcoin/rust-bitcoin/pull/1811)
+  - Add support for alloc-free parse errors [#1297](https://github.com/rust-bitcoin/rust-bitcoin/pull/1297)
+  - Add `Amount::from_int_btc` [#1870](https://github.com/rust-bitcoin/rust-bitcoin/pull/1870)
+  - Make `ckd_priv` function private and impl `AsRef` for `ChildNumber` [#1882](https://github.com/rust-bitcoin/rust-bitcoin/pull/1882)
+  - Use `hex_lit::hex` in benches (also backported to v0.30.1) [#1941](https://github.com/rust-bitcoin/rust-bitcoin/pull/1941)
+  - Add a verify function to `PublicKey` [#1911](https://github.com/rust-bitcoin/rust-bitcoin/pull/1911)
+  - Add method `Script::count_sigops` [#1890](https://github.com/rust-bitcoin/rust-bitcoin/pull/1890)
+  - Implement `From<PublicKey> for XOnlyPublicKey` [#1901](https://github.com/rust-bitcoin/rust-bitcoin/pull/1901)
+  - Implement `From<secp256k1::PublicKey> for bitcoin::PublicKey` [#1949](https://github.com/rust-bitcoin/rust-bitcoin/pull/1949)
+  - Add `DerivationPath::to_u32_vec` [#1946](https://github.com/rust-bitcoin/rust-bitcoin/pull/1946)
+  - Use `Target` as type for `pow_limit` [#2107](https://github.com/rust-bitcoin/rust-bitcoin/pull/2107)
+  - Add `Witness::p2wpkh` constructor [#2084](https://github.com/rust-bitcoin/rust-bitcoin/pull/2084)
+  - Make `Instruction` be able to read the script number [#2081](https://github.com/rust-bitcoin/rust-bitcoin/pull/2081)
+  - Add `Script::is_mulitsig` [#2078](https://github.com/rust-bitcoin/rust-bitcoin/pull/2078)
+  - Count sigops for `Transaction` [#2073](https://github.com/rust-bitcoin/rust-bitcoin/pull/2073)
+  - Add `Psbt` fee checks [#2064](https://github.com/rust-bitcoin/rust-bitcoin/pull/2064)
+  - Add version bytes consts [#2020](https://github.com/rust-bitcoin/rust-bitcoin/pull/2020)
+  - Add `transaction::Version` data type [#2006](https://github.com/rust-bitcoin/rust-bitcoin/pull/2006)
+
+- Moves, Removes, and renames:
+  - Move witness types to the script module [#1846](https://github.com/rust-bitcoin/rust-bitcoin/pull/1846)
+  - Remove reexport of `psbt::Prevouts` [#1872](https://github.com/rust-bitcoin/rust-bitcoin/pull/1872)
+  - Rename `Transaction::is_coin_base` to `is_coinbase` [#1796](https://github.com/rust-bitcoin/rust-bitcoin/pull/1796)
+  - Rename `TaprootSpendInfo::as_script_map` to `script_map` [#1897](https://github.com/rust-bitcoin/rust-bitcoin/pull/1897)
+  - Rename `Script::empty` to `Script::new` [#1925](https://github.com/rust-bitcoin/rust-bitcoin/pull/1925)
+  - Rename `PartiallySignedTransaction` to `Psbt` [#1938](https://github.com/rust-bitcoin/rust-bitcoin/pull/1938)
+  - Rename `XpubIdenifier` to `XKeyIdentifier` [#2021](https://github.com/rust-bitcoin/rust-bitcoin/pull/2021)
+  - Rename `ExtendedPubKey` to `Xpub` [#2019](https://github.com/rust-bitcoin/rust-bitcoin/pull/2019)
+  - Rename `ExtendedPrivKey` to `Xpriv` [#2019](https://github.com/rust-bitcoin/rust-bitcoin/pull/2019)
+  - Remove `_v0` from various function names (eg, `new_v0_p2wpkh`) [#1994](https://github.com/rust-bitcoin/rust-bitcoin/pull/1994)
+  - Remove `SighashCache::segwit_signature_hash` (add `p2wpkh_signiture_hash` and `p2wsh_signature_hash`) [#1995](https://github.com/rust-bitcoin/rust-bitcoin/pull/1995)
+  - Reexport all the hash types from the crate root [#1998](https://github.com/rust-bitcoin/rust-bitcoin/pull/1998)
+  - Rename `opcodes::All` to `Opcode` [#1995](https://github.com/rust-bitcoin/rust-bitcoin/pull/1995)
+  - Removed `TxOut::default()`, the same logic now exists as `TxOut::NULL` [#1811](https://github.com/rust-bitcoin/rust-bitcoin/pull/1811) and [#1838](https://github.com/rust-bitcoin/rust-bitcoin/pull/1838)
+
+- Error handling improvements:
+  - Improve `hashes::Error` [#1873](https://github.com/rust-bitcoin/rust-bitcoin/pull/1873)
+  - Add `ValidationError` [#1874](https://github.com/rust-bitcoin/rust-bitcoin/pull/1874)
+  - Improve `crypto::taproot` error type [#1895](https://github.com/rust-bitcoin/rust-bitcoin/pull/1895)
+  - Audit error types code base wide [#2101](https://github.com/rust-bitcoin/rust-bitcoin/pull/2101)
 
 # 0.30.1 - 2023-07-16
 
@@ -76,6 +328,8 @@ This release is big, to help users upgrade we wrote a blog post, please see http
      contains a `LockTime` but is `Ord`, we have manually sorted the locktimes based on
      their consensus encoding. This ordering is somewhat arbitrary -- there is no total
      ordering on locktimes since they may be measured in either blocks or seconds.
+  - [Removed `FromHex` implementation](https://github.com/rust-bitcoin/rust-bitcoin/pull/1565) from
+    all types except `Vec` and arrays, replace where appropriate with `FromStr`.
 
 - Performance improvements:
   - [Remove needless allocation from BIP-158 encoding](https://github.com/rust-bitcoin/rust-bitcoin/pull/1146)
