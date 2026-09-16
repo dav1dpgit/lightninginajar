@@ -2024,9 +2024,10 @@ impl LijNode {
                         fee_rate_sat_per_kw,
                         temporary_channel_id
                     );
+                    let t2_store = crate::tier2_wallet::encrypted(&*self.storage, self.root_key.encryption_key());   // v263: the view is encrypted at rest (v256)
                     match crate::channel_open::build_funding_tx(
                         &*self.root_key,
-                        &*self.storage,
+                        &t2_store,
                         self.network,
                         output_script,
                         channel_value_satoshis,

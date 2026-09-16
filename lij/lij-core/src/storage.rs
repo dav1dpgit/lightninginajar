@@ -114,6 +114,15 @@ impl<S: LijStorage> LijStorage for EncryptedKeys<S> {
     }
 }
 
+/// v263 (S47): a borrowed store is a store — lets EncryptedKeys wrap the node's shared
+/// storage (`&dyn LijStorage`) without owning it.
+impl<T: LijStorage + ?Sized> LijStorage for &T {
+    fn get(&self, key: &str) -> LijResult<Option<Vec<u8>>> { (**self).get(key) }
+    fn set(&self, key: &str, value: &[u8]) -> LijResult<()> { (**self).set(key, value) }
+    fn delete(&self, key: &str) -> LijResult<()> { (**self).delete(key) }
+    fn list_with_prefix(&self, prefix: &str) -> LijResult<Vec<String>> { (**self).list_with_prefix(prefix) }
+}
+
 // ── Key name constants ───────────────────────────────────────────────────────
 // These are the localStorage keys. Namespaced to avoid collisions.
 

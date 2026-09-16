@@ -96,7 +96,8 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v262".to_string()  // v262 (DP's second dots read): the 7,500-key net is derived in slices with yields — the one-time 1–2 s boot freeze (the waiting dots standing still) is gone.
+    "phase11-v263".to_string()  // v263 (S47, DP field: on-chain sends failed "tier2 view parse" on both phones; the channel sheet said "Could not load balance"): v256 encrypted the on-chain view but four readers stayed on plain storage — send_onchain, bump_onchain_send, lsp_channel_open_estimate and the funding build (FundingGenerationReady). All four now read through tier2_wallet::encrypted (one key list).
+    // v262 (DP's second dots read): the 7,500-key net is derived in slices with yields — the one-time 1–2 s boot freeze (the waiting dots standing still) is gone.
     // v261 (DP: the on-chain drill-down): tx_details(txid) — fee (sats, sat/vB), our inputs/outputs, the address of record, the output type, mempool or block + header time (recorded into the ledger so the face's row gains its clock).
     // v260 (DP's frozen-dots read): the walk yields to the browser between every 16 filters — a 500-filter batch against the 7,500-key net was seconds of unbroken CPU on the main thread, freezing every timer on the page (the balance's waiting dots since v256). Same work, the phone breathes.
     // v259 (DP: clock time under each on-chain amount): the walk records every fetched block's header time; derived rows carry `time` (unix seconds) so the face can show the clock without another read.
@@ -155,11 +156,7 @@ pub static BACKUP_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 /// v256 (S46, DP: "Encrypt it"): the tier-2 ledger and the pending list live encrypted
 /// at rest under the wallet's persistence key — the same key the channel blobs use.
 fn t2_storage(root_key: &lij_core::key::RootKey) -> Arc<dyn lij_core::storage::LijStorage> {
-    Arc::new(lij_core::storage::EncryptedKeys::new(
-        LocalStorage,
-        root_key.encryption_key(),
-        &[lij_core::tier2_wallet::VIEW_KEY],   // the pending list stays plain: node.rs reads it in four places (the stale-funding audit among them)
-    ))
+    Arc::new(lij_core::tier2_wallet::encrypted(LocalStorage, root_key.encryption_key()))   // v263: one key list, shared with node.rs
 }
 
 thread_local! {
@@ -993,10 +990,10 @@ impl LijWalletHandle {
             // scan. Load the view + pending once: they pick the next change index
             // (rotation) AND supply the spendable set to build_and_send.
             let (view, pending) = {
-                let storage = LocalStorage;
-                let view = lij_core::tier2_wallet::load_view(&storage)
+                let storage = t2_storage(&root_key);   // v263: the view is encrypted at rest (v256) — plain storage could not parse it
+                let view = lij_core::tier2_wallet::load_view(storage.as_ref())
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
-                let pending = lij_core::tier2_wallet::load_pending(&storage);
+                let pending = lij_core::tier2_wallet::load_pending(storage.as_ref());
                 (view, pending)
             };
             let change_index = lij_core::tier2_wallet::next_change_index(&view, &pending);
@@ -1074,10 +1071,10 @@ impl LijWalletHandle {
                     .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
                 wallet.onchain_handles()
             };
-            let storage = LocalStorage;
-            let view = lij_core::tier2_wallet::load_view(&storage)
+            let storage = t2_storage(&root_key);   // v263: the view is encrypted at rest (v256)
+            let view = lij_core::tier2_wallet::load_view(storage.as_ref())
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
-            let pending = lij_core::tier2_wallet::load_pending(&storage);
+            let pending = lij_core::tier2_wallet::load_pending(storage.as_ref());
             let prev = pending
                 .iter()
                 .find(|p| p.txid == old_txid)
@@ -3178,12 +3175,18 @@ impl LijWalletHandle {
     /// local storage; needs no wallet lock.
     #[wasm_bindgen]
     pub fn lsp_channel_open_estimate(&self, fee_rate_sat_per_vb: f64) -> js_sys::Promise {
+        // v263: the view is encrypted at rest (v256) — the key comes from the wallet (try_lock:
+        // a busy wallet answers WALLET_BUSY and the page asks again).
+        let root_key = match self.inner.try_lock() {
+            Ok(w) => w.onchain_handles().0,
+            Err(_) => return js_sys::Promise::reject(&JsValue::from_str("WALLET_BUSY")),
+        };
         future_to_promise(async move {
-            let storage = LocalStorage;
+            let storage = t2_storage(&root_key);
             let fee_rate_sat_per_kw = ((fee_rate_sat_per_vb * 250.0).round() as u32).max(250);
-            let spendable = lij_core::channel_open::spendable_total(&storage)
+            let spendable = lij_core::channel_open::spendable_total(storage.as_ref())
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
-            let max = lij_core::channel_open::max_channel_value(&storage, fee_rate_sat_per_kw)
+            let max = lij_core::channel_open::max_channel_value(storage.as_ref(), fee_rate_sat_per_kw)
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
             let result = serde_json::json!({
                 "spendable_sats": spendable,

@@ -26,7 +26,15 @@ use crate::{
     tier2_sync::{MatchedBlock, SyncCursor},
 };
 
-pub const VIEW_KEY: &str = "tier2_view";   // v220: pub — the blob packs it (D3)
+pub const VIEW_KEY: &str = "tier2_view";
+/// v263 (S47): the ONE list of on-chain keys encrypted at rest (v256), and the one way to
+/// read them. v256 encrypted the view but left four readers on plain storage (the on-chain
+/// send, the fee bump, the channel-open estimate and the funding build) — each failed with
+/// "tier2 view parse: expected value at line 1 column 1". Every reader goes through this.
+pub const ENCRYPTED_KEYS: &[&str] = &[VIEW_KEY];   // the pending list stays plain: node.rs reads it in four places
+pub fn encrypted<S: LijStorage>(inner: S, key: [u8; 32]) -> crate::storage::EncryptedKeys<S> {
+    crate::storage::EncryptedKeys::new(inner, key, ENCRYPTED_KEYS)
+}   // v220: pub — the blob packs it (D3)
 
 /// Milliseconds since the unix epoch. js_sys::Date on wasm, SystemTime on
 /// native (the established LiJ pattern; SystemTime panics under wasm).
@@ -1335,6 +1343,20 @@ mod tests {
         assert_eq!(balances(&loaded), (12_345, 0));
         assert_eq!(loaded.cursor.scanned_to, 900_000);
         assert_eq!(loaded.utxos, view.utxos);
+    }
+
+    /// v263: the view written encrypted is read back only through the encrypted wrapper —
+    /// the same storage read plain is the field error ("tier2 view parse").
+    #[test]
+    fn encrypted_view_round_trip() {
+        let s = scripts();
+        let mut view = Tier2View::default();
+        apply_txs(&mut view, &s, &[tx_paying(our_receive_spk(&s), 21_000)], 900_000);
+        let inner = MemStorage(Mutex::new(HashMap::new()));
+        let enc = encrypted(&inner, [7u8; 32]);
+        save_view(&enc, &view).unwrap();
+        assert_eq!(balances(&load_view(&enc).unwrap()), (21_000, 0));
+        assert!(load_view(&inner).is_err());
     }
 
     #[test]
