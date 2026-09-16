@@ -2,5 +2,5 @@ lij/target/
 __pycache__/
 *.zip
 *.orig
-!lij/vendor/**/Cargo.toml.orig
+!lij/vendor/**/*.orig
 .DS_Store
