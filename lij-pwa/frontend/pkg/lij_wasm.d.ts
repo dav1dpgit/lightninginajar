@@ -179,6 +179,17 @@ export class LijWalletHandle {
      * unconfirmed funding. Destructive — UI must confirm first.
      */
     force_close_without_broadcasting(channel_id_hex: string): void;
+    /**
+     * Auto-backup tick: if channel state changed since the last push, snapshot
+     * it under the lock, release, then push to enabled sinks UNLOCKED. Cheap
+     * no-op when nothing changed; the frontend calls this on a slow debounce
+     * interval. Never holds the wallet mutex across the push's `.await`.
+     * v250 (S46, DP GO): delete this wallet's cloud copy at every enabled sink.
+     * Local state is untouched; the caller decides what follows (the Privacy
+     * switch turning Off, or the Erase gate's "delete the cloud copy too").
+     * Answers {"ok":true,"forgotten":N,"existed":bool}; an error if every sink refused.
+     */
+    forget_cloud_backup(): Promise<any>;
     get_balance(): Promise<any>;
     get_chain_status(): string;
     get_channels(): string;
@@ -186,6 +197,20 @@ export class LijWalletHandle {
      * v165 (#29-4a): current fee-rate tiers for the speed picker (JSON).
      */
     get_fee_rates(): string;
+    /**
+     * On-chain transaction history for the RECENT list. The trusted-node source
+     * was removed with the shim; this returns an empty list until Tier 2
+     * (client-side BIP158 filter matching) reconstructs history locally. Kept so
+     * the frontend RECENT wiring stays stable across the transition.
+     * v252 (S46, DP's #20 run): given a transaction id, find the output that pays one of
+     * THIS wallet's addresses (receive/change/legacy chains, a 200-wide window from the
+     * used frontier) and answer {"found":true,"address":..,"vout":n,"value_sats":..}. Used
+     * after recover-close: the LSP names the closing txid, the wallet finds its own
+     * output and opens a receive expectation on that address, so the 0-conf watcher shows
+     * the return in the mempool and the confirmed card on the block. A words-only restore
+     * does not know the pin index; this finds it from the transaction itself.
+     */
+    identify_own_output(txid: string): Promise<any>;
     /**
      * v221 (DP fire-and-forget): device-file backup import — parses the v209
      * export's StateBlob JSON and injects through the same generic path the
@@ -271,12 +296,6 @@ export class LijWalletHandle {
      * surface quotes (identical math to mpp_plan's total_usable_sats).
      */
     max_sendable_sats(): bigint;
-    /**
-     * Auto-backup tick: if channel state changed since the last push, snapshot
-     * it under the lock, release, then push to enabled sinks UNLOCKED. Cheap
-     * no-op when nothing changed; the frontend calls this on a slow debounce
-     * interval. Never holds the wallet mutex across the push's `.await`.
-     */
     maybe_backup(): Promise<any>;
     /**
      * Network-free receive address at `index` (BIP84 m/84'/{coin}'/0'/0/index).
@@ -300,12 +319,6 @@ export class LijWalletHandle {
      * is busy (a walk is likely already in flight). See node::note_foreground.
      */
     note_foreground(): void;
-    /**
-     * On-chain transaction history for the RECENT list. The trusted-node source
-     * was removed with the shim; this returns an empty list until Tier 2
-     * (client-side BIP158 filter matching) reconstructs history locally. Kept so
-     * the frontend RECENT wiring stays stable across the transition.
-     */
     onchain_history(): Promise<any>;
     /**
      * Read-only on-chain wallet summary (D, increment 1): scans the BIP84
@@ -336,14 +349,6 @@ export class LijWalletHandle {
      */
     open_lsp_channel(amount_sats: bigint, fee_rate_sat_per_vb: number): Promise<any>;
     outstanding_close_attempts(): string;
-    /**
-     * Session 23 Option B (allocator unification): next-to-issue value of
-     * the shared channel-index allocator, without advancing. The frontend
-     * maxes this into getOnchainRecvIndex() so receive minting can never
-     * collide with signer-issued indices (shutdown pins, sweep
-     * destinations, and — post-terminus — pinned to_remote keys) that
-     * haven't landed on-chain yet. Reads the LIVE counter instance.
-     */
     peek_channel_index(): number;
     /**
      * Build #4 confirmation instrument: pending-record audit vs the
@@ -509,6 +514,16 @@ export class LijWalletHandle {
      * re-walk takes; the next completed sync restores full truth.
      */
     tier2_rescan_from(from_height: number): string;
+    /**
+     * v261 (DP: the on-chain drill-down): everything the panel shows for one transaction,
+     * read from the independent sources at tap time — fee (sats, sat/vB), the inputs and
+     * outputs with which are ours, the counterparty address, the output type, mempool or
+     * block (with the header time), and the block time recorded into the ledger so the
+     * face's row gains its clock. Answers JSON:
+     * {"txid","fee_sats","vsize","sat_vb","confirmed","height","time","our_in","our_out",
+     *  "address","address_type","outputs":[{"address","value","ours","type"}]}
+     */
+    tx_details(txid: string): Promise<any>;
     /**
      * Chunk 1 (receive watcher): query a single watched address for incoming
      * outputs — INCLUDING 0-conf mempool ones — via the independent Esplora
@@ -714,10 +729,12 @@ export interface InitOutput {
     readonly lijwallethandle_force_close: (a: number, b: number, c: number) => [number, number];
     readonly lijwallethandle_force_close_all_without_broadcasting: (a: number) => [number, number, number];
     readonly lijwallethandle_force_close_without_broadcasting: (a: number, b: number, c: number) => [number, number];
+    readonly lijwallethandle_forget_cloud_backup: (a: number) => any;
     readonly lijwallethandle_get_balance: (a: number) => any;
     readonly lijwallethandle_get_chain_status: (a: number) => [number, number, number, number];
     readonly lijwallethandle_get_channels: (a: number) => [number, number, number, number];
     readonly lijwallethandle_get_fee_rates: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_identify_own_output: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_import_backup_blob: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_last_backup_version: (a: number) => [number, number, number];
     readonly lijwallethandle_list_closed_channels: (a: number) => [number, number, number, number];
@@ -763,6 +780,7 @@ export interface InitOutput {
     readonly lijwallethandle_switch_lsp: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_tier2_onchain_sync: (a: number, b: number) => any;
     readonly lijwallethandle_tier2_rescan_from: (a: number, b: number) => [number, number, number, number];
+    readonly lijwallethandle_tx_details: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_watch_address_inbound: (a: number, b: number, c: number) => any;
     readonly lsps2_buy_promise: (a: number, b: number, c: number, d: number, e: bigint, f: number, g: number) => any;
     readonly lsps2_get_info: (a: number, b: number, c: number, d: number) => any;
@@ -789,8 +807,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_104: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_105: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_107: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_108: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

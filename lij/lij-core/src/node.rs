@@ -407,6 +407,8 @@ static NEXT_SOCKET_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 pub struct LijNode {
     pub config: WalletConfig,
     pub network: Network,
+    /// v249: tick_count of the last stream-loss re-subscribe (throttle, 60 s); 0 = none.
+    pub last_resubscribe_tick: std::sync::atomic::AtomicU64,
     root_key: Arc<RootKey>,
     active_lsp: Option<ActiveLsp>,
     keys_manager: Arc<KeysManager>,
@@ -670,6 +672,7 @@ impl LijNode {
 
         let mut node = Self {
             config, network, root_key, active_lsp: None,
+            last_resubscribe_tick: std::sync::atomic::AtomicU64::new(0),   // v249
             keys_manager, signer_provider,
             outstanding_close_attempts: Arc::new(Mutex::new(std::collections::HashMap::new())),
             funding_spend_sightings: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -1011,6 +1014,7 @@ impl LijNode {
         let mut node = Self {
             config,
             network,
+            last_resubscribe_tick: std::sync::atomic::AtomicU64::new(0),   // v249
             root_key,
             active_lsp: None,
             keys_manager,
@@ -2652,18 +2656,37 @@ impl LijNode {
         // actually connected, and it self-terminates when the ChainDataBundle
         // arrives and dispatch() sets subscribed=true — worst case a couple of
         // duplicate subscribe messages during the one-RTT bundle window.
-        if !self.cooperative_bridge.cooperative_subscribed() {
+        // v249 (S46, DP — the stale-tip cause): three reasons to (re)subscribe, one send:
+        //   (a) never subscribed (the original rule, every tick until the bundle lands);
+        //   (b) the handler saw the LSP peer connect or disconnect since the last tick — the
+        //       LSP's bridge forgets a subscriber whose sends failed while the wallet slept,
+        //       and a reconnect never re-subscribed (mark_disconnected was dead code);
+        //   (c) the stream has been silent for 20 minutes while the peer is connected — a
+        //       block arrives every ~10 min on average, so silence that long is a lost
+        //       stream (an adapter restart also empties its subscriber list); a needless
+        //       re-subscribe costs one bundle. (b) and (c) send at most once per 60 s.
+        let not_subscribed = !self.cooperative_bridge.cooperative_subscribed();
+        let reconnect_flag = self.cooperative_bridge.take_resubscribe_wanted();
+        let silence = self.cooperative_bridge.cooperative_silence_secs().unwrap_or(0);
+        let stale = !not_subscribed && silence >= 1200;
+        let last_rs = self.last_resubscribe_tick.load(std::sync::atomic::Ordering::Relaxed);
+        let throttled = last_rs != 0 && tick_count.saturating_sub(last_rs) < 60;
+        if not_subscribed || ((reconnect_flag || stale) && !throttled) {
             if let Some(lsp_pubkey) = self.cooperative_bridge.target_lsp() {
                 let peer_connected = pm.list_peers().iter()
                     .any(|p| p.counterparty_node_id == lsp_pubkey);
                 if peer_connected {
+                    let why = if not_subscribed { "cooperative not subscribed" }
+                        else if reconnect_flag { "LSP peer reconnected" }
+                        else { "cooperative stream silent" };
                     log::info!(
-                        "background_tick: peer {} connected but cooperative not subscribed — re-issuing SubscribeChainData",
-                        lsp_pubkey
+                        "background_tick: peer {} connected, {} ({} s since the last chain message) — re-issuing SubscribeChainData",
+                        lsp_pubkey, why, silence
                     );
                     if let Err(e) = self.cooperative_bridge.send_subscribe(lsp_pubkey) {
                         log::warn!("background_tick: send_subscribe retry failed: {}", e);
                     }
+                    if !not_subscribed { self.last_resubscribe_tick.store(tick_count.max(1), std::sync::atomic::Ordering::Relaxed); }
                 }
             }
         }
@@ -3313,14 +3336,13 @@ impl LijNode {
         if tick_count % 30 == 29 {
             if let Some(cm) = self.channel_manager.as_ref() {
                 let mut dead: Vec<(lightning::ln::types::ChannelId, bitcoin::secp256k1::PublicKey, String)> = Vec::new();
-                if let Ok(view) = crate::tier2_wallet::load_view(&*self.storage) {
+                {
+                    // v257: the coin ledger is encrypted at rest and its rows are derived; this
+                    // audit only ever acted on UNCONFIRMED outbound fundings, which live in the
+                    // pending list — the confirmed rows it used to read were never load-bearing.
                     let pending = crate::tier2_wallet::load_pending(&*self.storage);
-                    let tracked: std::collections::HashSet<String> = view
-                        .history
-                        .iter()
-                        .map(|h| h.txid.clone())
-                        .chain(pending.iter().map(|p| p.txid.clone()))
-                        .collect();
+                    let tracked: std::collections::HashSet<String> =
+                        pending.iter().map(|p| p.txid.clone()).collect();
                     for c in cm.list_channels() {
                         // v193 (S29) — DP ruling "harden for outbound now":
                         // the untracked-test only proves death for spends WE
@@ -3543,6 +3565,11 @@ impl LijNode {
     }
 
     /// List currently connected peers by hex pubkey.
+    /// v249: LDK's current best-block height (what outgoing HTLC expiries are built from).
+    pub fn ldk_best_block_height(&self) -> Option<u32> {
+        self.channel_manager.as_ref().map(|cm| cm.current_best_block().height)
+    }
+
     pub fn list_peers(&self) -> LijResult<Vec<String>> {
         let pm = self.peer_manager()?;
         Ok(pm.list_peers()

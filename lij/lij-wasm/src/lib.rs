@@ -96,7 +96,22 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v247".to_string()  // v247 (S46): invoices carry a 144-block final CLTV — LDK 0.2.6 will not accept less than 42 and the 24 carried from 0.0.123 made every v241–v246 invoice unpayable by LND/WoS/the chit rail (LiJ senders use 144 regardless and hid it).
+    "phase11-v262".to_string()  // v262 (DP's second dots read): the 7,500-key net is derived in slices with yields — the one-time 1–2 s boot freeze (the waiting dots standing still) is gone.
+    // v261 (DP: the on-chain drill-down): tx_details(txid) — fee (sats, sat/vB), our inputs/outputs, the address of record, the output type, mempool or block + header time (recorded into the ledger so the face's row gains its clock).
+    // v260 (DP's frozen-dots read): the walk yields to the browser between every 16 filters — a 500-filter batch against the 7,500-key net was seconds of unbroken CPU on the main thread, freezing every timer on the page (the balance's waiting dots since v256). Same work, the phone breathes.
+    // v259 (DP: clock time under each on-chain amount): the walk records every fetched block's header time; derived rows carry `time` (unix seconds) so the face can show the clock without another read.
+    // v258 (S46, DP's iOS read): the page's birthday is the ceiling on the ledger's birthday — a stored one above it (v744's first-channel bound) is lowered and the downward walk resumes; that bound hid 51,067 sats on the iOS below block 965,586.
+    // v257 (S46, DP GO — the new process): ONE walk, newest-first, from the tip down to the birthday (a spend seen before its coin is held by the spender's own witness pubkey and lands when the coin appears; new blocks read forward at the top; reorg-checked every call); every sync call writes a note (ok or the failure reason) to the tape and the ledger for the face; rescan = an explicit rebuild from the tip down to the chosen year; the head/historic walk and its merge are gone.
+    // v256 (S46, DP GO — ONE LEDGER): the on-chain ledger is rebuilt once from the birthday under a fixed 2,500-address net per branch (widened and rewalked when a coin sits within 100 of the edge); rows derived from the coins only (the old row list retired; kind tags in a txid map); rows ordered by height then txid; the ledger and the pending list encrypted at rest under the wallet's persistence key; a daily re-walk of the newest 144 blocks re-confirms spends by block filters (no coin or address ever queried); invariants checked on every summary.
+    // v255 (S46, DP: "it doesn't make sense that the balance can be right but the rows wrong"): ONCHAIN RECENT rows are DERIVED from the output set the balance is summed from (every held or spent output yields its row; spent_txid recorded from now on; the persisted list supplies only kind tags and pre-v255 spends) — the two cannot disagree again, and a view damaged by v251's merge shows its rows without a rescan.
+    // v254 (S46, DP's field read): the head/historic merge rolls the head range back (outputs, spend marks, rows) and replays it in height order — v251's merge dropped the head range's history rows while keeping its outputs (balance right, ONCHAIN RECENT missing the close return). A Rescan from Transaction tools regenerates a view damaged by v251–v253.
+    // v253 (S46, DP's field read): the v252 widen-and-rewalk edge sat at the frontier, so every completed walk reset to 0 and walked again (the start-stop DP saw, and the rows it never reached); now the trigger is a used index in the window's last ten slots, once per frontier value. The summary carries the walk's shape (birthday, head_active, head_start, head_scanned_to) so the face can say which phase it is in and when it is done.
+    // v252 (S46): identify_own_output(txid) — the wallet finds its own output in a transaction (a 200-wide window over its chains), so a recover-close return can be watched in the mempool by address without knowing the pin index.
+    // v251 (S46, DP GO, the #20 run): the on-chain walk (1) keeps a used-index frontier that counts SPENT outputs — the unspent-only frontier left a restored wallet scanning 0..50 while its activity sat past 50 (DP's "large gap" vs BlueWallet); (2) scans the newest 1,500 blocks FIRST after a restore and merges with the historic walk (replaying the head's blocks so spends resolve); (3) walks at most 8 batches per call so the face can say "block X of Y"; (4) a fresh restore uses a 4× discovery window and rewalks wider if a used index reaches the window's edge.
+    // v250 (S46, DP GO): forget_cloud_backup() — the wallet deletes its own cloud copy at the worker (POST /backup/forget, the same signed challenge as push/read); local state untouched. For the Privacy switch (Off = delete, "off means off") and the Erase gate's "delete the cloud copy too".
+    // v249 (S46, DP GO — the stale-tip cause + the double connect): (1) the wallet re-subscribes to the LSP's chain stream on every LSP (re)connect and after 20 min of silence while connected — the LSP forgets a subscriber whose sends failed while the phone slept, and nothing here ever subscribed again (mark_disconnected was dead code), so the Android sat six blocks behind while open; (2) ONE SOCKET PER PEER — connect_to_peer refuses a second socket while one is handshaking or an LDK peer is up (the boot double-connect), and the read_event error path closes without freeing its own closure (the boot throw); (3) internal sends raise the self-hop CLTV by the lag between LND's height (adapter 0.76.1's /v1/outcome) and this wallet's tip.
+    // v248 (S46, DP): quote_route_fee answers 0 for an INTERNAL destination (invoice minted on the active LSP's node — the static-address rail) — the same v222 test the send uses; the quote had applied the first-hop policy (~0.1%) to a payment the self-hop delivers for nothing.
+    // v247 (S46): invoices carry a 144-block final CLTV — LDK 0.2.6 will not accept less than 42 and the 24 carried from 0.0.123 made every v241–v246 invoice unpayable by LND/WoS/the chit rail (LiJ senders use 144 regardless and hid it).
     // v246 (S46): the hold verdict is logged whatever it says (the tape carried nothing for a live answer); adapter 0.75.1 answers with two fresh liveness signals.
     // v245 (S46): the hold-verdict GET carries the route token (v244 sent it bare → Unauthorized → the old 30-s path; DP's curl receipt).
     // v244 (S46, DP GO): hold verdict for INTERNAL (LNURL pool-hash) sends — one GET to the LSP's /v1/outcome before the self-hop; owner offline → the page narrates HELD from the first second instead of a 30-s wait booked "failed". Adapter 0.75.0 answers owner_live + hold_cap_s.
@@ -137,6 +152,35 @@ pub fn set_broadcast_one(v: bool) {
 /// backup client at every entry — nothing leaves the device — independent of
 /// offline_start. Mirrors the OFFLINE_START pattern.
 pub static BACKUP_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// v256 (S46, DP: "Encrypt it"): the tier-2 ledger and the pending list live encrypted
+/// at rest under the wallet's persistence key — the same key the channel blobs use.
+fn t2_storage(root_key: &lij_core::key::RootKey) -> Arc<dyn lij_core::storage::LijStorage> {
+    Arc::new(lij_core::storage::EncryptedKeys::new(
+        LocalStorage,
+        root_key.encryption_key(),
+        &[lij_core::tier2_wallet::VIEW_KEY],   // the pending list stays plain: node.rs reads it in four places (the stale-funding audit among them)
+    ))
+}
+
+thread_local! {
+    /// v256: the derived script net (2,500 per branch = 7,500 keys) is built once per net
+    /// width per page, not on every 15-second sync.
+    static T2_SCRIPTS: std::cell::RefCell<Option<(u32, Arc<lij_core::tier2::WalletScripts>)>> = std::cell::RefCell::new(None);
+}
+async fn t2_scripts(root_key: &lij_core::key::RootKey, network: bitcoin::Network, width: u32) -> Result<Arc<lij_core::tier2::WalletScripts>, JsValue> {
+    if let Some(hit) = T2_SCRIPTS.with(|c| c.borrow().as_ref().filter(|(w, _)| *w == width).map(|(_, s)| s.clone())) {
+        return Ok(hit);
+    }
+    // v262: derived in slices with yields — the one-time 1–2 s freeze at boot is gone
+    let built = Arc::new(
+        lij_core::tier2::WalletScripts::build_fixed_async(root_key, network, width)
+            .await
+            .map_err(|e| JsValue::from_str(&e.to_string()))?,
+    );
+    T2_SCRIPTS.with(|c| *c.borrow_mut() = Some((width, built.clone())));
+    Ok(built)
+}
+
 #[wasm_bindgen]
 pub fn set_backup_off(v: bool) {
     BACKUP_OFF.store(v, std::sync::atomic::Ordering::Relaxed);
@@ -556,6 +600,42 @@ impl LijWalletHandle {
     /// it under the lock, release, then push to enabled sinks UNLOCKED. Cheap
     /// no-op when nothing changed; the frontend calls this on a slow debounce
     /// interval. Never holds the wallet mutex across the push's `.await`.
+    /// v250 (S46, DP GO): delete this wallet's cloud copy at every enabled sink.
+    /// Local state is untouched; the caller decides what follows (the Privacy
+    /// switch turning Off, or the Erase gate's "delete the cloud copy too").
+    /// Answers {"ok":true,"forgotten":N,"existed":bool}; an error if every sink refused.
+    #[wasm_bindgen]
+    pub fn forget_cloud_backup(&self) -> js_sys::Promise {
+        let inner = self.inner.clone();
+        future_to_promise(async move {
+            let (signer, sinks) = {
+                let wallet = inner
+                    .lock()
+                    .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                wallet.backup_sinks_and_signer()
+            };
+            if sinks.is_empty() {
+                return Ok(JsValue::from_str("{\"ok\":true,\"forgotten\":0,\"existed\":false}"));
+            }
+            let mut ok = 0u32;
+            let mut existed = false;
+            let mut last_err: Option<String> = None;
+            for sink in &sinks {
+                match sink.forget(&*signer).await {
+                    Ok(e) => { ok += 1; existed |= e; }
+                    Err(e) => last_err = Some(e.to_string()),
+                }
+            }
+            if ok == 0 {
+                if let Some(e) = last_err {
+                    return Err(JsValue::from_str(&format!("forget: all sinks failed: {e}")));
+                }
+            }
+            log::info!("[v250] cloud backup forgotten at {ok} sink(s), existed={existed}");
+            Ok(JsValue::from_str(&format!("{{\"ok\":true,\"forgotten\":{ok},\"existed\":{existed}}}")))
+        })
+    }
+
     #[wasm_bindgen]
     pub fn maybe_backup(&self) -> js_sys::Promise {
         // Phase B: offline_start hard-silences the backup client.
@@ -651,58 +731,112 @@ impl LijWalletHandle {
             let base = "https://filters.lightning-mod.com";
             let http: Arc<dyn lij_core::independent::EsploraHttp> =
                 Arc::new(WasmEsploraHttp::new());
-            let storage: Arc<dyn lij_core::storage::LijStorage> = Arc::new(LocalStorage);
+            let storage: Arc<dyn lij_core::storage::LijStorage> = t2_storage(&root_key);   // v256: encrypted at rest
 
             let mut view = lij_core::tier2_wallet::load_view(storage.as_ref())
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
             if view.cursor.birthday == 0 {
                 view.cursor.birthday = birthday as u32;
             }
+            // v258 (DP's iOS read): the page's birthday is the CEILING. A stored birthday above it
+            // (v744's first-channel bound raised one to 965,586 and hid 51,067 sats below it) is
+            // lowered, and a walk that had reported complete resumes from its low block down.
+            let ceiling = birthday as u32;
+            if ceiling > 0 && view.cursor.birthday > ceiling {
+                log::warn!("[tier2] v258 birthday {} is above the page's {}: lowering it; the walk resumes downward", view.cursor.birthday, ceiling);
+                view.cursor.birthday = ceiling;
+            }
+            if let Some(d) = view.down.as_mut() {
+                if d.done && d.low > view.cursor.birthday { d.done = false; }
+            }
+            let now_ms = js_sys::Date::now() as u64;
+            // v256 (DP: one ledger): a view built under older rules is rebuilt from scratch —
+            // coins, spend marks, rows and tags re-derived by the walk; only the birthday kept.
+            if view.schema < lij_core::tier2_wallet::VIEW_SCHEMA {
+                log::info!("[tier2] v256 ledger rebuild: schema {} -> {}, walking again from {} under the {}-address net",
+                    view.schema, lij_core::tier2_wallet::VIEW_SCHEMA, view.cursor.birthday, lij_core::tier2_wallet::NET_WIDTH);
+                lij_core::tier2_wallet::rebuild_from_birthday(&mut view, now_ms);
+                lij_core::tier2_wallet::save_view(storage.as_ref(), &view).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            }
+            if view.net_width < lij_core::tier2_wallet::NET_WIDTH { view.net_width = lij_core::tier2_wallet::NET_WIDTH; }
 
-            // Sliding gap: each chain's scan window covers 0..(frontier + gap),
-            // recomputed from the view + pending every sync, so receive/change
-            // rotation never outruns address discovery (replaces the fixed 0..gap).
             let pending = lij_core::tier2_wallet::load_pending(storage.as_ref());
-            let scripts = lij_core::tier2::WalletScripts::build_sliding(
-                &root_key,
-                network,
-                lij_core::tier2::DEFAULT_GAP,
-                // v105: sweeper + coop-close destinations derive at chain-0
-                // indexes from the signer's persistent counter, which the view
-                // cannot see until a landing is scanned — a chicken/egg that
-                // let a sweep pay index 50 one past the 0..50 window and go
-                // invisible (Session 17, e2476af7). Widen the receive frontier
-                // to the counter so destination scripts are ALWAYS watched
-                // before anything pays them.
-                lij_core::tier2_wallet::next_index_for_chain(&view, &pending, lij_core::tier2::CHAIN_RECEIVE)
-                    .max(lij_core::persisted_counter::peek_persisted(storage.as_ref())),
-                lij_core::tier2_wallet::next_index_for_chain(&view, &pending, lij_core::tier2::CHAIN_CHANGE),
-                lij_core::tier2_wallet::next_index_for_chain(&view, &pending, lij_core::tier2::CHAIN_LEGACY),
-            )
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            // v256: the fixed net — every branch watched from index 0 to net_width (2,500).
+            let scripts = t2_scripts(&root_key, network, view.net_width).await?;
 
-            let tip = lij_core::tier2_sync::fetch_tip(&http, base)
-                .await
-                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let tip = match lij_core::tier2_sync::fetch_tip(&http, base).await {
+                Ok(t) => t,
+                Err(e) => {
+                    // v257: the failure is written down where the face and the tape can read it
+                    let msg = format!("block-filter server unreachable: {e}");
+                    log::warn!("[tier2] sync failed: {msg}");
+                    view.last_sync = Some(lij_core::tier2_wallet::SyncNote { at_ms: now_ms, ok: false, note: msg.clone() });
+                    let _ = lij_core::tier2_wallet::save_view(storage.as_ref(), &view);
+                    return Err(JsValue::from_str(&msg));
+                }
+            };
 
-            lij_core::tier2_wallet::sync_to_tip(
+            // v256: the daily tail verification — once a day, when caught up, the newest 144
+            // blocks are rolled back and re-walked, so every recent spend is re-confirmed
+            // against the chain. Filters are fetched by block; no address or coin leaves the phone.
+            // v257: the daily tail verification — once a day, when the walk is complete, the
+            // newest 144 blocks are rolled back and re-read (the forward step re-walks them).
+            let walk_done = view.down.as_ref().map(|d| d.done).unwrap_or(false) && view.cursor.scanned_to >= tip.height;
+            if walk_done && view.last_tail_verify_ms > 0 && now_ms.saturating_sub(view.last_tail_verify_ms) >= 86_400_000 {
+                let to = tip.height.saturating_sub(lij_core::tier2_wallet::TAIL_VERIFY_BLOCKS).max(view.cursor.birthday);
+                log::info!("[tier2] v257 tail verify: re-reading blocks {}..{}", to + 1, tip.height);
+                lij_core::tier2_wallet::rollback(&mut view, to);
+                view.last_tail_verify_ms = now_ms;
+                lij_core::tier2_wallet::save_view(storage.as_ref(), &view).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            }
+            if view.last_tail_verify_ms == 0 { view.last_tail_verify_ms = now_ms; }
+
+            // v257: ONE walk, newest-first; up to 8 batches per call; every call leaves a note
+            // (the tape and the face read it), success or failure.
+            let t0 = js_sys::Date::now();
+            let walked = lij_core::tier2_wallet::sync_down(
                 &http,
                 base,
-                &scripts,
+                &*scripts,
                 &mut view,
                 storage.as_ref(),
                 tip.height,
+                &tip.hash,
                 lij_core::tier2_sync::DEFAULT_BATCH,
+                8,
             )
-            .await
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            .await;
+            let took = (js_sys::Date::now() - t0) as u64;
+            let (batches, note) = match walked {
+                Ok((b, n)) => {
+                    log::info!("[tier2] sync ok: {n} · {took} ms");
+                    view.last_sync = Some(lij_core::tier2_wallet::SyncNote { at_ms: now_ms, ok: true, note: n.clone() });
+                    (b, n)
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    log::warn!("[tier2] sync failed: {msg} · {took} ms");
+                    view.last_sync = Some(lij_core::tier2_wallet::SyncNote { at_ms: now_ms, ok: false, note: msg.clone() });
+                    let _ = lij_core::tier2_wallet::save_view(storage.as_ref(), &view);
+                    return Err(JsValue::from_str(&format!("tier2 sync: {msg}")));
+                }
+            };
+            let _ = (batches, note);
 
-            // Fold any now-confirmed pendings into the view (stamps the
-            // ChannelOpen/ChannelClose marker onto the confirmed row, drops them
-            // from the pending key), persist the stamped view, then build the
-            // summary from the freshly-loaded pending list. reconcile + load are
-            // synchronous, so a funding/send handler that wrote a pending during
-            // the sync's network await is preserved here, never clobbered.
+            // v257: the widen rule — a coin within NET_WIDEN_MARGIN of the net's far edge on any
+            // branch means blocks already read may hold coins past it: widen and rebuild.
+            let walk_done = view.down.as_ref().map(|d| d.done).unwrap_or(false);
+            if walk_done {
+                let edge = view.net_width.saturating_sub(lij_core::tier2_wallet::NET_WIDEN_MARGIN);
+                let hot = view.used_next.values().any(|&u| u >= edge);
+                if hot {
+                    log::warn!("[tier2] a coin sits within {} of the net's edge ({}): widening to {} and reading again",
+                        lij_core::tier2_wallet::NET_WIDEN_MARGIN, view.net_width, view.net_width + lij_core::tier2_wallet::NET_WIDTH);
+                    view.net_width += lij_core::tier2_wallet::NET_WIDTH;
+                    lij_core::tier2_wallet::rebuild_from_birthday(&mut view, now_ms);
+                    lij_core::tier2_wallet::save_view(storage.as_ref(), &view).map_err(|e| JsValue::from_str(&e.to_string()))?;
+                }
+            }
             lij_core::tier2_wallet::reconcile_pending(storage.as_ref(), &mut view)
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
             lij_core::tier2_wallet::save_view(storage.as_ref(), &view)
@@ -822,7 +956,7 @@ impl LijWalletHandle {
                     .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
                 wallet.node().coop_cpfp_handles()
             };
-            let storage: Arc<dyn lij_core::storage::LijStorage> = Arc::new(LocalStorage);
+            let storage: Arc<dyn lij_core::storage::LijStorage> = t2_storage(&h.root_key);   // v256
             let j = lij_core::node::coop_cpfp(storage, h, &cid, send, true)
                 .await
                 .map_err(|e| JsValue::from_str(&format!("{e}")))?;
@@ -885,7 +1019,7 @@ impl LijWalletHandle {
             // Written to the dedicated pending key (decoupled from the synced
             // view, so a concurrent sync can't clobber it).
             {
-                let storage: Arc<dyn lij_core::storage::LijStorage> = Arc::new(LocalStorage);
+                let storage: Arc<dyn lij_core::storage::LijStorage> = t2_storage(&root_key);   // v256
                 let delta = -((result.amount_sats as i64) + (result.fee_sats as i64));
                 if let Err(e) = lij_core::tier2_wallet::record_pending(
                     storage.as_ref(),
@@ -964,7 +1098,7 @@ impl LijWalletHandle {
             let dest_addr_keep = prev.dest_addr.clone();
             let dest_sats_keep = prev.dest_sats;
             {
-                let storage2: Arc<dyn lij_core::storage::LijStorage> = Arc::new(LocalStorage);
+                let storage2: Arc<dyn lij_core::storage::LijStorage> = t2_storage(&root_key);   // v256
                 let mut list = lij_core::tier2_wallet::load_pending(storage2.as_ref());
                 list.retain(|p| p.txid != old_txid);
                 list.push(lij_core::tier2_wallet::PendingTx {
@@ -1008,54 +1142,28 @@ impl LijWalletHandle {
     /// re-walk takes; the next completed sync restores full truth.
     #[wasm_bindgen]
     pub fn tier2_rescan_from(&self, from_height: f64) -> Result<String, JsValue> {
+        // v257 (DP: rescan = rebuild, explicit): clear the ledger and read again from the tip
+        // down to the chosen height (or the existing birthday if it is lower). The next sync
+        // call opens the walk; the face shows it from the first batch.
         if !(from_height.is_finite() && from_height >= 1.0) {
             return Err(JsValue::from_str("from_height must be a positive block height"));
         }
-        let storage: Arc<dyn lij_core::storage::LijStorage> = Arc::new(LocalStorage);
+        let storage: Arc<dyn lij_core::storage::LijStorage> = {
+            let wallet = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+            t2_storage(&wallet.onchain_handles().0)
+        };
         let mut view = lij_core::tier2_wallet::load_view(storage.as_ref())
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        // v220 (foreign-seed re-anchor; supersedes my duplicate — discovered
-        // this v105 tool AFTER implementing, process failure ledgered): a seed
-        // imported from another wallet can carry history BELOW this wallet's
-        // recorded birthday, so a request under the birthday now LOWERS the
-        // birthday to the request — floored at SegWit activation (481,824):
-        // every watched script is wpkh and cannot predate it, so 2009-era
-        // picks are honored, provably-empty years are skipped, and no
-        // nonexistent-day math can ever fail. Requests at/above the birthday
-        // keep the exact v105 semantics.
-        const SEGWIT_ACTIVATION: u32 = 481_824;
-        let mut requested = from_height as u32;
-        let mut dirty = false;
-        if requested < view.cursor.birthday {
-            requested = requested.max(SEGWIT_ACTIVATION);
-            view.cursor.birthday = requested;
-            dirty = true;
-        }
-        // The cursor names the last-scanned block, so to re-include
-        // `requested` it must sit one below it (never below birthday-1).
-        let target = requested
-            .saturating_sub(1)
-            .max(view.cursor.birthday.saturating_sub(1));
-        if view.cursor.scanned_to > target {
-            lij_core::tier2_wallet::rollback(&mut view, target);
-            dirty = true;
-        }
-        if dirty {
-            lij_core::tier2_wallet::save_view(storage.as_ref(), &view)
-                .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        }
-        // Re-read so the caller sees the persisted truth, not our intent.
-        let check = lij_core::tier2_wallet::load_view(storage.as_ref())
+        let h = from_height as u32;
+        let old_birthday = view.cursor.birthday;
+        view.cursor.birthday = if old_birthday == 0 { h } else { old_birthday.min(h) };
+        lij_core::tier2_wallet::rebuild_from_birthday(&mut view, js_sys::Date::now() as u64);
+        lij_core::tier2_wallet::save_view(storage.as_ref(), &view)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        Ok(format!("{{\"scanned_to\":{}}}", check.cursor.scanned_to))
+        log::info!("[tier2] v257 rescan: ledger cleared; reading again from the tip down to {} (was {})", view.cursor.birthday, old_birthday);
+        Ok(format!(r#"{{"ok":true,"birthday":{},"previous_birthday":{}}}"#, view.cursor.birthday, old_birthday))
     }
 
-    /// Session 23 Option B (allocator unification): next-to-issue value of
-    /// the shared channel-index allocator, without advancing. The frontend
-    /// maxes this into getOnchainRecvIndex() so receive minting can never
-    /// collide with signer-issued indices (shutdown pins, sweep
-    /// destinations, and — post-terminus — pinned to_remote keys) that
-    /// haven't landed on-chain yet. Reads the LIVE counter instance.
     #[wasm_bindgen]
     pub fn peek_channel_index(&self) -> Result<f64, JsValue> {
         let wallet = self
@@ -1184,6 +1292,126 @@ impl LijWalletHandle {
     /// was removed with the shim; this returns an empty list until Tier 2
     /// (client-side BIP158 filter matching) reconstructs history locally. Kept so
     /// the frontend RECENT wiring stays stable across the transition.
+    /// v252 (S46, DP's #20 run): given a transaction id, find the output that pays one of
+    /// THIS wallet's addresses (receive/change/legacy chains, a 200-wide window from the
+    /// used frontier) and answer {"found":true,"address":..,"vout":n,"value_sats":..}. Used
+    /// after recover-close: the LSP names the closing txid, the wallet finds its own
+    /// output and opens a receive expectation on that address, so the 0-conf watcher shows
+    /// the return in the mempool and the confirmed card on the block. A words-only restore
+    /// does not know the pin index; this finds it from the transaction itself.
+    #[wasm_bindgen]
+    pub fn identify_own_output(&self, txid: String) -> js_sys::Promise {
+        let inner = self.inner.clone();
+        future_to_promise(async move {
+            let (root_key, independent, network) = {
+                let wallet = inner
+                    .lock()
+                    .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                wallet.onchain_handles()
+            };
+            let storage: Arc<dyn lij_core::storage::LijStorage> = t2_storage(&root_key);   // v256
+            let view = lij_core::tier2_wallet::load_view(storage.as_ref())
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let pending = lij_core::tier2_wallet::load_pending(storage.as_ref());
+            let scripts = lij_core::tier2::WalletScripts::build_sliding(
+                &root_key,
+                network,
+                view.net_width.max(lij_core::tier2_wallet::NET_WIDTH),
+                lij_core::tier2_wallet::next_index_for_chain(&view, &pending, lij_core::tier2::CHAIN_RECEIVE)
+                    .max(lij_core::persisted_counter::peek_persisted(storage.as_ref())),
+                lij_core::tier2_wallet::next_index_for_chain(&view, &pending, lij_core::tier2::CHAIN_CHANGE),
+                lij_core::tier2_wallet::next_index_for_chain(&view, &pending, lij_core::tier2::CHAIN_LEGACY),
+            )
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let tx = independent
+                .fetch_tx(&txid)
+                .await
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            for (i, v) in tx.vouts.iter().enumerate() {
+                let bytes = match hex::decode(&v.scriptpubkey) { Ok(b) => b, Err(_) => continue };
+                let spk = bitcoin::ScriptBuf::from_bytes(bytes);
+                if scripts.owner_of(&spk).is_some() {
+                    let addr = bitcoin::Address::from_script(&spk, network)
+                        .map(|a| a.to_string())
+                        .unwrap_or_default();
+                    return Ok(JsValue::from_str(&format!(
+                        r#"{{"found":true,"address":"{}","vout":{},"value_sats":{}}}"#, addr, i, v.value)));
+                }
+            }
+            Ok(JsValue::from_str(r#"{"found":false}"#))
+        })
+    }
+
+    /// v261 (DP: the on-chain drill-down): everything the panel shows for one transaction,
+    /// read from the independent sources at tap time — fee (sats, sat/vB), the inputs and
+    /// outputs with which are ours, the counterparty address, the output type, mempool or
+    /// block (with the header time), and the block time recorded into the ledger so the
+    /// face's row gains its clock. Answers JSON:
+    /// {"txid","fee_sats","vsize","sat_vb","confirmed","height","time","our_in","our_out",
+    ///  "address","address_type","outputs":[{"address","value","ours","type"}]}
+    #[wasm_bindgen]
+    pub fn tx_details(&self, txid: String) -> js_sys::Promise {
+        let inner = self.inner.clone();
+        future_to_promise(async move {
+            let (root_key, independent, network) = {
+                let wallet = inner
+                    .lock()
+                    .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                wallet.onchain_handles()
+            };
+            let storage: Arc<dyn lij_core::storage::LijStorage> = t2_storage(&root_key);
+            let mut view = lij_core::tier2_wallet::load_view(storage.as_ref())
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let width = view.net_width.max(lij_core::tier2_wallet::NET_WIDTH);
+            let scripts = t2_scripts(&root_key, network, width).await?;
+            let tx = independent
+                .fetch_tx(&txid)
+                .await
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let ours = |spk_hex: &str| -> bool {
+                match hex::decode(spk_hex) {
+                    Ok(b) => scripts.owner_of(&bitcoin::ScriptBuf::from_bytes(b)).is_some(),
+                    Err(_) => false,
+                }
+            };
+            let mut our_in: u64 = 0;
+            let mut in_total: u64 = 0;
+            for i in &tx.vins { in_total = in_total.saturating_add(i.value); if ours(&i.scriptpubkey) { our_in = our_in.saturating_add(i.value); } }
+            let mut our_out: u64 = 0;
+            let mut outs = Vec::new();
+            for o in &tx.vouts {
+                let mine = ours(&o.scriptpubkey);
+                if mine { our_out = our_out.saturating_add(o.value); }
+                outs.push(serde_json::json!({ "address": o.address, "value": o.value, "ours": mine, "type": o.script_type }));
+            }
+            let fee = if tx.fee > 0 { tx.fee } else { in_total.saturating_sub(tx.vouts.iter().map(|o| o.value).sum::<u64>()) };
+            let vsize = if tx.weight > 0 { (tx.weight + 3) / 4 } else { 0 };
+            let sat_vb = if vsize > 0 { (fee as f64) / (vsize as f64) } else { 0.0 };
+            // the address of record: a send → the output that isn't ours; a receive → our output;
+            // a self-move (channel funding) → our funding output
+            let is_send = our_in > 0 && our_in > our_out;
+            let pick = if is_send {
+                tx.vouts.iter().find(|o| !ours(&o.scriptpubkey)).or_else(|| tx.vouts.iter().find(|o| ours(&o.scriptpubkey)))
+            } else {
+                tx.vouts.iter().find(|o| ours(&o.scriptpubkey))
+            };
+            let (address, address_type) = match pick { Some(o) => (o.address.clone(), o.script_type.clone()), None => (None, String::new()) };
+            // the block time goes into the ledger so the face's row gains its clock
+            if let (Some(h), Some(t)) = (tx.block_height, tx.block_time) {
+                if !view.block_times.contains_key(&h) {
+                    view.block_times.insert(h, t as u32);
+                    let _ = lij_core::tier2_wallet::save_view(storage.as_ref(), &view);
+                }
+            }
+            let out = serde_json::json!({
+                "txid": tx.txid, "fee_sats": fee, "vsize": vsize, "sat_vb": (sat_vb * 10.0).round() / 10.0,
+                "confirmed": tx.confirmed, "height": tx.block_height, "time": tx.block_time,
+                "our_in": our_in, "our_out": our_out, "address": address, "address_type": address_type, "outputs": outs,
+            });
+            Ok(JsValue::from_str(&out.to_string()))
+        })
+    }
+
     #[wasm_bindgen]
     pub fn onchain_history(&self) -> js_sys::Promise {
         future_to_promise(async move { Ok::<JsValue, JsValue>(JsValue::from_str("[]")) })
@@ -1528,7 +1756,7 @@ impl LijWalletHandle {
                 ));
 
                 // ── Phase 1: lock, prepare (new PaymentId), release ──────────
-                let prep = {
+                let mut prep = {
                     let wallet = inner.lock()
                         .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
                     match wallet.node()
@@ -1557,6 +1785,7 @@ impl LijWalletHandle {
                 };
 
                 let payment_id = prep.payment_id;
+                let mut lsp_height: Option<u32> = None;   // v249: LND's height from the hold verdict (internal sends)
 
                 // ── Phase 2: HTTP fetch WITHOUT lock ──────────────────────
                 // v227 (S43, speed): an INTERNAL send (dest == the active LSP)
@@ -1586,8 +1815,9 @@ impl LijWalletHandle {
                     // v246: the verdict is logged whatever it says (v245 logged only the offline
                     // case, so a 'live' answer left no trace on the tape).
                     if let Some(v) = verdict.as_ref() {
-                        log::info!("[v244] hold verdict: owner_live={:?} peer={:?} heard_s={:?} cap_s={:?}",
-                            v.get("owner_live"), v.get("owner_peer"), v.get("owner_heard_s"), v.get("hold_cap_s"));
+                        log::info!("[v244] hold verdict: owner_live={:?} peer={:?} heard_s={:?} cap_s={:?} height={:?}",
+                            v.get("owner_live"), v.get("owner_peer"), v.get("owner_heard_s"), v.get("hold_cap_s"), v.get("height"));
+                        lsp_height = v.get("height").and_then(|h| h.as_u64()).map(|h| h as u32);   // v249 (adapter 0.76.1)
                     }
                     match verdict.as_ref().and_then(|v| v.get("owner_live")).and_then(|b| b.as_bool()) {
                         Some(false) => {
@@ -1632,6 +1862,20 @@ impl LijWalletHandle {
                 let (apply_result, outcomes_handle) = {
                     let wallet = inner.lock()
                         .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                    // v249 (S46, DP GO): an INTERNAL send builds its HTLC expiry from THIS wallet's
+                    // LDK tip + 1 + the invoice's final CLTV (144); LND requires its OWN height +
+                    // 144. DP's Android sat six blocks behind (the stream loss fixed alongside)
+                    // and every internal send came back "recipient rejected". With the LSP's
+                    // height in the verdict, raise the self-hop delta by the lag so the HTLC
+                    // clears LND's floor whatever the phone's tip says — more expiry on a direct
+                    // channel only widens the LSP's room to hold.
+                    if let (true, Some(h), Some(b)) = (dest_is_lsp, lsp_height, wallet.node().ldk_best_block_height()) {
+                        if h > b {
+                            let lag = h - b;
+                            prep.final_cltv_delta += lag;
+                            log::warn!("[v249] LSP height {} is {} block(s) ahead of this wallet's tip {} — self-hop CLTV raised to {}", h, lag, b, prep.final_cltv_delta);
+                        }
+                    }
                     let result = wallet.node()
                         .apply_lsp_route_and_send(&response_text, &prep)
                         .map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -1938,13 +2182,29 @@ impl LijWalletHandle {
             let amount_msat: u64 = lij_core::node::invoice_amount_msat(&bolt11, amount_sats_override)
                 .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
             // Prepare under lock (brief), release before network — v8 discipline.
-            let prep = {
+            let (prep, internal) = {
                 let wallet = inner.lock()
                     .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
-                wallet.node()
+                let prep = wallet.node()
                     .prepare_lsp_route_request(&bolt11, &route_endpoint, &[], amount_sats_override)
-                    .map_err(|e| JsValue::from_str(&format!("quote prepare: {}", e)))?
+                    .map_err(|e| JsValue::from_str(&format!("quote prepare: {}", e)))?;
+                // v248 (S46, DP): an INTERNAL destination (the invoice was minted on the active LSP's
+                // own node — the static-address rail) is paid over the single wallet→LSP hop with
+                // ZERO routing fee (v222: the self-hop's fee_msat is the delivered amount). The quote
+                // applied the LSP's first-hop policy to it and showed ~0.1% for a payment that costs
+                // nothing; the send itself was always right. Same test the send uses (v222_self_dest).
+                let internal = wallet.node().active_lsp()
+                    .map(|a| a.info.pubkey.eq_ignore_ascii_case(&prep.dest_pubkey_hex))
+                    .unwrap_or(false);
+                (prep, internal)
             };
+            if internal {
+                let policy_seen = lij_core::node::LSP_FEE_SEEN
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                return Ok(JsValue::from_str(&format!(
+                    r#"{{"fee_msat":0,"fee_sats":0,"amount_msat":{},"policy_seen":{},"synth":false,"internal":true}}"#,
+                    amount_msat, policy_seen)));
+            }
             let response_text = lij_core::node::fetch_post_with_macaroon(
                 &prep.url, &route_macaroon_hex, &prep.request_body).await
                 .map_err(|e| JsValue::from_str(&format!("quote fetch: {}", e)))?;
@@ -2294,8 +2554,10 @@ impl LijWalletHandle {
     /// Returns {"removed":bool}.
     #[wasm_bindgen]
     pub fn drop_pending_tx(&self, txid_hex: &str) -> Result<String, JsValue> {
-        let storage: std::sync::Arc<dyn lij_core::storage::LijStorage> =
-            std::sync::Arc::new(LocalStorage);
+        let storage: std::sync::Arc<dyn lij_core::storage::LijStorage> = {
+            let wallet = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+            t2_storage(&wallet.onchain_handles().0)   // v256
+        };
         let removed = lij_core::tier2_wallet::drop_pending_tx(storage.as_ref(), txid_hex)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         Ok(format!("{{\"removed\":{}}}", removed))
@@ -2944,10 +3206,40 @@ impl LijWalletHandle {
             let wallet = inner.lock()
                 .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
 
+            // v249 (S46, DP): ONE SOCKET PER PEER. The page's boot path and the pulse's
+            // peer wave both called this within a second, so every boot opened two sockets
+            // to the LSP; LDK closed the second ("Got second connection … closing"), the
+            // read_event error path then freed the executing closure (the boot-time
+            // "closure invoked recursively or after being dropped"), and LND, which keeps
+            // the NEWER connection, could be left holding the socket LDK had just closed.
+            // Now: an LDK peer already connected -> nothing to do; a socket to this peer
+            // still CONNECTING, or OPEN for under 20 s (handshake in flight) -> nothing to
+            // do; an OPEN socket older than that with no LDK peer behind it is a zombie ->
+            // closed here, and a fresh socket is opened.
+            let pk_lower = pubkey_hex.to_lowercase();
+            let pk_short = pk_lower[..16.min(pk_lower.len())].to_string();
+            if let Ok(peers) = wallet.list_peers() {
+                if peers.iter().any(|p| p.eq_ignore_ascii_case(&pk_lower)) {
+                    log::info!("connect_to_peer: {pk_short}… already connected (LDK peer up) — no second socket");
+                    return Ok(JsValue::from_str(r#"{"status":"already_connected"}"#));
+                }
+            }
+            match ws_transport::socket_state_for_peer(&pk_lower) {
+                Some((id, ready_state, age_ms)) if ready_state == web_sys::WebSocket::CONNECTING || (ready_state == web_sys::WebSocket::OPEN && age_ms < 20_000.0) => {
+                    log::info!("connect_to_peer: socket {id} to {pk_short}… still handshaking ({} ms) — no second socket", age_ms as u64);
+                    return Ok(JsValue::from_str(&format!(r#"{{"socket_id":{id},"status":"connecting"}}"#)));
+                }
+                Some((id, ready_state, age_ms)) if ready_state == web_sys::WebSocket::OPEN => {
+                    log::warn!("connect_to_peer: socket {id} to {pk_short}… open {} s with no LDK peer behind it — closing the zombie, opening fresh", (age_ms / 1000.0) as u64);
+                    ws_transport::close_socket(id);
+                }
+                _ => {}
+            }
+
             let (socket_id, first_bytes) = wallet.begin_peer_connection(&pubkey_hex)
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-            ws_transport::open_websocket(&wss_url, socket_id, first_bytes)?;
+            ws_transport::open_websocket(&wss_url, socket_id, first_bytes, &pubkey_hex)?;
 
             let result = serde_json::json!({
                 "socket_id": socket_id,
@@ -3233,6 +3525,11 @@ pub mod ws_transport {
 
     pub struct WsEntry {
         pub ws: WebSocket,
+        /// v249: the peer this socket was opened toward (lowercase hex) and when — the
+        /// connect guard refuses a second socket to the same peer while one is still
+        /// handshaking or already serves an LDK peer.
+        pub pubkey: String,
+        pub opened_ms: f64,
         pub _on_open: Closure<dyn FnMut()>,
         pub _on_message: Closure<dyn FnMut(MessageEvent)>,
         pub _on_close: Closure<dyn FnMut(CloseEvent)>,
@@ -3282,7 +3579,7 @@ pub mod ws_transport {
         }
     }
 
-    pub fn open_websocket(url: &str, id: u64, first_bytes: Vec<u8>) -> Result<(), JsValue> {
+    pub fn open_websocket(url: &str, id: u64, first_bytes: Vec<u8>, pubkey_hex: &str) -> Result<(), JsValue> {
         let ws = WebSocket::new(url)
             .map_err(|e| JsValue::from_str(&format!("WebSocket::new failed: {:?}", e)))?;
         ws.set_binary_type(BinaryType::Arraybuffer);
@@ -3341,6 +3638,8 @@ pub mod ws_transport {
 
         let entry = WsEntry {
             ws,
+            pubkey: pubkey_hex.to_lowercase(),
+            opened_ms: js_sys::Date::now(),
             _on_open: on_open,
             _on_message: on_message,
             _on_close: on_close,
@@ -3360,6 +3659,22 @@ pub mod ws_transport {
         });
         WS_MAP.with(|map| { map.borrow_mut().insert(id, entry); });
         Ok(())
+    }
+
+    /// v249: the newest socket toward a peer — (id, readyState, age ms) — or None.
+    pub fn socket_state_for_peer(pubkey_lower: &str) -> Option<(u64, u16, f64)> {
+        WS_MAP.with(|map| {
+            map.borrow().iter()
+                .filter(|(_, e)| e.pubkey == pubkey_lower)
+                .max_by(|a, b| a.1.opened_ms.partial_cmp(&b.1.opened_ms).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(id, e)| (*id, e.ws.ready_state(), js_sys::Date::now() - e.opened_ms))
+        })
+    }
+
+    /// v249: close one socket; it leaves WS_MAP via its own on_close (the sanctioned path).
+    pub fn close_socket(id: u64) {
+        let ws_opt = WS_MAP.with(|map| map.borrow().get(&id).map(|e| e.ws.clone()));
+        if let Some(ws) = ws_opt { let _ = ws.close(); }
     }
 
     /// v219 (DEFECT B, F4 hygiene): close every open socket. Called before a
@@ -3414,11 +3729,14 @@ pub mod ws_transport {
             Ok(_pause_read) => {}
             Err(e) => {
                 log::warn!("read_event error on id {id}: {:?}", e);
-                WS_MAP.with(|map| {
-                    if let Some(entry) = map.borrow_mut().remove(&id) {
-                        let _ = entry.ws.close();
-                    }
-                });
+                // v249: CLOSE ONLY. This runs inside the socket's own on_message closure;
+                // removing the WsEntry here dropped that closure while it executed — the
+                // "closure invoked recursively or after being dropped" throw on every boot
+                // that opened two sockets. The on_close handler removes the entry on a
+                // later microtask (the v219 rule); LDK's socket_disconnected for a
+                // descriptor it already dropped is a no-op by its own contract.
+                let ws_opt = WS_MAP.with(|map| map.borrow().get(&id).map(|e| e.ws.clone()));
+                if let Some(ws) = ws_opt { let _ = ws.close(); }
                 return;
             }
         }

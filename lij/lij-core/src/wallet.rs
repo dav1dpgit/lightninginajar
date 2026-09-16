@@ -430,6 +430,13 @@ impl LijWallet {
         Ok(Some((blob, self.node.portable_signer_arc(), self.sinks.clone())))
     }
 
+    /// v250: the signer and the sinks, no snapshot — for forgetting the cloud copy.
+    pub fn backup_sinks_and_signer(
+        &self,
+    ) -> (std::sync::Arc<crate::key::RootKey>, Vec<BackupSink>) {
+        (self.node.portable_signer_arc(), self.sinks.clone())
+    }
+
     /// Auto-backup variant of prepare_backup: returns a snapshot ONLY when channel
     /// state has changed since the last push (the node's dirty flag). Also returns
     /// a handle to that flag so the caller can re-mark it if the push fails. The

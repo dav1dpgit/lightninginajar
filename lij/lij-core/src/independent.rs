@@ -166,28 +166,86 @@ impl From<EsploraOutspendRaw> for EsploraOutspend {
 pub struct EsploraTx {
     pub txid: String,
     pub vouts: Vec<EsploraTxVout>,
+    /// v261: inputs (as prevouts), fee, weight and confirmation status — for the drill-down.
+    pub vins: Vec<EsploraTxPrevout>,
+    pub fee: u64,
+    pub weight: u64,
+    pub confirmed: bool,
+    pub block_height: Option<u32>,
+    pub block_time: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
 pub struct EsploraTxVout {
     pub scriptpubkey: String,
     pub value: u64,
+    pub script_type: String,
+    pub address: Option<String>,
+}
+
+/// v261: an input's spent output.
+#[derive(Clone, Debug, Default)]
+pub struct EsploraTxPrevout {
+    pub scriptpubkey: String,
+    pub value: u64,
+    pub script_type: String,
+    pub address: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
 struct EsploraTxRaw {
     txid: String,
     vout: Vec<EsploraTxVoutRaw>,
+    #[serde(default)]
+    vin: Vec<EsploraTxVinRaw>,
+    #[serde(default)]
+    fee: u64,
+    #[serde(default)]
+    weight: u64,
+    #[serde(default)]
+    status: Option<EsploraTxStatusRaw>,
+}
+
+/// v261 (the on-chain drill-down): an input with its spent output (Esplora's prevout).
+#[derive(serde::Deserialize, Clone, Debug, Default)]
+struct EsploraTxVinRaw {
+    #[serde(default)]
+    prevout: Option<EsploraTxPrevoutRaw>,
+}
+#[derive(serde::Deserialize, Clone, Debug, Default)]
+struct EsploraTxPrevoutRaw {
+    #[serde(default)]
+    scriptpubkey: String,
+    #[serde(default)]
+    scriptpubkey_type: String,
+    #[serde(default)]
+    scriptpubkey_address: Option<String>,
+    #[serde(default)]
+    value: u64,
+}
+#[derive(serde::Deserialize, Clone, Debug, Default)]
+struct EsploraTxStatusRaw {
+    #[serde(default)]
+    confirmed: bool,
+    #[serde(default)]
+    block_height: Option<u32>,
+    #[serde(default)]
+    block_time: Option<u64>,
 }
 
 #[derive(serde::Deserialize)]
 struct EsploraTxVoutRaw {
     scriptpubkey: String,
     value: u64,
+    #[serde(default)]
+    scriptpubkey_type: String,
+    #[serde(default)]
+    scriptpubkey_address: Option<String>,
 }
 
 impl From<EsploraTxRaw> for EsploraTx {
     fn from(raw: EsploraTxRaw) -> Self {
+        let st = raw.status.unwrap_or_default();
         Self {
             txid: raw.txid,
             vouts: raw
@@ -196,8 +254,23 @@ impl From<EsploraTxRaw> for EsploraTx {
                 .map(|v| EsploraTxVout {
                     scriptpubkey: v.scriptpubkey,
                     value: v.value,
+                    script_type: v.scriptpubkey_type,
+                    address: v.scriptpubkey_address,
                 })
                 .collect(),
+            vins: raw
+                .vin
+                .into_iter()
+                .map(|i| {
+                    let p = i.prevout.unwrap_or_default();
+                    EsploraTxPrevout { scriptpubkey: p.scriptpubkey, value: p.value, script_type: p.scriptpubkey_type, address: p.scriptpubkey_address }
+                })
+                .collect(),
+            fee: raw.fee,
+            weight: raw.weight,
+            confirmed: st.confirmed,
+            block_height: st.block_height,
+            block_time: st.block_time,
         }
     }
 }

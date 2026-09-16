@@ -71,6 +71,7 @@
 /* ── Tokens ─────────────────────────────────────────────────────────────── */
 
 :root {
+  --lij-type: 1;   /* v763 (DP): the one text-size multiplier — 1 Standard, 1.15 Large, 1.3 Max */
   /* Palette — warm ivory paper, espresso ink, cognac structure, gold signal.
      Cognac = structural emphasis (borders, hover, dividers).
      Amber  = state and signal (focus rings, status dots, pill states). */
@@ -105,16 +106,16 @@
   --font-sans:    "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono:    "Geist Mono", "SF Mono", Menlo, Consolas, ui-monospace, monospace;
 
-  --text-xs:   10px;
-  --text-sm:   12px;
-  --text-md:   14px;
+  --text-xs:   calc(10px * var(--lij-type));
+  --text-sm:   calc(12px * var(--lij-type));
+  --text-md:   calc(14px * var(--lij-type));
   --seed-ghost-nudge: -0.68px;
   /* v588 recovery arc: scanbar + rescan overlay live below the token block */  /* v585: DP gauge, third turn of the knob (-2 too high, -1 near, -0.5 requested). Transforms composite subpixel: on 2-3x screens this is 1-1.5 device px. History: three vertical models, two engines, one constant — engine-internal input text placement, unqueryable; calibrated, not theorized. */
-  --text-base: 15px;
-  --text-lg:   16px;
-  --text-xl:   20px;
-  --text-2xl:  24px;
-  --text-3xl:  32px;
+  --text-base: calc(15px * var(--lij-type));
+  --text-lg:   calc(16px * var(--lij-type));
+  --text-xl:   calc(20px * var(--lij-type));
+  --text-2xl:  calc(24px * var(--lij-type));
+  --text-3xl:  calc(32px * var(--lij-type));
   --text-4xl:  44px;
 
   /* Spacing — 4px base unit. */
@@ -503,7 +504,7 @@ textarea.input {
   padding: 3px 8px;
   border-radius: var(--radius-pill);
   font-family: var(--font-sans);
-  font-size: 9px;
+  font-size: calc(9px * var(--lij-type));
   font-weight: 600;
   letter-spacing: 0.02em;
   background: var(--surface-2);
@@ -1249,10 +1250,18 @@ body.wallet-hidden > .lij-rescan-ov { visibility: visible; }   /* v590: the year
 .lij-scanbar { position: absolute; left: 0; right: 0; bottom: 0; height: 5px; overflow: hidden; border-bottom-left-radius: inherit; border-bottom-right-radius: inherit; pointer-events: none; z-index: 3; }
 .lij-scanbar-fill { height: 100%; width: 0; background: linear-gradient(90deg, #7a4b12, #f7931a, #ffd9a0); animation: lijScanPulse 2.4s ease-in-out infinite; transition: width 0.6s ease; }
 @keyframes lijScanPulse { 0%, 100% { filter: brightness(0.92); } 50% { filter: brightness(1.12); } }
-.lij-scantext { position: absolute; left: 10px; right: 10px; bottom: 9px; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.02em; color: var(--ink-3); pointer-events: none; z-index: 3; }   /* v589 (DP): bounded BOTH edges inside the card by constraint, not arithmetic — right-aligned, ellipsis if ever too long; can never poke past either side of any screen */
+.lij-scantext { position: absolute; left: 10px; right: 10px; bottom: 9px; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono); font-size: calc(10px * var(--lij-type)); letter-spacing: 0.02em; color: var(--ink-3); pointer-events: none; z-index: 3; }   /* v589 (DP): bounded BOTH edges inside the card by constraint, not arithmetic — right-aligned, ellipsis if ever too long; can never poke past either side of any screen */
 .lij-rescan-ov { position: fixed; inset: 0; background: rgba(10, 7, 4, 0.55); display: flex; align-items: center; justify-content: center; z-index: 2147483500; }   /* v590: above the gate (2147483400) and the tour chrome (2147483200) */
 .lij-rescan-card { background: var(--surface); border: 1px solid var(--rule-2); border-radius: 12px; padding: 16px; width: min(330px, 88vw); font-family: var(--font-mono); }
-.lij-rescan-title { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-2); margin-bottom: 8px; }
-.lij-rescan-note { font-size: 12px; color: var(--ink-3); margin-bottom: 12px; line-height: 1.45; }
-.lij-rescan-select { width: 100%; box-sizing: border-box; font-family: var(--font-mono); font-size: 14px; padding: 8px; background: var(--surface-2, transparent); color: var(--ink); border: 1px solid var(--rule-2); border-radius: 8px; margin-bottom: 12px; }
+.lij-rescan-title { font-size: calc(12px * var(--lij-type)); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-2); margin-bottom: 8px; }
+.lij-rescan-note { font-size: calc(12px * var(--lij-type)); color: var(--ink-3); margin-bottom: 12px; line-height: 1.45; }
+.lij-rescan-select { width: 100%; box-sizing: border-box; font-family: var(--font-mono); font-size: calc(14px * var(--lij-type)); padding: 8px; background: var(--surface-2, transparent); color: var(--ink); border: 1px solid var(--rule-2); border-radius: 8px; margin-bottom: 12px; }
 .lij-rescan-row { display: flex; gap: 8px; }
+
+/* v763 (DP): the type multiplier stops at the doors — the 12-word entry, restore, unlock and erase gates,
+   the offline room, the words-only/recovery overlays, the escape sheet, the install gate and the splash
+   keep their own sizes whatever the wallet chooses. */
+.gate, #lij-wo-gate, .lij-rescan-ov, #lij-esc-sheet, #lij-install-gate, #lij-splash { --lij-type: 1; }
+/* v765 (DP's Large test): the balance card (the big number and its unit sit in a fixed-height card) and
+   Register mode (a designed customer display) keep Standard type whatever the wallet chooses. */
+.wh-balance-card, #lij-register { --lij-type: 1; }

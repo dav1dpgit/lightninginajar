@@ -42,6 +42,19 @@ jobs:
           set -o pipefail
           cargo test -p lij-core --locked --lib 2>&1 | tee /tmp/cargo-test.log
 
+      - name: On failure, post the compiler/test errors as a commit comment (readable without the log archive)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo '### lij-engine-build: native tests failed'
+            echo '```'
+            grep -n -E -A8 '^error(\[E[0-9]+\])?:|panicked at|^test .* FAILED|^failures:' /tmp/cargo-test.log | head -160
+            echo '```'
+          } > /tmp/comment.md
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -f body="$(cat /tmp/comment.md)" >/dev/null || true
+
       - name: Install wasm-pack v0.15.0 + binaryen version_117 (pinned, tarballs hash-gated; see docs/reproducible-build.md)
         run: |
           set -e

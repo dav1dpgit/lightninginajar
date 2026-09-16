@@ -157,6 +157,21 @@ pub fn compute_filter_header(filter_bytes: &[u8], prev_filter_header: &[u8; 32])
     sha256d::Hash::hash(&preimage).to_byte_array()
 }
 
+/// v260 (DP's frozen-dots read): the walk runs on the page's main thread, and matching a
+/// 500-filter batch against the 7,500-key net is seconds of pure CPU with no await inside —
+/// every timer on the page (the balance's waiting dots, the scan bar's own dots) froze for
+/// the length of each batch. Yielding to the browser's task queue between small groups of
+/// filters lets the page breathe; the work is the same, the phone just stops locking up.
+/// Native builds have no queue to yield to.
+pub async fn yield_now() {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = wasm_timer::Delay::new(std::time::Duration::from_millis(0)).await;
+    }
+}
+/// Filters matched between yields (see yield_now).
+pub const YIELD_EVERY: usize = 16;
+
 /// Run the wallet's match set against a batch of filters; return the heights
 /// whose blocks need fetching. Pure.
 pub fn matching_heights(scripts: &WalletScripts, filters: &[FilterItem]) -> LijResult<Vec<u32>> {
@@ -237,7 +252,8 @@ pub async fn sync_step(
     };
     let mut last_filter_header = cursor.last_filter_header.clone();
     let mut matched: Vec<MatchedBlock> = Vec::new();
-    for f in &flts.filters {
+    for (fi, f) in flts.filters.iter().enumerate() {
+        if fi % YIELD_EVERY == YIELD_EVERY - 1 { yield_now().await; }   // v260
         let filter_bytes =
             hex::decode(&f.filter).map_err(|e| LijError::Node(format!("filter hex at {}: {e}", f.height)))?;
         let served = filter_header_internal(&f.filter_header)?;
@@ -272,6 +288,89 @@ pub async fn sync_step(
 
 /// Parse a filter-header hex (big-endian display, as served) into internal
 /// byte order, matching the order used inside `compute_filter_header`.
+/// v257 (S46, DP GO — the new process): one DOWNWARD batch. The walk reads the chain
+/// newest-first: `low` is the lowest block already scanned (its hash and served filter
+/// header known). This fetches the `batch` blocks below it PLUS `low` itself, validates
+/// the header chain upward from the batch's bottom and requires its top to be the known
+/// `low` block (hash equal), and validates the filter-header chain upward from the served
+/// header at the bottom, requiring the computed header at `low` to equal the stored one —
+/// the same trust as the forward walk (an anchor at one end, the chain checked to the
+/// other), with the anchor at the wallet's own known block instead of the birthday.
+/// Returns the matched blocks and the new low (the batch's bottom) with its hash and
+/// filter header. `floor` (the birthday) bounds the walk.
+pub struct DownOutcome {
+    pub low: u32,
+    pub low_hash: String,
+    pub low_filter_header: String,
+    pub matched: Vec<MatchedBlock>,
+    pub done: bool,
+}
+
+pub async fn sync_step_down(
+    http: &Arc<dyn EsploraHttp>,
+    base: &str,
+    scripts: &WalletScripts,
+    low: u32,
+    low_hash: &str,
+    low_filter_header: &str,
+    floor: u32,
+    batch: u32,
+) -> LijResult<DownOutcome> {
+    if low <= floor {
+        return Ok(DownOutcome { low, low_hash: low_hash.to_string(), low_filter_header: low_filter_header.to_string(), matched: Vec::new(), done: true });
+    }
+    let start = low.saturating_sub(batch.max(1)).max(floor);
+    let count = low - start + 1;   // includes `low` as the overlap block
+    let hdrs: HeadersResp = get_json(http, &format!("{base}/headers?start={start}&count={count}")).await?;
+    let flts: FiltersResp = get_json(http, &format!("{base}/filters?start={start}&count={count}")).await?;
+    if hdrs.headers.len() as u32 != count || flts.filters.len() as u32 != count {
+        return Err(LijError::Node(format!("down batch {start}..{low}: server returned {} headers / {} filters, wanted {count}", hdrs.headers.len(), flts.filters.len())));
+    }
+    // block headers: PoW + chain upward from the bottom; the top must BE the known low block
+    let top_hash = validate_headers(&hdrs.headers, None)?;
+    if top_hash.to_string() != low_hash {
+        return Err(LijError::Node(format!("down batch {start}..{low}: header chain does not reach the known block at {low}")));
+    }
+    // filter headers: served at the bottom is the anchor; the chain must reproduce the stored header at low
+    let mut prev_fh: Option<[u8; 32]> = None;
+    let mut matched: Vec<MatchedBlock> = Vec::new();
+    let mut bottom_fh = String::new();
+    for (fi, f) in flts.filters.iter().enumerate() {
+        if fi % YIELD_EVERY == YIELD_EVERY - 1 { yield_now().await; }   // v260
+        let filter_bytes =
+            hex::decode(&f.filter).map_err(|e| LijError::Node(format!("filter hex at {}: {e}", f.height)))?;
+        let served = filter_header_internal(&f.filter_header)?;
+        if let Some(pfh) = prev_fh {
+            let computed = compute_filter_header(&filter_bytes, &pfh);
+            if computed != served {
+                return Err(LijError::Node(format!("filter-header chain break at {}", f.height)));
+            }
+        } else {
+            bottom_fh = f.filter_header.clone();
+        }
+        prev_fh = Some(served);
+        if f.height == low {
+            if f.filter_header != low_filter_header {
+                return Err(LijError::Node(format!("down batch {start}..{low}: filter-header chain does not reach the known header at {low}")));
+            }
+            continue;   // `low` itself was scanned before
+        }
+        let bh = BlockHash::from_str(&f.hash)
+            .map_err(|e| LijError::Node(format!("filter block hash at {}: {e}", f.height)))?;
+        if block_matches(&filter_bytes, &bh, scripts)? {
+            matched.push(MatchedBlock { height: f.height, block_hash: f.hash.clone() });
+        }
+    }
+    let bottom = hdrs.headers.first().ok_or_else(|| LijError::Node("down batch: empty".into()))?;
+    Ok(DownOutcome {
+        low: start,
+        low_hash: bottom.hash.clone(),
+        low_filter_header: bottom_fh,
+        matched,
+        done: start <= floor,
+    })
+}
+
 fn filter_header_internal(hex_str: &str) -> LijResult<[u8; 32]> {
     sha256d::Hash::from_str(hex_str)
         .map(|h| h.to_byte_array())

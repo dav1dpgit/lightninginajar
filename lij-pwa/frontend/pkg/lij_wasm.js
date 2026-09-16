@@ -525,6 +525,21 @@ export class LijWalletHandle {
         }
     }
     /**
+     * Auto-backup tick: if channel state changed since the last push, snapshot
+     * it under the lock, release, then push to enabled sinks UNLOCKED. Cheap
+     * no-op when nothing changed; the frontend calls this on a slow debounce
+     * interval. Never holds the wallet mutex across the push's `.await`.
+     * v250 (S46, DP GO): delete this wallet's cloud copy at every enabled sink.
+     * Local state is untouched; the caller decides what follows (the Privacy
+     * switch turning Off, or the Erase gate's "delete the cloud copy too").
+     * Answers {"ok":true,"forgotten":N,"existed":bool}; an error if every sink refused.
+     * @returns {Promise<any>}
+     */
+    forget_cloud_backup() {
+        const ret = wasm.lijwallethandle_forget_cloud_backup(this.__wbg_ptr);
+        return ret;
+    }
+    /**
      * @returns {Promise<any>}
      */
     get_balance() {
@@ -594,6 +609,27 @@ export class LijWalletHandle {
         } finally {
             wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
         }
+    }
+    /**
+     * On-chain transaction history for the RECENT list. The trusted-node source
+     * was removed with the shim; this returns an empty list until Tier 2
+     * (client-side BIP158 filter matching) reconstructs history locally. Kept so
+     * the frontend RECENT wiring stays stable across the transition.
+     * v252 (S46, DP's #20 run): given a transaction id, find the output that pays one of
+     * THIS wallet's addresses (receive/change/legacy chains, a 200-wide window from the
+     * used frontier) and answer {"found":true,"address":..,"vout":n,"value_sats":..}. Used
+     * after recover-close: the LSP names the closing txid, the wallet finds its own
+     * output and opens a receive expectation on that address, so the 0-conf watcher shows
+     * the return in the mempool and the confirmed card on the block. A words-only restore
+     * does not know the pin index; this finds it from the transaction itself.
+     * @param {string} txid
+     * @returns {Promise<any>}
+     */
+    identify_own_output(txid) {
+        const ptr0 = passStringToWasm0(txid, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_identify_own_output(this.__wbg_ptr, ptr0, len0);
+        return ret;
     }
     /**
      * v221 (DP fire-and-forget): device-file backup import — parses the v209
@@ -848,10 +884,6 @@ export class LijWalletHandle {
         return BigInt.asUintN(64, ret);
     }
     /**
-     * Auto-backup tick: if channel state changed since the last push, snapshot
-     * it under the lock, release, then push to enabled sinks UNLOCKED. Cheap
-     * no-op when nothing changed; the frontend calls this on a slow debounce
-     * interval. Never holds the wallet mutex across the push's `.await`.
      * @returns {Promise<any>}
      */
     maybe_backup() {
@@ -924,10 +956,6 @@ export class LijWalletHandle {
         wasm.lijwallethandle_note_foreground(this.__wbg_ptr);
     }
     /**
-     * On-chain transaction history for the RECENT list. The trusted-node source
-     * was removed with the shim; this returns an empty list until Tier 2
-     * (client-side BIP158 filter matching) reconstructs history locally. Kept so
-     * the frontend RECENT wiring stays stable across the transition.
      * @returns {Promise<any>}
      */
     onchain_history() {
@@ -999,12 +1027,6 @@ export class LijWalletHandle {
         }
     }
     /**
-     * Session 23 Option B (allocator unification): next-to-issue value of
-     * the shared channel-index allocator, without advancing. The frontend
-     * maxes this into getOnchainRecvIndex() so receive minting can never
-     * collide with signer-issued indices (shutdown pins, sweep
-     * destinations, and — post-terminus — pinned to_remote keys) that
-     * haven't landed on-chain yet. Reads the LIVE counter instance.
      * @returns {number}
      */
     peek_channel_index() {
@@ -1415,6 +1437,23 @@ export class LijWalletHandle {
         } finally {
             wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
         }
+    }
+    /**
+     * v261 (DP: the on-chain drill-down): everything the panel shows for one transaction,
+     * read from the independent sources at tap time — fee (sats, sat/vB), the inputs and
+     * outputs with which are ours, the counterparty address, the output type, mempool or
+     * block (with the header time), and the block time recorded into the ledger so the
+     * face's row gains its clock. Answers JSON:
+     * {"txid","fee_sats","vsize","sat_vb","confirmed","height","time","our_in","our_out",
+     *  "address","address_type","outputs":[{"address","value","ours","type"}]}
+     * @param {string} txid
+     * @returns {Promise<any>}
+     */
+    tx_details(txid) {
+        const ptr0 = passStringToWasm0(txid, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_tx_details(this.__wbg_ptr, ptr0, len0);
+        return ret;
     }
     /**
      * Chunk 1 (receive watcher): query a single watched address for incoming
@@ -2172,6 +2211,10 @@ function __wbg_get_imports() {
         __wbg_randomFillSync_6c25eac9869eb53c: function() { return handleError(function (arg0, arg1) {
             arg0.randomFillSync(arg1);
         }, arguments); },
+        __wbg_readyState_83df235b27cf257f: function(arg0) {
+            const ret = arg0.readyState;
+            return ret;
+        },
         __wbg_reason_9b593bf440970929: function(arg0, arg1) {
             const ret = arg1.reason;
             const ptr1 = passStringToWasm0(ret, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -2289,7 +2332,7 @@ function __wbg_get_imports() {
             console.warn(arg0, arg1, arg2, arg3);
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1645, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1680, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed);
             return ret;
         },
@@ -2300,16 +2343,16 @@ function __wbg_get_imports() {
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("ErrorEvent")], shim_idx: 7, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_104);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_107);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 7, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_105);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_108);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 1351, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 1386, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f);
             return ret;
         },
@@ -2347,12 +2390,12 @@ function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_104(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_104(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_107(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_107(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_105(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_105(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_108(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_108(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed(arg0, arg1, arg2) {

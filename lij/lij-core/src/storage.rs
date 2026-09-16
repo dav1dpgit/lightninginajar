@@ -61,6 +61,59 @@ pub trait LijStorage: Send + Sync {
     fn list_with_prefix(&self, prefix: &str) -> LijResult<Vec<String>>;
 }
 
+/// v256 (S46, DP: "Encrypt it"): a storage wrapper that encrypts the named keys at rest
+/// with the wallet's persistence key (the same AES-256-GCM the channel blobs use), and
+/// reads a legacy plaintext value transparently so the first write after the upgrade
+/// migrates it. Other keys pass straight through.
+pub struct EncryptedKeys<S: LijStorage> {
+    inner: S,
+    key: [u8; 32],
+    keys: &'static [&'static str],
+}
+
+const ENC_MAGIC: &[u8; 4] = b"ENC1";
+
+impl<S: LijStorage> EncryptedKeys<S> {
+    pub fn new(inner: S, key: [u8; 32], keys: &'static [&'static str]) -> Self {
+        Self { inner, key, keys }
+    }
+    fn covered(&self, key: &str) -> bool {
+        self.keys.iter().any(|k| *k == key)
+    }
+}
+
+impl<S: LijStorage> LijStorage for EncryptedKeys<S> {
+    fn get(&self, key: &str) -> LijResult<Option<Vec<u8>>> {
+        let raw = match self.inner.get(key)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+        if !self.covered(key) || !raw.starts_with(ENC_MAGIC) {
+            return Ok(Some(raw));   // pass-through, or a legacy plaintext value
+        }
+        let pt = crate::persist::decrypt(&self.key, &raw[ENC_MAGIC.len()..])
+            .map_err(|e| LijError::Storage(format!("encrypted key {key}: {e}")))?;
+        Ok(Some(pt))
+    }
+    fn set(&self, key: &str, value: &[u8]) -> LijResult<()> {
+        if !self.covered(key) {
+            return self.inner.set(key, value);
+        }
+        let ct = crate::persist::encrypt(&self.key, value)
+            .map_err(|e| LijError::Storage(format!("encrypt {key}: {e}")))?;
+        let mut out = Vec::with_capacity(ENC_MAGIC.len() + ct.len());
+        out.extend_from_slice(ENC_MAGIC);
+        out.extend_from_slice(&ct);
+        self.inner.set(key, &out)
+    }
+    fn delete(&self, key: &str) -> LijResult<()> {
+        self.inner.delete(key)
+    }
+    fn list_with_prefix(&self, prefix: &str) -> LijResult<Vec<String>> {
+        self.inner.list_with_prefix(prefix)
+    }
+}
+
 // ── Key name constants ───────────────────────────────────────────────────────
 // These are the localStorage keys. Namespaced to avoid collisions.
 
@@ -246,6 +299,29 @@ impl KvBackupClient {
 
     /// Pull an encrypted blob, authenticated the same way. `Ok(None)` means the
     /// Worker holds no backup for this pubkey, distinct from a transport error.
+    /// v250 (S46, DP GO): delete this wallet's cloud copy. Same signed challenge as
+    /// push/pull, action "backup-forget" — only the key that wrote the blob can
+    /// forget it. Returns whether a blob existed. Local state is untouched.
+    pub async fn forget(&self, signer: &dyn BackupSigner) -> LijResult<bool> {
+        let pubkey = signer.portable_pubkey_hex()?;
+        let nonce = self.get_challenge(&pubkey).await?;
+        let digest = backup_digest(BACKUP_ACTION_FORGET, &nonce, &pubkey)?;
+        let signature = signer.sign_backup(&digest)?;
+        let envelope = serde_json::json!({
+            "pubkey_hex": pubkey,
+            "nonce": nonce,
+            "signature": signature,
+        });
+        let url = format!("{}/backup/forget", self.config.worker_url);
+        let resp = http_post_json_auth(&url, &envelope.to_string(), "").await?;
+        let v: serde_json::Value = serde_json::from_str(&resp)
+            .map_err(|e| LijError::Backup(format!("forget parse: {e}")))?;
+        if v.get("ok").and_then(|o| o.as_bool()) != Some(true) {
+            return Err(LijError::Backup(format!("forget refused: {resp}")));
+        }
+        Ok(v.get("existed").and_then(|e| e.as_bool()).unwrap_or(false))
+    }
+
     pub async fn pull(
         &self,
         pubkey_hex: &str,
@@ -411,6 +487,8 @@ async fn http_get_auth(_url: &str, _auth_token: &str) -> LijResult<Option<String
 
 const BACKUP_DOMAIN: &[u8] = b"lij-backup-v1";
 const BACKUP_ACTION_PUSH: &str = "backup-push";
+/// v250: the wallet forgets its own cloud copy (the worker's /backup/forget).
+const BACKUP_ACTION_FORGET: &str = "backup-forget";
 const BACKUP_ACTION_READ: &str = "backup-read";
 
 fn backup_digest(action: &str, nonce_hex: &str, pubkey_hex: &str) -> LijResult<[u8; 32]> {
@@ -512,6 +590,13 @@ impl BackupSink {
     ) -> LijResult<Option<StateBlob>> {
         match self {
             BackupSink::CloudflareKv(sink) => sink.pull(pubkey_hex, signer).await,
+        }
+    }
+
+    /// v250: forget this wallet's copy at the sink. Returns whether one existed.
+    pub async fn forget(&self, signer: &dyn BackupSigner) -> LijResult<bool> {
+        match self {
+            BackupSink::CloudflareKv(sink) => sink.forget(signer).await,
         }
     }
 

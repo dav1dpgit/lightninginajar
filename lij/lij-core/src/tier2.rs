@@ -118,6 +118,38 @@ impl WalletScripts {
     }
 
     /// scriptPubKey byte-slices for passing to the BIP158 matcher.
+    /// v262 (DP's second dots read): the 7,500-key net took 1–2 s of unbroken CPU to derive
+    /// on a phone, once per session, right at boot — the balance's waiting dots froze for
+    /// exactly that long. This builds the same net in slices, yielding to the browser
+    /// between them (no-op natively).
+    pub async fn build_fixed_async(
+        root_key: &RootKey,
+        network: Network,
+        width: u32,
+    ) -> LijResult<Self> {
+        let receive_parent = root_key.shutdown_xpriv()?;
+        let change_parent = derive_child(&root_key.onchain_key()?, CHAIN_CHANGE)?;
+        let legacy_parent = root_key.static_remotekey_xpriv()?;
+        let plan = [
+            (CHAIN_RECEIVE, &receive_parent),
+            (CHAIN_CHANGE, &change_parent),
+            (CHAIN_LEGACY, &legacy_parent),
+        ];
+        let cap = (width as usize) * 3;
+        let mut entries = Vec::with_capacity(cap);
+        let mut by_spk = HashMap::with_capacity(cap);
+        let mut n: u32 = 0;
+        for (chain, parent) in plan {
+            for index in 0..width {
+                let spk = derive_p2wpkh_spk(parent, index, network)?;
+                by_spk.insert(spk.to_bytes(), (chain, index));
+                entries.push(MatchEntry { chain, index, script_pubkey: spk });
+                n += 1;
+                if n % 128 == 0 { crate::tier2_sync::yield_now().await; }
+            }
+        }
+        Ok(Self { entries, by_spk })
+    }
     pub fn query_bytes(&self) -> Vec<&[u8]> {
         self.entries
             .iter()

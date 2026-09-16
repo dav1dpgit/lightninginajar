@@ -57,6 +57,10 @@ pub struct OnchainUtxo {
     pub height: u32,
     /// Height it was spent at, if spent.
     pub spent_height: Option<u32>,
+    /// v255: the transaction that spent it — so the history can be DERIVED from the
+    /// output set (see derive_history) instead of kept as a second list that can drift.
+    #[serde(default)]
+    pub spent_txid: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -90,6 +94,9 @@ pub struct OnchainHistoryEntry {
     /// markers existed).
     #[serde(default)]
     pub kind: TxKind,
+    /// v259: the block's header time (unix seconds); 0 when unknown.
+    #[serde(default)]
+    pub time: u32,
 }
 
 /// A transaction we originated (on-chain send, channel funding, sweep) and
@@ -155,6 +162,116 @@ pub struct Tier2View {
     pub cursor: SyncCursor,
     pub utxos: Vec<OnchainUtxo>,
     pub history: Vec<OnchainHistoryEntry>,
+    /// v251 (S46, DP's #20 run): per chain, the highest address index ever seen paid —
+    /// SPENT outputs included. The window frontier used to come from unspent outputs
+    /// only, so a restored wallet whose early addresses were all spent scanned 0..50
+    /// while its real activity sat past 50 — the "large gap" DP saw against BlueWallet.
+    #[serde(default)]
+    pub used_next: std::collections::HashMap<u32, u32>,
+    /// v251: the HEAD walk — the newest ~1,500 blocks scanned FIRST after a restore so
+    /// recent activity shows within a minute; the historic walk continues behind it and
+    /// the two merge when they meet. `heights` are the head's matched blocks, replayed
+    /// at the merge so spends of historic outputs resolve.
+    #[serde(default)]
+    pub head: Option<HeadCursor>,
+    /// v253: per chain, the used frontier at which the last widen-and-rewalk was
+    /// triggered — a rewalk fires only when the frontier has GROWN past that mark,
+    /// so it can never loop (v252's edge test fired on every completed walk).
+    #[serde(default)]
+    pub rewalk_at: std::collections::HashMap<u32, u32>,
+    /// v256 (S46, DP: "one ledger"): the view's rule version. A view below VIEW_SCHEMA is
+    /// rebuilt from the birthday under the current rules the next time it is opened.
+    #[serde(default)]
+    pub schema: u32,
+    /// v256: the fixed net — addresses watched per branch from index 0 (LND's recovery
+    /// window is 2,500). Widened by NET_WIDTH and the walk redone when a coin lands within
+    /// NET_WIDEN_MARGIN of the far edge.
+    #[serde(default)]
+    pub net_width: u32,
+    /// v256: kind tags by transaction id (channel open / sweep, from the pending list).
+    #[serde(default)]
+    pub kinds: std::collections::HashMap<String, TxKind>,
+    /// v256: close hints by transaction id — true = a close transaction itself, false =
+    /// a transaction spending a close's output (a close only when net-incoming).
+    #[serde(default)]
+    pub close_hints: std::collections::HashMap<String, bool>,
+    /// v256: when the newest 144 blocks were last re-walked to re-confirm every recent
+    /// spend against the chain (ms since epoch; 0 = never).
+    #[serde(default)]
+    pub last_tail_verify_ms: u64,
+    /// v257 (S46, DP GO — the new process): the DOWNWARD cursor. `cursor` is the top
+    /// (the newest block scanned, extended forward as blocks arrive); `down` is the lowest
+    /// block scanned so far, read newest-first until it reaches the birthday.
+    #[serde(default)]
+    pub down: Option<DownCursor>,
+    /// v257: spends seen before their coin (newest-first order) — "txid:vout" of the
+    /// coin -> (spending txid, height). Recognised by the spender's own pubkey in the
+    /// witness (every LiJ address is P2WPKH). Applied the moment the coin's block is read.
+    #[serde(default)]
+    pub pending_spends: std::collections::HashMap<String, (String, u32)>,
+    /// v257: the last sync call's result, for the face and the tapes.
+    #[serde(default)]
+    pub last_sync: Option<SyncNote>,
+    /// v259 (DP: clock time under each on-chain amount): block height -> header time
+    /// (unix seconds) for every block the walk fetched, so a derived row can carry its
+    /// clock time without another network read.
+    #[serde(default)]
+    pub block_times: std::collections::HashMap<u32, u32>,
+}
+
+/// v257: the downward cursor (see Tier2View::down).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct DownCursor {
+    pub low: u32,
+    pub low_hash: String,
+    pub low_filter_header: String,
+    pub done: bool,
+}
+
+/// v257: what the last sync call did or why it failed.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SyncNote {
+    pub at_ms: u64,
+    pub ok: bool,
+    pub note: String,
+}
+
+/// v256/v257: the ledger's rule version (see Tier2View::schema). 3 = the downward walk.
+pub const VIEW_SCHEMA: u32 = 3;
+/// v256: addresses watched per branch from index 0.
+pub const NET_WIDTH: u32 = 2500;
+/// v256: a coin this close to the net's far edge widens the net and redoes the walk.
+pub const NET_WIDEN_MARGIN: u32 = 100;
+/// v256: blocks re-walked by the daily tail verification.
+pub const TAIL_VERIFY_BLOCKS: u32 = 144;
+
+/// v256: rebuild the ledger from scratch under the current rules — nothing copied but the
+/// birthday. Coins, spend marks, rows, tags and the head cursor are re-derived by the walk.
+pub fn rebuild_from_birthday(view: &mut Tier2View, now_ms: u64) {
+    view.utxos.clear();
+    view.history.clear();
+    view.head = None;
+    view.used_next.clear();
+    view.rewalk_at.clear();
+    view.kinds.clear();
+    view.close_hints.clear();
+    view.down = None;
+    view.pending_spends.clear();
+    view.block_times.clear();
+    view.cursor.scanned_to = 0;
+    view.cursor.last_hash = None;
+    view.cursor.last_filter_header = None;
+    view.schema = VIEW_SCHEMA;
+    if view.net_width < NET_WIDTH { view.net_width = NET_WIDTH; }
+    view.last_tail_verify_ms = now_ms;
+}
+
+/// v251: the head-first cursor (see Tier2View::head).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct HeadCursor {
+    pub start: u32,
+    pub cursor: SyncCursor,
+    pub heights: Vec<u32>,
 }
 
 /// Spendable (BIP84 receive+change) and legacy (m/525 force-close) balances,
@@ -188,19 +305,31 @@ pub fn apply_txs(view: &mut Tier2View, scripts: &WalletScripts, txs: &[Transacti
             // v190 (S29): mark EVERY matching copy — under the (now
             // guarded) duplicate world, marking only the first left a
             // live twin behind after every spend.
+            let mut known = false;
             for u in view
                 .utxos
                 .iter_mut()
                 .filter(|u| u.spent_height.is_none() && u.txid == pt && u.vout == pv)
             {
                 u.spent_height = Some(height);
+                u.spent_txid = Some(txid.clone());   // v255
                 spent_sats = spent_sats.saturating_add(u.value_sats);
+                known = true;
+            }
+            if !known && !view.utxos.iter().any(|u| u.txid == pt && u.vout == pv) {
+                // v257: the coin is not known yet (newest-first walk). If the witness carries
+                // one of OUR pubkeys, remember the spend for the moment the coin appears.
+                if witness_pays_us(&input.witness, scripts) {
+                    view.pending_spends.insert(format!("{pt}:{pv}"), (txid.clone(), height));
+                }
             }
         }
 
         // Outputs that pay our scripts.
         for (vout, out) in tx.output.iter().enumerate() {
             if let Some((chain, index)) = scripts.owner_of(&out.script_pubkey) {
+                let e = view.used_next.entry(chain).or_insert(0);   // v251: the used frontier, spent or not
+                if index + 1 > *e { *e = index + 1; }
                 // v190 (S29): re-introduction guard — an overlap rescan
                 // (cursor regression) must not duplicate a known outpoint.
                 if view
@@ -211,6 +340,8 @@ pub fn apply_txs(view: &mut Tier2View, scripts: &WalletScripts, txs: &[Transacti
                     continue;
                 }
                 recv_sats = recv_sats.saturating_add(out.value.to_sat());
+                // v257: a spend of this coin may already have been seen above it
+                let pend = view.pending_spends.remove(&format!("{txid}:{vout}"));
                 view.utxos.push(OnchainUtxo {
                     chain,
                     index,
@@ -218,27 +349,15 @@ pub fn apply_txs(view: &mut Tier2View, scripts: &WalletScripts, txs: &[Transacti
                     vout: vout as u32,
                     value_sats: out.value.to_sat(),
                     height,
-                    spent_height: None,
+                    spent_height: pend.as_ref().map(|p| p.1),
+                    spent_txid: pend.map(|p| p.0),
                 });
             }
         }
 
+        // v256: no row is written here — rows are derived from the coins (derive_history).
         if spent_sats > 0 || recv_sats > 0 {
-            let delta = recv_sats as i64 - spent_sats as i64;
-            let direction = if recv_sats > 0 && spent_sats > 0 {
-                TxDirection::SelfTransfer
-            } else if delta >= 0 {
-                TxDirection::Received
-            } else {
-                TxDirection::Sent
-            };
-            view.history.push(OnchainHistoryEntry {
-                txid,
-                height,
-                direction,
-                delta_sats: delta,
-                kind: TxKind::default(),
-            });
+            let _ = (&txid, height);
         }
     }
 }
@@ -278,15 +397,10 @@ pub fn tag_channel_closes(
         if !is_direct_close && !spends_close {
             continue;
         }
-        for h in view.history.iter_mut() {
-            if h.txid == txid && h.kind == TxKind::Onchain {
-                // Direct close: always a close. Spend-of-close: only when the row
-                // is net-incoming (a sweep), never when net-outgoing (a funding).
-                if is_direct_close || h.delta_sats > 0 {
-                    h.kind = TxKind::ChannelClose;
-                }
-            }
-        }
+        // v256: a hint by txid; derive_history decides (a spend-of-close is a close only
+        // when the row is net-incoming — a sweep, never a funding).
+        let e = view.close_hints.entry(txid).or_insert(false);
+        if is_direct_close { *e = true; }
     }
 }
 
@@ -326,11 +440,13 @@ pub fn next_index_for_chain(view: &Tier2View, pending: &[PendingTx], chain: u32)
     } else {
         None
     };
+    let used = view.used_next.get(&chain).copied().unwrap_or(0);   // v251: spent outputs count too
     view_max
         .into_iter()
         .chain(pending_max)
         .max()
         .map_or(0, |m| m + 1)
+        .max(used)
 }
 
 /// v190 (S29): enforce the UTXO-set invariant — one entry per
@@ -413,6 +529,7 @@ pub(crate) fn unconfirmed_change_utxos(
             value_sats: p.change_value_sats,
             height: 0,
             spent_height: None,
+            spent_txid: None,
         });
     }
     out
@@ -526,18 +643,15 @@ pub fn reconcile_pending(storage: &dyn LijStorage, view: &mut Tier2View) -> LijR
     if list.is_empty() {
         return Ok(());
     }
-    let confirmed: std::collections::HashMap<String, TxKind> =
-        list.iter().map(|p| (p.txid.clone(), p.kind)).collect();
-    for h in view.history.iter_mut() {
-        if let Some(kind) = confirmed.get(&h.txid) {
-            if *kind != TxKind::Onchain && h.kind == TxKind::Onchain {
-                h.kind = *kind;
-            }
+    let derived = derive_history(view);   // v256: rows are derived; confirmed = present in the derivation
+    let confirmed_txids: std::collections::HashSet<String> =
+        derived.iter().map(|h| h.txid.clone()).collect();
+    for p in &list {
+        if confirmed_txids.contains(&p.txid) && p.kind != TxKind::Onchain {
+            view.kinds.entry(p.txid.clone()).or_insert(p.kind);
         }
     }
     let before = list.len();
-    let confirmed_txids: std::collections::HashSet<String> =
-        view.history.iter().map(|h| h.txid.clone()).collect();
     list.retain(|p| !confirmed_txids.contains(&p.txid));
     if list.len() != before {
         save_pending(storage, &list)?;
@@ -554,9 +668,11 @@ pub fn rollback(view: &mut Tier2View, to_height: u32) {
         if let Some(sh) = u.spent_height {
             if sh > to_height {
                 u.spent_height = None;
+                u.spent_txid = None;   // v257: the mark and its spender go together
             }
         }
     }
+    view.pending_spends.retain(|_, (_, h)| *h <= to_height);   // v257
     view.history.retain(|h| h.height <= to_height);
     view.cursor.scanned_to = to_height;
     view.cursor.last_hash = None;
@@ -612,6 +728,7 @@ pub async fn fetch_and_apply(
             return Err(LijError::Node(format!("block {} merkle root mismatch", m.height)));
         }
 
+        view.block_times.insert(m.height, block.header.time);   // v259
         apply_txs(view, scripts, &block.txdata, m.height);
         tag_channel_closes(view, &block.txdata, close_txids);
     }
@@ -693,9 +810,22 @@ pub struct Tier2Summary {
     pub scanned_to: u32,
     pub tip_height: u32,
     pub caught_up: bool,
+    /// v253: the walk's shape for the face — where the historic walk started, whether a
+    /// head walk (newest blocks first) is still running, and how far it has got.
+    pub birthday: u32,
+    pub head_active: bool,
+    pub head_start: u32,
+    pub head_scanned_to: u32,
     /// Next unused receive index (max receive index ever seen + 1), so the
     /// receive flow never reuses an address. Counts spent outputs too.
     pub next_receive_index: u32,
+    /// v256: violated invariants (empty = the ledger agrees with itself).
+    pub invariants: Vec<String>,
+    /// v257: the downward walk's lowest scanned block and whether it reached the birthday.
+    pub down_low: u32,
+    pub down_done: bool,
+    /// v257: the last sync call's result (for the face).
+    pub last_sync: Option<SyncNote>,
     pub utxos: Vec<OnchainUtxo>,
     /// The confirmed unspent coins that ARE reserved by a pending spend (hidden
     /// from `utxos`). Audit-only: lets a reconciliation verify every pending
@@ -759,9 +889,26 @@ pub fn summary(view: &Tier2View, pending: &[PendingTx], tip_height: u32) -> Tier
     // confirmations and reorgs in lockstep with the balance: once the change
     // confirms it enters the view above and drops out of this set, never doubled.
     utxos.extend(unconfirmed_change);
-    let mut history = view.history.clone();
-    history.sort_by(|a, b| b.height.cmp(&a.height));
+    let history = derive_history(view);   // v255/v256: rows come from the coins; ordered inside
+    // v256: the invariants — the double-entry checks from S15, on every summary.
+    let mut invariants: Vec<String> = Vec::new();
+    if spendable_sats != confirmed_sats.saturating_sub(reserved_value).saturating_add(unconfirmed_change_sats) {
+        invariants.push(format!("spendable {spendable_sats} != confirmed {confirmed_sats} - reserved {reserved_value} + unconfirmed change {unconfirmed_change_sats}"));
+    }
+    for p in pending {
+        for op in &p.spent_outpoints {
+            if !view.utxos.iter().any(|u| u.txid == op.0 && u.vout == op.1) {
+                invariants.push(format!("pending {} spends an unknown coin {}:{}", &p.txid[..12.min(p.txid.len())], &op.0[..12.min(op.0.len())], op.1));
+            }
+        }
+    }
+    {
+        let mut seen = std::collections::HashSet::new();
+        for h in &history { if !seen.insert(h.txid.clone()) { invariants.push(format!("row {} appears twice", &h.txid[..12.min(h.txid.len())])); } }
+    }
+    for line in &invariants { log::warn!("[tier2] INVARIANT: {line}"); }
     Tier2Summary {
+        invariants,
         spendable_sats,
         confirmed_sats,
         reserved_sats: reserved_value,
@@ -769,7 +916,14 @@ pub fn summary(view: &Tier2View, pending: &[PendingTx], tip_height: u32) -> Tier
         legacy_sats,
         scanned_to: view.cursor.scanned_to,
         tip_height,
-        caught_up: view.cursor.scanned_to >= tip_height,
+        caught_up: view.down.as_ref().map(|d| d.done).unwrap_or(true) && view.cursor.scanned_to >= tip_height,   // v257: done when the downward walk reached the birthday and the top is at the tip (no down cursor = nothing left below)
+        birthday: view.cursor.birthday,
+        head_active: false,
+        head_start: 0,
+        head_scanned_to: 0,
+        down_low: view.down.as_ref().map(|d| d.low).unwrap_or(0),
+        down_done: view.down.as_ref().map(|d| d.done).unwrap_or(false),
+        last_sync: view.last_sync.clone(),
         next_receive_index,
         utxos,
         reserved_utxos,
@@ -888,41 +1042,139 @@ pub async fn heal_blind_closes(
 /// blocks -> advance cursor -> checkpoint, until caught up. Blocks are applied
 /// BEFORE the cursor advances, so a fetch failure never skips them. Network
 /// I/O — run OUTSIDE any wallet lock.
-pub async fn sync_to_tip(
+/// v257: a P2WPKH input's witness is [signature, pubkey]; the pubkey names the script
+/// being spent. True when that script is one of the wallet's.
+fn witness_pays_us(witness: &bitcoin::Witness, scripts: &WalletScripts) -> bool {
+    if witness.len() != 2 { return false; }
+    let pk_bytes = match witness.nth(1) { Some(b) => b, None => return false };
+    if pk_bytes.len() != 33 { return false; }
+    let pk = match bitcoin::PublicKey::from_slice(pk_bytes) { Ok(p) => p, Err(_) => return false };
+    let wpkh = match pk.wpubkey_hash() { Ok(h) => h, Err(_) => return false };
+    let spk = bitcoin::ScriptBuf::new_p2wpkh(&wpkh);
+    scripts.owner_of(&spk).is_some()
+}
+
+/// v255 (S46, DP: "it doesn't make sense that the balance can be right but the rows
+/// wrong"): the rows are DERIVED from the same output set the balance is summed from,
+/// so the two can no longer disagree. Every output the wallet holds or held yields a
+/// Received row for its creating transaction; every spent output yields a Sent (or
+/// SelfTransfer) row for its spending transaction; the persisted `history` list is read
+/// only for the kind tags (channel open/close/sweep) and as a fallback for spends
+/// recorded before spent_txid existed.
+pub fn derive_history(view: &Tier2View) -> Vec<OnchainHistoryEntry> {
+    use std::collections::HashMap;
+    let mut recv: HashMap<String, (u32, u64)> = HashMap::new();
+    let mut spent: HashMap<String, (u32, u64)> = HashMap::new();
+    for u in &view.utxos {
+        let r = recv.entry(u.txid.clone()).or_insert((u.height, 0));
+        r.1 = r.1.saturating_add(u.value_sats);
+        if let (Some(sh), Some(st)) = (u.spent_height, u.spent_txid.as_ref()) {
+            let s = spent.entry(st.clone()).or_insert((sh, 0));
+            s.1 = s.1.saturating_add(u.value_sats);
+        }
+    }
+    let mut txids: Vec<String> = recv.keys().cloned().collect();
+    for k in spent.keys() { if !recv.contains_key(k) { txids.push(k.clone()); } }
+    let mut out: Vec<OnchainHistoryEntry> = Vec::with_capacity(txids.len());
+    for txid in txids {
+        let (hr, r) = recv.get(&txid).copied().unwrap_or((0, 0));
+        let (hs, s) = spent.get(&txid).copied().unwrap_or((0, 0));
+        let height = if s > 0 { hs } else { hr };
+        let delta = r as i64 - s as i64;
+        let direction = if r > 0 && s > 0 {
+            TxDirection::SelfTransfer
+        } else if delta >= 0 {
+            TxDirection::Received
+        } else {
+            TxDirection::Sent
+        };
+        let kind = match view.kinds.get(&txid) {
+            Some(k) => *k,
+            None => match view.close_hints.get(&txid) {
+                Some(true) => TxKind::ChannelClose,
+                Some(false) if delta > 0 => TxKind::ChannelClose,
+                _ => TxKind::default(),
+            },
+        };
+        let time = view.block_times.get(&height).copied().unwrap_or(0);   // v259
+        out.push(OnchainHistoryEntry { txid, height, direction, delta_sats: delta, kind, time });
+    }
+    // v256: height newest first, then txid — same height never swaps between refreshes.
+    out.sort_by(|a, b| b.height.cmp(&a.height).then_with(|| a.txid.cmp(&b.txid)));
+    out
+}
+
+/// v257 (S46, DP GO — the new process): ONE walk, newest-first.
+///
+/// `view.cursor` is the TOP: the newest block scanned (extended forward with the ordinary
+/// forward step as blocks arrive, reorg-checked at every call). `view.down` is the LOWEST
+/// block scanned so far; each call reads up to `max_batches` batches below it until the
+/// birthday. A spend seen before its coin is held in `pending_spends` (recognised by the
+/// spender's own pubkey in the witness) and applied when the coin's block is read. Rows
+/// are derived from the coins, so the list fills from the top in the order it is shown.
+/// Returns (batches walked, a one-line note).
+pub async fn sync_down(
     http: &Arc<dyn EsploraHttp>,
     base: &str,
     scripts: &WalletScripts,
     view: &mut Tier2View,
     storage: &dyn LijStorage,
     tip_height: u32,
+    tip_hash: &str,
     batch: u32,
-) -> LijResult<()> {
-    reorg_check(http, base, view).await?;
-    // v180: heal blind closed records FIRST so close_txids is complete for both
-    // the retro-tag below and the per-block tagger in the loop.
-    heal_blind_closes(http, base, storage).await;
-    // Closing txids let fetch_and_apply tag close-return receives as
-    // "withdrawing capacity". Loaded once per sync; the log is stable here.
+    max_batches: u32,
+) -> LijResult<(u32, String)> {
+    let mut batches = 0u32;
     let close_txids = crate::closed_channel_log::ClosedChannelLog::closing_txids(storage);
-    // v180: fix rows scanned before their record knew the txid. Must persist even
-    // when the loop below does nothing (already at tip — the common case for a
-    // close that confirmed several blocks ago).
-    if retag_closes_by_txid(view, &close_txids) {
+    // ── (0) a fresh view: the top is the tip itself ──
+    if view.cursor.scanned_to == 0 || view.down.is_none() {
+        let flts: crate::tier2_sync::FiltersResp =
+            get_json(http, &format!("{base}/filters?start={tip_height}&count=1")).await?;
+        let f = flts.filters.first().ok_or_else(|| LijError::Node("tip filter missing".into()))?;
+        if f.hash != tip_hash {
+            return Err(LijError::Node(format!("tip filter hash {} != tip {}", f.hash, tip_hash)));
+        }
+        let filter_bytes = hex::decode(&f.filter).map_err(|e| LijError::Node(format!("tip filter hex: {e}")))?;
+        let bh = BlockHash::from_str(&f.hash).map_err(|e| LijError::Node(format!("tip hash: {e}")))?;
+        if crate::tier2::block_matches(&filter_bytes, &bh, scripts)? {
+            fetch_and_apply(http, base, scripts, view, &[crate::tier2_sync::MatchedBlock { height: tip_height, block_hash: f.hash.clone() }], &close_txids).await?;
+        }
+        view.cursor.scanned_to = tip_height;
+        view.cursor.last_hash = Some(f.hash.clone());
+        view.cursor.last_filter_header = Some(f.filter_header.clone());
+        view.down = Some(DownCursor { low: tip_height, low_hash: f.hash.clone(), low_filter_header: f.filter_header.clone(), done: tip_height <= view.cursor.birthday });
         save_view(storage, view)?;
+        log::info!("[tier2] v257 walk opened at the tip {tip_height}; reading down to {}", view.cursor.birthday);
     }
-    loop {
-        let outcome =
-            crate::tier2_sync::sync_step(http, base, scripts, &view.cursor, tip_height, batch).await?;
+    // ── (1) forward: new blocks above the top, reorg-checked ──
+    reorg_check(http, base, view).await?;
+    while view.cursor.scanned_to < tip_height {
+        let outcome = crate::tier2_sync::sync_step(http, base, scripts, &view.cursor, tip_height, batch).await?;
         fetch_and_apply(http, base, scripts, view, &outcome.matched, &close_txids).await?;
         view.cursor.scanned_to = outcome.scanned_to;
         view.cursor.last_hash = outcome.last_hash;
         view.cursor.last_filter_header = outcome.last_filter_header;
         save_view(storage, view)?;
-        if outcome.caught_up {
-            break;
-        }
+        batches += 1;
+        if outcome.caught_up { break; }
+        if max_batches > 0 && batches >= max_batches { break; }
     }
-    Ok(())
+    // ── (2) down: the newest unread blocks, until the birthday or the budget ──
+    let mut down = view.down.clone().unwrap_or_default();
+    while !down.done && (max_batches == 0 || batches < max_batches) {
+        let o = crate::tier2_sync::sync_step_down(http, base, scripts, down.low, &down.low_hash, &down.low_filter_header, view.cursor.birthday, batch).await?;
+        // highest first within the batch, so a spend lands before its coin when both are inside
+        let mut matched = o.matched.clone();
+        matched.sort_by(|a, b| b.height.cmp(&a.height));
+        fetch_and_apply(http, base, scripts, view, &matched, &close_txids).await?;
+        down = DownCursor { low: o.low, low_hash: o.low_hash, low_filter_header: o.low_filter_header, done: o.done };
+        view.down = Some(down.clone());
+        save_view(storage, view)?;
+        batches += 1;
+    }
+    let note = format!("top {} (tip {tip_height}) · low {} → {} · {} batch(es) · {} coin(s) · {} pending spend(s){}",
+        view.cursor.scanned_to, down.low, view.cursor.birthday, batches, view.utxos.len(), view.pending_spends.len(), if down.done { " · history complete" } else { "" });
+    Ok((batches, note))
 }
 
 #[cfg(test)]
@@ -991,9 +1243,10 @@ mod tests {
 
         assert_eq!(balances(&view), (50_000, 0), "one unspent receive");
         assert_eq!(view.utxos.len(), 1);
-        assert_eq!(view.history.len(), 1);
-        assert_eq!(view.history[0].direction, TxDirection::Received);
-        assert_eq!(view.history[0].delta_sats, 50_000);
+        let rows = derive_history(&view);   // v256: rows are derived from the coins
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].direction, TxDirection::Received);
+        assert_eq!(rows[0].delta_sats, 50_000);
 
         // Spend it entirely to an external script (no change to us).
         let spend = tx_spending(recv_txid, 0, ScriptBuf::new(), 49_000);
@@ -1002,7 +1255,13 @@ mod tests {
         assert_eq!(balances(&view), (0, 0), "spent -> zero spendable");
         assert_eq!(view.utxos.len(), 1, "spent utxo kept (for reorg), not deleted");
         assert_eq!(view.utxos[0].spent_height, Some(900_010));
-        assert_eq!(view.history.last().unwrap().direction, TxDirection::Sent);
+        let rows = derive_history(&view);
+        assert_eq!(rows.len(), 2, "a Received row and a Sent row, both from the coins");
+        assert_eq!(rows[0].direction, TxDirection::Sent, "newest first");
+        assert_eq!(rows[0].delta_sats, -50_000);
+        // v256: balance and rows come from one list — they agree by construction
+        let net: i64 = rows.iter().map(|r| r.delta_sats).sum();
+        assert_eq!(net, balances(&view).0 as i64);
     }
 
     #[test]
@@ -1022,7 +1281,7 @@ mod tests {
         assert_eq!(view.cursor.scanned_to, 900_010);
         assert!(view.cursor.last_hash.is_none());
         // History above the rollback height is gone; the receive remains.
-        assert!(view.history.iter().all(|h| h.height <= 900_010));
+        assert!(derive_history(&view).iter().all(|h| h.height <= 900_010));
     }
 
     #[test]

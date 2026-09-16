@@ -281,6 +281,16 @@ impl CooperativeChainBridge {
         self.state.lock().unwrap().last_update_ts
     }
 
+    /// v249: the handler flagged a (re)connect or disconnect of the LSP since the last read.
+    pub fn take_resubscribe_wanted(&self) -> bool {
+        self.handler.take_resubscribe_wanted()
+    }
+
+    /// v249: seconds since the last cooperative chain message; None if none ever.
+    pub fn cooperative_silence_secs(&self) -> Option<u64> {
+        self.state.lock().unwrap().last_update_ts.map(|t| current_time_secs().saturating_sub(t))
+    }
+
     /// Drain pending FundingTxConfirmed messages. Called from LijNode::background_tick
     /// once per tick. The caller is responsible for routing each into LDK's
     /// transactions_confirmed() and persisting channel state afterward.

@@ -127,6 +127,15 @@ pub struct CooperativeChainHandler {
     outbound: Mutex<VecDeque<(PublicKey, CooperativeChainMessage)>>,
     /// Inbound buffer. Drained by step-4c bridge code via take_received().
     inbound: Mutex<VecDeque<ReceivedMessage>>,
+    /// v249 (S46, DP): the peer we last sent SubscribeChainData to (the LSP).
+    subscribe_target: Mutex<Option<PublicKey>>,
+    /// v249: set when that peer (re)connects or disconnects — the tick re-issues the
+    /// subscription. The LSP's chain bridge drops a subscriber after three failed sends
+    /// while the wallet is asleep, and until now nothing on this side ever subscribed
+    /// again after a reconnect (mark_disconnected was never called; the pulse's reconnect
+    /// path sends no subscribe) — the wallet then sat on its last tip for as long as the
+    /// socket lived (DP's Android: six blocks behind, every internal send refused by LND).
+    resubscribe_wanted: std::sync::atomic::AtomicBool,
 }
 
 impl CooperativeChainHandler {
@@ -134,7 +143,15 @@ impl CooperativeChainHandler {
         Self {
             outbound: Mutex::new(VecDeque::new()),
             inbound: Mutex::new(VecDeque::new()),
+            subscribe_target: Mutex::new(None),
+            resubscribe_wanted: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// v249: true once, when the subscribe target has (re)connected or disconnected since
+    /// the last read. The bridge/tick re-issues SubscribeChainData on it.
+    pub fn take_resubscribe_wanted(&self) -> bool {
+        self.resubscribe_wanted.swap(false, std::sync::atomic::Ordering::AcqRel)
     }
 
     /// Drain all received messages. Step-4c bridge calls this each tick.
@@ -158,6 +175,7 @@ impl CooperativeChainHandler {
     // PeerManager pulls via get_and_clear_pending_msg on its event-pump cycle.
 
     pub fn send_subscribe(&self, peer: PublicKey, msg: SubscribeChainData) {
+        *self.subscribe_target.lock().unwrap() = Some(peer);   // v249
         self.enqueue(peer, CooperativeChainMessage::SubscribeChainData(msg));
     }
 
@@ -267,15 +285,25 @@ impl CustomMessageHandler for CooperativeChainHandler {
         f
     }
 
-    fn peer_disconnected(&self, _their_node_id: PublicKey) {
-        // 0.2: nothing per-peer is held here; the chain bridge tracks peers itself.
+    fn peer_disconnected(&self, their_node_id: PublicKey) {
+        // v249: the LSP's stream is gone with the socket — subscribe again on the next connect.
+        if *self.subscribe_target.lock().unwrap() == Some(their_node_id) {
+            log::info!("cooperative_chain_handler: LSP peer disconnected — SubscribeChainData will be re-issued on reconnect");
+            self.resubscribe_wanted.store(true, std::sync::atomic::Ordering::Release);
+        }
     }
     fn peer_connected(
         &self,
-        _their_node_id: PublicKey,
+        their_node_id: PublicKey,
         _msg: &lightning::ln::msgs::Init,
         _inbound: bool,
     ) -> Result<(), ()> {
+        // v249: every (re)connect of the LSP gets a fresh subscription (the LSP keeps no
+        // subscriber across a disconnect; the wallet used to assume it did).
+        if *self.subscribe_target.lock().unwrap() == Some(their_node_id) {
+            log::info!("cooperative_chain_handler: LSP peer connected — re-issuing SubscribeChainData");
+            self.resubscribe_wanted.store(true, std::sync::atomic::Ordering::Release);
+        }
         Ok(())
     }
     fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
