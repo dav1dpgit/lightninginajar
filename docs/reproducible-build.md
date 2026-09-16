@@ -53,8 +53,8 @@ The page's Content-Security-Policy (`lij-pwa/frontend/_headers`, `/wallet/*` blo
 |---|---|
 | `lij-pwa/frontend/pkg/lij_wasm_bg.wasm` (engine phase11-v262) | `de3adcb8da223e76937635031088478386652e2ac1d6875f65ff08ee29107478` |
 | `lij-pwa/frontend/pkg/lij_wasm.js` | `24d668f986ec0d7a3a04fef6df72303f5f7835ba2ffa735cb049895c6cbc77e0` |
-| `lij-pwa/frontend/wallet/index.html` (page phase11-v771) | `1b098f8b32885ea2ce698a14d36ed46c59c7d4af022e045752504781f6103fc5` |
-| `lij-pwa/frontend/wallet/sw.js` | `ecefc396fa0ae72dc2ef159600b93cf425fc5a7218a2714c167ea95993c84964` |
+| `lij-pwa/frontend/wallet/index.html` (page phase11-v772) | `efa0ff35163f06d85a5a200a3d7cf6ed2750892ef4c155ada6653657db72af24` |
+| `lij-pwa/frontend/wallet/sw.js` | `b62d438cdd26729c37a342aac4064a1e0b10ea7d3ff128110da7bbb0b667e8de` |
 
 ## From engine v241 (2026-09-12): LDK 0.2.6, stable toolchain, release profile
 
