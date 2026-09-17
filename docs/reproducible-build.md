@@ -51,10 +51,10 @@ The page's Content-Security-Policy (`lij-pwa/frontend/_headers`, `/wallet/*` blo
 
 | artifact | sha256 |
 |---|---|
-| `lij-pwa/frontend/pkg/lij_wasm_bg.wasm` (engine phase11-v263) | `842e867a3aa9c5c4e37a6467db6e7390030107c6c25df3daf9140ba671273d6c` |
-| `lij-pwa/frontend/pkg/lij_wasm.js` | `afe25ed4dd2f8d4a65cd8d3c87746f408df07f1bee97de739e54c68b304259e4` |
-| `lij-pwa/frontend/wallet/index.html` (page phase11-v774) | `e8d60ef4f7b9313d11866356ca0ca13f00a1e883f4ffa854e865c1e7fe5090f4` |
-| `lij-pwa/frontend/wallet/sw.js` | `7377f8cb60e85bf2231d76e8f721554a078905e3d8587b9314991199b8063a33` |
+| `lij-pwa/frontend/pkg/lij_wasm_bg.wasm` (engine phase11-v267) | `f17fc94be8f8ea25a94b1125bad0942bc3c7ecb9ac65b287595240dde2047d98` |
+| `lij-pwa/frontend/pkg/lij_wasm.js` | `628ffd2df7ca99e976106e0d5db0af0ccfe0fab38a32f7774069fa678577c4dd` |
+| `lij-pwa/frontend/wallet/index.html` (page phase11-v787) | `b500bb260a078b9c619a2d3b01e315df8fd956b8699c2b19232b03300f8bc3b5` |
+| `lij-pwa/frontend/wallet/sw.js` | `2ae8f97e1237df1785da978e78ab058487391f9cd1f888563c24025b40d84bfe` |
 
 ## From engine v241 (2026-09-12): LDK 0.2.6, stable toolchain, release profile
 

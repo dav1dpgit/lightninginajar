@@ -96,7 +96,11 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v263".to_string()  // v263 (S47, DP field: on-chain sends failed "tier2 view parse" on both phones; the channel sheet said "Could not load balance"): v256 encrypted the on-chain view but four readers stayed on plain storage — send_onchain, bump_onchain_send, lsp_channel_open_estimate and the funding build (FundingGenerationReady). All four now read through tier2_wallet::encrypted (one key list).
+    "phase11-v267".to_string()  // v267 (S47, DP GO): a self-funded open whose funding tx cannot be built is closed at once (force_close_without_broadcasting_txn on the temp channel; no funds moved, no close record) instead of dangling until LDK's unfunded timeout — and the failure (temp id, value, reason, time) is kept for the page (open_failures_json), so the retry loop stops and the "moving to Lightning" marks clear.
+    // v266 (S47, DP: quorum stuck at 0/4 after a long phone sleep until a restart): a demoted independent endpoint was never asked again (rounds asked healthy endpoints only), so once all four were demoted nothing could reinstate one. Rounds now also ask demoted endpoints 60 s after their last failure, and all of them when none is healthy; broadcasts use the same list.
+    // v265 (S47, DP GO): identify_own_output (the recover-close watch) searches the walk's 2,500-address net first, then the old window above the frontier; each outcome is one [recover-watch] line on the tape (not at the sources yet / our output #n, sats, chain, index / no output pays this wallet).
+    // v264 (S47, DP's #20 run — the tape read "timeout after 5s" on every 501-filter batch; one batch = 18.8 MB): the walk's requests get their own 60 s limit (the 5 s stays for the independent height checks); 100 blocks per request, 5 per call; a call that fails part-way still returns the summary (balance + rows read so far) with `sync_error`; the walk's errors say "block-filter server:" instead of "LSP error:".
+    // v263 (S47, DP field: on-chain sends failed "tier2 view parse" on both phones; the channel sheet said "Could not load balance"): v256 encrypted the on-chain view but four readers stayed on plain storage — send_onchain, bump_onchain_send, lsp_channel_open_estimate and the funding build (FundingGenerationReady). All four now read through tier2_wallet::encrypted (one key list).
     // v262 (DP's second dots read): the 7,500-key net is derived in slices with yields — the one-time 1–2 s boot freeze (the waiting dots standing still) is gone.
     // v261 (DP: the on-chain drill-down): tx_details(txid) — fee (sats, sat/vB), our inputs/outputs, the address of record, the output type, mempool or block + header time (recorded into the ledger so the face's row gains its clock).
     // v260 (DP's frozen-dots read): the walk yields to the browser between every 16 filters — a 500-filter batch against the 7,500-key net was seconds of unbroken CPU on the main thread, freezing every timer on the page (the balance's waiting dots since v256). Same work, the phone breathes.
@@ -727,7 +731,7 @@ impl LijWalletHandle {
             };
             let base = "https://filters.lightning-mod.com";
             let http: Arc<dyn lij_core::independent::EsploraHttp> =
-                Arc::new(WasmEsploraHttp::new());
+                Arc::new(WasmEsploraHttp::for_filter_walk());   // v264: 60 s per request, errors name the filter server
             let storage: Arc<dyn lij_core::storage::LijStorage> = t2_storage(&root_key);   // v256: encrypted at rest
 
             let mut view = lij_core::tier2_wallet::load_view(storage.as_ref())
@@ -765,7 +769,7 @@ impl LijWalletHandle {
                 Ok(t) => t,
                 Err(e) => {
                     // v257: the failure is written down where the face and the tape can read it
-                    let msg = format!("block-filter server unreachable: {e}");
+                    let msg = format!("block-filter server unreachable: {}", e.to_string().trim_start_matches("Network error: "));
                     log::warn!("[tier2] sync failed: {msg}");
                     view.last_sync = Some(lij_core::tier2_wallet::SyncNote { at_ms: now_ms, ok: false, note: msg.clone() });
                     let _ = lij_core::tier2_wallet::save_view(storage.as_ref(), &view);
@@ -800,25 +804,27 @@ impl LijWalletHandle {
                 tip.height,
                 &tip.hash,
                 lij_core::tier2_sync::DEFAULT_BATCH,
-                8,
+                lij_core::tier2_sync::BATCHES_PER_CALL,   // v264: 5 × 100 blocks (was 8 × 500)
             )
             .await;
             let took = (js_sys::Date::now() - t0) as u64;
-            let (batches, note) = match walked {
-                Ok((b, n)) => {
+            // v264 (S47): a walk that fails part-way no longer withholds what it has read — the
+            // batches before the failure are already saved; the summary goes to the page with the
+            // reason in `sync_error`, and the page paints the balance and rows under "Paused".
+            let mut walk_error: Option<String> = None;
+            match walked {
+                Ok((_b, n)) => {
                     log::info!("[tier2] sync ok: {n} · {took} ms");
-                    view.last_sync = Some(lij_core::tier2_wallet::SyncNote { at_ms: now_ms, ok: true, note: n.clone() });
-                    (b, n)
+                    view.last_sync = Some(lij_core::tier2_wallet::SyncNote { at_ms: now_ms, ok: true, note: n });
                 }
                 Err(e) => {
-                    let msg = e.to_string();
+                    let msg = e.to_string().trim_start_matches("Network error: ").to_string();
                     log::warn!("[tier2] sync failed: {msg} · {took} ms");
                     view.last_sync = Some(lij_core::tier2_wallet::SyncNote { at_ms: now_ms, ok: false, note: msg.clone() });
                     let _ = lij_core::tier2_wallet::save_view(storage.as_ref(), &view);
-                    return Err(JsValue::from_str(&format!("tier2 sync: {msg}")));
+                    walk_error = Some(msg);
                 }
             };
-            let _ = (batches, note);
 
             // v257: the widen rule — a coin within NET_WIDEN_MARGIN of the net's far edge on any
             // branch means blocks already read may hold coins past it: widen and rebuild.
@@ -924,9 +930,10 @@ impl LijWalletHandle {
             let json = json.replacen(
                 '{',
                 &format!(
-                    "{{\"view_dupes\":{},\"conflicts\":{},",
+                    "{{\"view_dupes\":{},\"conflicts\":{},\"sync_error\":{},",
                     view_dupes,
-                    conflicts.len()
+                    conflicts.len(),
+                    serde_json::to_string(&walk_error).unwrap_or_else(|_| "null".into())   // v264
                 ),
                 1,
             );
@@ -1310,7 +1317,19 @@ impl LijWalletHandle {
             let view = lij_core::tier2_wallet::load_view(storage.as_ref())
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
             let pending = lij_core::tier2_wallet::load_pending(storage.as_ref());
-            let scripts = lij_core::tier2::WalletScripts::build_sliding(
+            let short = txid.get(..12).unwrap_or(&txid).to_string();
+            let tx = match independent.fetch_tx(&txid).await {
+                Ok(t) => t,
+                Err(e) => {
+                    // v265 (S47, DP): every step of the recover-close watch is on the tape
+                    log::warn!("[recover-watch] closing tx {short}…: not at the independent sources yet ({e})");
+                    return Err(JsValue::from_str(&e.to_string()));
+                }
+            };
+            // v265 (S47, DP): search the walk's fixed net first (every branch, 0..2,500 — the same
+            // addresses the walk watches, cached), then the old sliding window above the frontier.
+            let fixed = t2_scripts(&root_key, network, view.net_width.max(lij_core::tier2_wallet::NET_WIDTH)).await?;
+            let sliding = lij_core::tier2::WalletScripts::build_sliding(
                 &root_key,
                 network,
                 view.net_width.max(lij_core::tier2_wallet::NET_WIDTH),
@@ -1320,21 +1339,19 @@ impl LijWalletHandle {
                 lij_core::tier2_wallet::next_index_for_chain(&view, &pending, lij_core::tier2::CHAIN_LEGACY),
             )
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-            let tx = independent
-                .fetch_tx(&txid)
-                .await
-                .map_err(|e| JsValue::from_str(&e.to_string()))?;
             for (i, v) in tx.vouts.iter().enumerate() {
                 let bytes = match hex::decode(&v.scriptpubkey) { Ok(b) => b, Err(_) => continue };
                 let spk = bitcoin::ScriptBuf::from_bytes(bytes);
-                if scripts.owner_of(&spk).is_some() {
+                if let Some((chain, index)) = fixed.owner_of(&spk).or_else(|| sliding.owner_of(&spk)) {
                     let addr = bitcoin::Address::from_script(&spk, network)
                         .map(|a| a.to_string())
                         .unwrap_or_default();
+                    log::info!("[recover-watch] closing tx {short}…: our output #{i}, {} sats (chain {chain}, index {index})", v.value);
                     return Ok(JsValue::from_str(&format!(
                         r#"{{"found":true,"address":"{}","vout":{},"value_sats":{}}}"#, addr, i, v.value)));
                 }
             }
+            log::warn!("[recover-watch] closing tx {short}…: no output pays this wallet ({} outputs checked against {} addresses per branch)", tx.vouts.len(), view.net_width.max(lij_core::tier2_wallet::NET_WIDTH));
             Ok(JsValue::from_str(r#"{"found":false}"#))
         })
     }
@@ -2741,6 +2758,16 @@ impl LijWalletHandle {
     /// payment_hash appears here — an authoritative claim signal that replaces
     /// the balance-delta heuristic. See node::claimed_payments_json.
     #[wasm_bindgen]
+    /// v267: self-funded opens whose funding tx could not be built this session (see
+    /// node::open_failures_json). try_lock — the page asks again on WALLET_BUSY.
+    pub fn open_failures_json(&self) -> Result<String, JsValue> {
+        let wallet = match self.inner.try_lock() {
+            Ok(w) => w,
+            Err(_) => return Err(JsValue::from_str("WALLET_BUSY")),
+        };
+        Ok(wallet.node().open_failures_json())
+    }
+
     pub fn claimed_payments_json(&self) -> Result<String, JsValue> {
         let wallet = match self.inner.try_lock() {
             Ok(w) => w,
@@ -3785,10 +3812,18 @@ pub mod ws_transport {
 // Step 8a: WasmEsploraHttp — real EsploraHttp implementation using web_sys::fetch
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub struct WasmEsploraHttp;
+pub struct WasmEsploraHttp {
+    /// v264: per-client request limit — 5 s for the independent sources, 60 s for the
+    /// on-chain walk against the block-filter server.
+    timeout_secs: u64,
+    /// v264: the walk's client names itself in its errors ("block-filter server: …").
+    filter_walk: bool,
+}
 
 impl WasmEsploraHttp {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self { Self { timeout_secs: lij_core::independent::REQUEST_TIMEOUT_SECS, filter_walk: false } }
+    /// v264 (S47, DP's #20 run: "timeout after 5s" on every 501-filter batch): the walk's client.
+    pub fn for_filter_walk() -> Self { Self { timeout_secs: lij_core::tier2_sync::WALK_TIMEOUT_SECS, filter_walk: true } }
 }
 
 impl lij_core::independent::EsploraHttp for WasmEsploraHttp {
@@ -3803,16 +3838,21 @@ impl lij_core::independent::EsploraHttp for WasmEsploraHttp {
             // browser gave up. Race the fetch against a 5 s delay; on timeout
             // the fetch future is dropped and the endpoint records a failure.
             use futures::future::{select, Either};
-            let timeout = wasm_timer::Delay::new(std::time::Duration::from_secs(
-                lij_core::independent::REQUEST_TIMEOUT_SECS,
-            ));
+            let secs = self.timeout_secs;
+            let timeout = wasm_timer::Delay::new(std::time::Duration::from_secs(secs));
+            let walk = self.filter_walk;
+            // v264: the walk's errors name the block-filter server (the "LSP error:" label was wrong there)
+            let fail = |why: String| {
+                if walk {
+                    lij_core::error::LijError::Network(format!("block-filter server: {why} ({})", url.splitn(4, '/').nth(3).map(|p| format!("/{p}")).unwrap_or_default()))
+                } else {
+                    lij_core::error::LijError::Lsp(format!("WasmEsploraHttp GET {url}: {why}"))
+                }
+            };
             match select(Box::pin(fetch::get_with_status(url)), Box::pin(timeout)).await {
                 Either::Left((Ok((status, body)), _)) => Ok(lij_core::independent::HttpResponse { status, body }),
-                Either::Left((Err(e), _)) => Err(lij_core::error::LijError::Lsp(format!("WasmEsploraHttp GET {url}: {e}"))),
-                Either::Right((_, _)) => Err(lij_core::error::LijError::Lsp(format!(
-                    "WasmEsploraHttp GET {url}: timeout after {}s",
-                    lij_core::independent::REQUEST_TIMEOUT_SECS
-                ))),
+                Either::Left((Err(e), _)) => Err(fail(format!("{e}"))),
+                Either::Right((_, _)) => Err(fail(format!("no answer within {secs} s"))),
             }
         })
     }

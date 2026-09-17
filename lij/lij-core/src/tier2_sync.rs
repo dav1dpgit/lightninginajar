@@ -37,7 +37,14 @@ use crate::{
 
 /// Heights fetched per round. The endpoint caps at 2000; 500 keeps each
 /// response modest for a PWA.
-pub const DEFAULT_BATCH: u32 = 500;
+/// v264 (S47, DP's #20 run): 100 blocks per request (was 500). A 501-filter reply is ~18.8 MB
+/// (DP's timing from the UM890); a phone on mobile data could not pull it inside the old 5 s cap.
+pub const DEFAULT_BATCH: u32 = 100;
+/// v264: batches per sync call (500 blocks) — the face gets a summary every ~500 blocks.
+pub const BATCHES_PER_CALL: u32 = 5;
+/// v264: the walk's own request limit (headers, filters, blocks). The 5 s REQUEST_TIMEOUT_SECS
+/// stays for the independent sources' quick height checks.
+pub const WALK_TIMEOUT_SECS: u64 = 60;
 
 // ---- endpoint response types -------------------------------------------------
 

@@ -62,6 +62,7 @@ export const lijwallethandle_note_foreground: (a: number) => void;
 export const lijwallethandle_onchain_history: (a: number) => any;
 export const lijwallethandle_onchain_summary: (a: number) => any;
 export const lijwallethandle_open_channel: (a: number, b: bigint) => any;
+export const lijwallethandle_open_failures_json: (a: number) => [number, number, number, number];
 export const lijwallethandle_open_lsp_channel: (a: number, b: bigint, c: number) => any;
 export const lijwallethandle_outstanding_close_attempts: (a: number) => [number, number, number, number];
 export const lijwallethandle_peek_channel_index: (a: number) => [number, number, number];
@@ -113,8 +114,8 @@ export const rustsecp256k1_v0_10_0_default_error_callback_fn: (a: number, b: num
 export const wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
 export const wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
 export const wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a: (a: number, b: number, c: any) => void;
-export const wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_107: (a: number, b: number, c: any) => void;
 export const wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_108: (a: number, b: number, c: any) => void;
+export const wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_109: (a: number, b: number, c: any) => void;
 export const wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

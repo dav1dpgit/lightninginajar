@@ -133,10 +133,6 @@ export class LijWalletHandle {
         }
     }
     /**
-     * v206: payments CLAIMED this session, as `[{"hash":"<hex>","sats":N}]`.
-     * The frontend ledger completes a pending receive only when its
-     * payment_hash appears here — an authoritative claim signal that replaces
-     * the balance-delta heuristic. See node::claimed_payments_json.
      * @returns {string}
      */
     claimed_payments_json() {
@@ -989,6 +985,33 @@ export class LijWalletHandle {
     open_channel(inbound_sats) {
         const ret = wasm.lijwallethandle_open_channel(this.__wbg_ptr, inbound_sats);
         return ret;
+    }
+    /**
+     * v206: payments CLAIMED this session, as `[{"hash":"<hex>","sats":N}]`.
+     * The frontend ledger completes a pending receive only when its
+     * payment_hash appears here — an authoritative claim signal that replaces
+     * the balance-delta heuristic. See node::claimed_payments_json.
+     * v267: self-funded opens whose funding tx could not be built this session (see
+     * node::open_failures_json). try_lock — the page asks again on WALLET_BUSY.
+     * @returns {string}
+     */
+    open_failures_json() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_open_failures_json(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
     }
     /**
      * Open an OUTBOUND channel to the active LSP, funded from on-chain balance.
@@ -2347,12 +2370,12 @@ function __wbg_get_imports() {
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("ErrorEvent")], shim_idx: 7, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_107);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_108);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 7, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_108);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_109);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
@@ -2394,12 +2417,12 @@ function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_107(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_107(arg0, arg1, arg2);
-}
-
 function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_108(arg0, arg1, arg2) {
     wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_108(arg0, arg1, arg2);
+}
+
+function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_109(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_109(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed(arg0, arg1, arg2) {

@@ -67,6 +67,12 @@ pub const REQUEST_TIMEOUT_SECS: u64 = 5;
 
 /// Number of consecutive failures before an endpoint is demoted to "down".
 pub const MAX_CONSECUTIVE_FAILURES: u32 = 3;
+/// v266 (S47, DP: after a long phone sleep the quorum sat at 0/4 until a restart): a demoted
+/// endpoint is asked again once this long has passed since its last failure. Before v266 a
+/// demoted endpoint was never asked again (query_all used healthy_urls() only), so the
+/// "back to true after one success" rule could never fire — once every endpoint was demoted
+/// (a sleeping phone fails every request), nothing could ever reinstate one.
+pub const DEMOTED_RETRY_MS: u64 = 60_000;
 
 /// Default endpoint count when not user-configured.
 ///
@@ -306,6 +312,8 @@ struct EndpointHealth {
     /// Step 3.6 (F6): rolling window of recent successful-query latencies
     /// in milliseconds. Newest at the back; capped at LATENCY_SAMPLE_COUNT.
     latency_samples: VecDeque<u64>,
+    /// v266: wall-clock ms of the last failure (0 = none) — spaces the re-asks of a demoted endpoint.
+    last_failure_ms: u64,
 }
 
 impl EndpointHealth {
@@ -316,6 +324,7 @@ impl EndpointHealth {
             is_healthy: true,
             probed: false,
             latency_samples: VecDeque::with_capacity(LATENCY_SAMPLE_COUNT),
+            last_failure_ms: 0,
         }
     }
 
@@ -331,6 +340,7 @@ impl EndpointHealth {
     fn record_failure(&mut self) {
         self.consecutive_failures += 1;
         self.probed = true;
+        self.last_failure_ms = current_time_ms();   // v266
         if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES && self.is_healthy {
             log::warn!(
                 "independent: endpoint {} demoted (down) after {} failures",
@@ -614,15 +624,21 @@ impl IndependentClient {
         }
     }
 
-    /// Get healthy endpoint URLs as a snapshot.
-    fn healthy_urls(&self) -> Vec<String> {
-        self.endpoints
-            .lock()
-            .unwrap()
+    /// v266 (S47): the endpoints a round asks — every healthy one, plus every demoted one whose
+    /// last failure is at least DEMOTED_RETRY_MS old; and if that leaves none (every endpoint
+    /// demoted just now), all of them. One success reinstates an endpoint (record_success).
+    fn urls_to_ask(&self) -> Vec<String> {
+        let now = current_time_ms();
+        let eps = self.endpoints.lock().unwrap();
+        let mut urls: Vec<String> = eps
             .iter()
-            .filter(|e| e.is_healthy)
+            .filter(|e| e.is_healthy || now.saturating_sub(e.last_failure_ms) >= DEMOTED_RETRY_MS)
             .map(|e| e.url.clone())
-            .collect()
+            .collect();
+        if urls.is_empty() {
+            urls = eps.iter().map(|e| e.url.clone()).collect();
+        }
+        urls
     }
 
     /// Query all healthy endpoints in parallel. Returns Vec<(url, result)>.
@@ -649,7 +665,7 @@ impl IndependentClient {
         C: FnMut(&str, &LijResult<T>),
     {
         use futures::stream::{FuturesUnordered, StreamExt};
-        let urls = self.healthy_urls();
+        let urls = self.urls_to_ask();   // v266: demoted endpoints are asked again (was healthy_urls())
         let mut results = Vec::with_capacity(urls.len());
         let mut pending: FuturesUnordered<_> = urls
             .iter()
@@ -1142,7 +1158,7 @@ impl IndependentClient {
     }
 
     async fn broadcast_to_quorum(&self, raw_tx: &[u8]) -> LijResult<()> {
-        let mut urls = self.healthy_urls();
+        let mut urls = self.urls_to_ask();   // v266: never empty while endpoints exist
         if urls.is_empty() {
             return Err(LijError::Lsp("no healthy endpoints for broadcast".into()));
         }
@@ -1419,6 +1435,55 @@ mod tests {
         // a, b, d still healthy
         let healthy = client.healthy_count();
         assert_eq!(healthy, 3);
+    }
+
+    /// v266: every endpoint demoted (a sleeping phone) — the next round asks them all again,
+    /// and the answers reinstate them. Before v266 nothing was asked and the count stayed 0.
+    #[tokio::test]
+    async fn all_demoted_are_asked_again_and_reinstated() {
+        let mock = Arc::new(MockHttp::new());
+        for _ in 0..3 {
+            for ep in ["a.example", "b.example", "c.example", "d.example"] {
+                mock.add_response(ep, Err(LijError::Lsp("network".into())));
+            }
+        }
+        let client = IndependentClient::new(mock.clone(), four_endpoints());
+        for _ in 0..3 {
+            let _ = client.fetch_tip_height().await;
+        }
+        assert_eq!(client.healthy_count(), 0);
+        assert!(client.endpoint_status().iter().all(|e| !e.1), "all four demoted");
+        for ep in ["a.example", "b.example", "c.example", "d.example"] {
+            mock.add_response(ep, ok_body("880300"));
+        }
+        let height = client.fetch_tip_height().await.unwrap();
+        assert_eq!(height, 880_300);
+        assert_eq!(client.healthy_count(), 4);
+    }
+
+    /// v266: one endpoint demoted while others are healthy — it is not asked again until
+    /// DEMOTED_RETRY_MS has passed since its last failure (its queued answer stays unused).
+    #[tokio::test]
+    async fn demoted_endpoint_waits_for_its_retry_time() {
+        let mock = Arc::new(MockHttp::new());
+        for _ in 0..3 {
+            mock.add_response("a.example", ok_body("880247"));
+            mock.add_response("b.example", ok_body("880247"));
+            mock.add_response("c.example", Err(LijError::Lsp("network".into())));
+            mock.add_response("d.example", ok_body("880247"));
+        }
+        let client = IndependentClient::new(mock.clone(), four_endpoints());
+        for _ in 0..3 {
+            let _ = client.fetch_tip_height().await;
+        }
+        mock.add_response("a.example", ok_body("880248"));
+        mock.add_response("b.example", ok_body("880248"));
+        mock.add_response("c.example", ok_body("880248"));
+        mock.add_response("d.example", ok_body("880248"));
+        let _ = client.fetch_tip_height().await;
+        let c = client.endpoint_status().into_iter().find(|e| e.0.contains("c.example")).unwrap();
+        assert!(!c.1, "c stays demoted inside its retry time");
+        assert_eq!(client.healthy_count(), 3);
     }
 
     #[tokio::test]

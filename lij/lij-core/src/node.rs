@@ -433,6 +433,11 @@ pub struct LijNode {
     /// unsound balance-delta heuristic that could fabricate "received" rows from
     /// a resync balance blip. In-memory / per-session by design.
     claimed_payments: Arc<Mutex<std::collections::HashMap<String, u64>>>,
+    /// v267 (S47, DP): self-funded opens whose funding tx could not be built this session —
+    /// `(temp channel id hex, channel value sats, reason, ms)`. The page's open-retry loop reads
+    /// them to stop retrying an open that will fail the same way again, and to clear its
+    /// "moving to Lightning" marks. In-memory / per-session, like claimed_payments.
+    open_failures: Arc<Mutex<Vec<(String, u64, String, u64)>>>,
     #[allow(deprecated)]
     closed_channel_watcher: crate::closed_channel_watcher::ClosedChannelWatcher,
     network_graph: LijNetworkGraph,
@@ -678,6 +683,7 @@ impl LijNode {
             funding_spend_sightings: Arc::new(Mutex::new(std::collections::HashMap::new())),
             payment_outcomes: Arc::new(Mutex::new(std::collections::HashMap::new())),
             claimed_payments: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            open_failures: Arc::new(Mutex::new(Vec::new())),
             #[allow(deprecated)]
             closed_channel_watcher: crate::closed_channel_watcher::ClosedChannelWatcher::new(),
             network_graph, scorer, storage,
@@ -1023,6 +1029,7 @@ impl LijNode {
             funding_spend_sightings: Arc::new(Mutex::new(std::collections::HashMap::new())),
             payment_outcomes: Arc::new(Mutex::new(std::collections::HashMap::new())),
             claimed_payments: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            open_failures: Arc::new(Mutex::new(Vec::new())),
             #[allow(deprecated)]
             closed_channel_watcher: crate::closed_channel_watcher::ClosedChannelWatcher::new(),
             network_graph,
@@ -2099,8 +2106,27 @@ impl LijNode {
                             }
                         }
                         Err(e) => {
-                            // Leave the temp channel to time out; surfaced via logs.
+                            // v267 (S47, DP's tape: "insufficient funds … have 81,652, need 81,793"): the
+                            // half-opened channel used to be left to LDK's unfunded-channel timeout; until
+                            // then get_channels listed it and the page painted "moving to Lightning" for an
+                            // open that had already failed. Close it now (no funds moved, no funding txo, so
+                            // the ChannelClosed handler files no close) and record the failure for the page.
                             log::error!("Failed to build funding tx for outbound channel: {e}");
+                            let reason = e.to_string();
+                            if let Some(cm) = self.channel_manager.as_ref() {
+                                match cm.force_close_without_broadcasting_txn(
+                                    &temporary_channel_id,
+                                    &counterparty_node_id,
+                                    format!("LiJ: funding tx not built ({reason})"),
+                                ) {
+                                    Ok(()) => log::info!("unfunded channel {:?} closed after the failed funding build", temporary_channel_id),
+                                    Err(e2) => log::warn!("closing the unfunded channel {:?} failed: {e2:?}", temporary_channel_id),
+                                }
+                            }
+                            if let Ok(mut f) = self.open_failures.lock() {
+                                f.push((hex::encode(temporary_channel_id.0), channel_value_satoshis, reason, current_time_secs() * 1000));
+                                if f.len() > 20 { f.remove(0); }
+                            }
                         }
                     }
                 }
@@ -5822,6 +5848,22 @@ impl LijNode {
                 }
             }
         }
+        format!("[{}]", items.join(","))
+    }
+
+    /// v267: JSON array of self-funded opens whose funding tx could not be built this
+    /// session — `[{"temp_channel_id":"<hex>","channel_value_sats":N,"reason":"…","ts_ms":N}]`.
+    pub fn open_failures_json(&self) -> String {
+        let f = self.open_failures.lock().unwrap();
+        let items: Vec<String> = f
+            .iter()
+            .map(|(id, v, r, t)| {
+                format!(
+                    "{{\"temp_channel_id\":\"{}\",\"channel_value_sats\":{},\"reason\":{},\"ts_ms\":{}}}",
+                    id, v, serde_json::to_string(r).unwrap_or_else(|_| "\"\"".into()), t
+                )
+            })
+            .collect();
         format!("[{}]", items.join(","))
     }
 

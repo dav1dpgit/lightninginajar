@@ -55,12 +55,6 @@ export class LijWalletHandle {
      * observations, with heights). Read-only diagnosis surface.
      */
     chain_events_json(limit: number): string;
-    /**
-     * v206: payments CLAIMED this session, as `[{"hash":"<hex>","sats":N}]`.
-     * The frontend ledger completes a pending receive only when its
-     * payment_hash appears here — an authoritative claim signal that replaces
-     * the balance-delta heuristic. See node::claimed_payments_json.
-     */
     claimed_payments_json(): string;
     /**
      * Initiate a cooperative close. Synchronous from JS perspective —
@@ -339,6 +333,15 @@ export class LijWalletHandle {
      * Holding the lock across an `.await` deadlocks with background_tick.
      */
     open_channel(inbound_sats: bigint): Promise<any>;
+    /**
+     * v206: payments CLAIMED this session, as `[{"hash":"<hex>","sats":N}]`.
+     * The frontend ledger completes a pending receive only when its
+     * payment_hash appears here — an authoritative claim signal that replaces
+     * the balance-delta heuristic. See node::claimed_payments_json.
+     * v267: self-funded opens whose funding tx could not be built this session (see
+     * node::open_failures_json). try_lock — the page asks again on WALLET_BUSY.
+     */
+    open_failures_json(): string;
     /**
      * Open an OUTBOUND channel to the active LSP, funded from on-chain balance.
      * `amount_sats` is the channel capacity; `fee_rate_sat_per_vb` is the
@@ -756,6 +759,7 @@ export interface InitOutput {
     readonly lijwallethandle_onchain_history: (a: number) => any;
     readonly lijwallethandle_onchain_summary: (a: number) => any;
     readonly lijwallethandle_open_channel: (a: number, b: bigint) => any;
+    readonly lijwallethandle_open_failures_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_open_lsp_channel: (a: number, b: bigint, c: number) => any;
     readonly lijwallethandle_outstanding_close_attempts: (a: number) => [number, number, number, number];
     readonly lijwallethandle_peek_channel_index: (a: number) => [number, number, number];
@@ -807,8 +811,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_107: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_108: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_109: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
