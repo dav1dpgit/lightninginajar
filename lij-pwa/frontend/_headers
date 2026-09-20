@@ -40,7 +40,7 @@
 /wallet/*
   Cache-Control: no-cache, must-revalidate
   ! Content-Security-Policy
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'sha256-LnXk2NDkjDbLUJu6m+bUz8bDdCXj82BC29o/XT9guHE=' 'sha256-AK1Uoz8oCBeqnRu0PwCWF7zf/JvsilNTyw6kl/R3vII=' 'sha256-/l8udrL4tIYI9jmMOoLnQGlNPU6kfpCDHJiJvfmk9as=' 'sha256-dht8MR+OlONmRlKZY+swPcVWLJiMgac/DrM828nMvbs=' 'sha256-6cfHuVRBq5zxHrMV1SeQr6usF19Xw6KC4L8zKxuceq4=' 'sha256-nVUSGDF5+A8cVhEyfXg0s5uWP0pCptEG0PC5eB7UQ1A=' 'sha256-aizVpVQr8GkrlUW2q2R8Cii6QaCEotd/JDMJSQDUSPY=' 'sha256-VktM/mQQkRt1KlTN/CD4xQjHJstcE4p9iqyELcBwsmQ=' 'sha256-TYJG2iIPFFFqHBmMSVk0FlHqjfc9U6Zbr2u4JiyovyY=' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https: wss:; worker-src 'self' blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'sha256-LnXk2NDkjDbLUJu6m+bUz8bDdCXj82BC29o/XT9guHE=' 'sha256-AK1Uoz8oCBeqnRu0PwCWF7zf/JvsilNTyw6kl/R3vII=' 'sha256-HPwUtG5zs/6zyQjoTXrQDySMrW/ynKvYjMjkIv/XLEc=' 'sha256-dht8MR+OlONmRlKZY+swPcVWLJiMgac/DrM828nMvbs=' 'sha256-6cfHuVRBq5zxHrMV1SeQr6usF19Xw6KC4L8zKxuceq4=' 'sha256-nVUSGDF5+A8cVhEyfXg0s5uWP0pCptEG0PC5eB7UQ1A=' 'sha256-pQW2z474g4TJBqQuuMbsrntM1enUCtiuWUiiUyKJOYs=' 'sha256-VktM/mQQkRt1KlTN/CD4xQjHJstcE4p9iqyELcBwsmQ=' 'sha256-TYJG2iIPFFFqHBmMSVk0FlHqjfc9U6Zbr2u4JiyovyY=' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https: wss:; worker-src 'self' blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'
 
 /index.html
   Cache-Control: no-cache, must-revalidate

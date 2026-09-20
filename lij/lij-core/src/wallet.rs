@@ -514,6 +514,59 @@ impl LijWallet {
         Self::inject_state_blob(self.node.storage_ref(), self.node.root_key_ref(), blob)
     }
 
+    /// v268 (S48, DP — the words screen says what it found BEFORE anything is written):
+    /// derive the backup key from the words, ask the cloud copy service with the same
+    /// signed challenge the restore uses, open the copy and count its channels. Nothing is
+    /// written. Ok(Some((n, version))) = a copy with n channel monitors; Ok(None) = the
+    /// service looked and holds none; Err = no answer (no connection, service down). The page
+    /// must never read an Err as "none": a fresh node written on that reading makes the copy
+    /// be skipped for good on this device (local state present -> no pull).
+    pub async fn backup_probe(mnemonic_str: &str, config: &WalletConfig) -> LijResult<Option<(u32, u64)>> {
+        let network = parse_bitcoin_network(&config.network)?;
+        let mnemonic: bip39::Mnemonic = mnemonic_str
+            .parse()
+            .map_err(|e| LijError::Key(format!("Invalid mnemonic: {e}")))?;
+        let root_key = RootKey::from_mnemonic(&mnemonic, network)?;
+        let backup_client = KvBackupClient::new(StorageConfig {
+            worker_url: config.worker_url.clone(),
+            auth_token: config.backup_auth_token.clone(),
+        });
+        let portable_pubkey = root_key.portable_pubkey_hex()?;
+        match backup_client.pull(&portable_pubkey, &root_key).await? {
+            Some(blob) => Ok(Some((Self::count_state_blob(&root_key, &blob)?, blob.version))),
+            None => Ok(None),
+        }
+    }
+
+    /// v268 (S48, DP): a device backup file opened with the words only — no node built, no
+    /// network. The same decrypt+inject the cloud restore and the in-wallet import use; a
+    /// wrong-seed file fails decryption. Returns the number of channel monitors written; the
+    /// page reloads after and the next boot reads the state.
+    pub fn import_backup_file(
+        mnemonic_str: &str,
+        config: &WalletConfig,
+        storage: &dyn LijStorage,
+        blob: &StateBlob,
+    ) -> LijResult<u32> {
+        let network = parse_bitcoin_network(&config.network)?;
+        let mnemonic: bip39::Mnemonic = mnemonic_str
+            .parse()
+            .map_err(|e| LijError::Key(format!("Invalid mnemonic: {e}")))?;
+        let root_key = RootKey::from_mnemonic(&mnemonic, network)?;
+        Self::inject_state_blob(storage, &root_key, blob)
+    }
+
+    /// v268: open a blob and count its channel monitors; writes nothing.
+    fn count_state_blob(root_key: &RootKey, blob: &StateBlob) -> LijResult<u32> {
+        let enc_key = root_key.encryption_key();
+        let plaintext = crate::persist::decrypt(&enc_key, &blob.encrypted_data)
+            .map_err(|e| LijError::Backup(format!("backup decrypt: {e}")))?;
+        let bundle: std::collections::BTreeMap<String, String> =
+            serde_json::from_slice(&plaintext)
+                .map_err(|e| LijError::Backup(format!("backup bundle parse: {e}")))?;
+        Ok(bundle.keys().filter(|k| k.starts_with(crate::persist::MONITOR_KEY_PREFIX)).count() as u32)
+    }
+
     fn inject_state_blob(
         storage: &dyn LijStorage,
         root_key: &RootKey,

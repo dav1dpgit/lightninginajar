@@ -96,7 +96,8 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v267".to_string()  // v267 (S47, DP GO): a self-funded open whose funding tx cannot be built is closed at once (force_close_without_broadcasting_txn on the temp channel; no funds moved, no close record) instead of dangling until LDK's unfunded timeout — and the failure (temp id, value, reason, time) is kept for the page (open_failures_json), so the retry loop stops and the "moving to Lightning" marks clear.
+    "phase11-v268".to_string()  // v268 (S48, DP): the words screen asks the cloud copy service BEFORE anything is written (backup_probe: found + channel count / none / no answer), and a device backup file can be loaded with the words alone (import_backup_file: no node, no network) so a phone with no connection can still reach its offline room and escape kit.
+    // v267 (S47, DP GO): a self-funded open whose funding tx cannot be built is closed at once (force_close_without_broadcasting_txn on the temp channel; no funds moved, no close record) instead of dangling until LDK's unfunded timeout — and the failure (temp id, value, reason, time) is kept for the page (open_failures_json), so the retry loop stops and the "moving to Lightning" marks clear.
     // v266 (S47, DP: quorum stuck at 0/4 after a long phone sleep until a restart): a demoted independent endpoint was never asked again (rounds asked healthy endpoints only), so once all four were demoted nothing could reinstate one. Rounds now also ask demoted endpoints 60 s after their last failure, and all of them when none is healthy; broadcasts use the same list.
     // v265 (S47, DP GO): identify_own_output (the recover-close watch) searches the walk's 2,500-address net first, then the old window above the frontier; each outcome is one [recover-watch] line on the tape (not at the sources yet / our output #n, sats, chain, index / no output pays this wallet).
     // v264 (S47, DP's #20 run — the tape read "timeout after 5s" on every 501-filter batch; one batch = 18.8 MB): the walk's requests get their own 60 s limit (the 5 s stays for the independent height checks); 100 blocks per request, 5 per call; a call that fails part-way still returns the summary (balance + rows read so far) with `sync_error`; the walk's errors say "block-filter server:" instead of "LSP error:".
@@ -523,6 +524,44 @@ impl LijWalletHandle {
 
             Ok(JsValue::from_str(&result_json))
         })
+    }
+
+    /// v268 (S48, DP): the words screen's question, asked BEFORE anything is written — see
+    /// LijWallet::backup_probe. Resolves to {"found":true,"channels":n,"version":v} or
+    /// {"found":false}; REJECTS with the reason when the service gave no answer (no
+    /// connection, service down) — the page treats that as a third outcome, never as "none".
+    #[wasm_bindgen]
+    pub fn backup_probe(mnemonic: &str, config_json: &str) -> js_sys::Promise {
+        let mnemonic = mnemonic.to_string();
+        let config_json = config_json.to_string();
+        future_to_promise(async move {
+            let config: WalletConfig = serde_json::from_str(&config_json)
+                .map_err(|e| JsValue::from_str(&format!("Invalid config: {e}")))?;
+            let r = LijWallet::backup_probe(&mnemonic, &config)
+                .await
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let json = match r {
+                Some((channels, version)) => format!("{{\"found\":true,\"channels\":{channels},\"version\":{version}}}"),
+                None => "{\"found\":false}".to_string(),
+            };
+            Ok(JsValue::from_str(&json))
+        })
+    }
+
+    /// v268 (S48, DP): a device backup file opened with the words only — no node built, no
+    /// network — so the restore flow can take a file before any state exists on the device,
+    /// and a phone with no connection can still reach its offline room. Writes the file's
+    /// channel state; the page reloads after. Returns {"channels":n}.
+    #[wasm_bindgen]
+    pub fn import_backup_file(mnemonic: &str, config_json: &str, blob_json: &str) -> Result<String, JsValue> {
+        let config: WalletConfig = serde_json::from_str(config_json)
+            .map_err(|e| JsValue::from_str(&format!("Invalid config: {e}")))?;
+        let blob: lij_core::storage::StateBlob = serde_json::from_str(blob_json)
+            .map_err(|_e| JsValue::from_str("Not a LiJ backup file."))?;
+        let storage = LocalStorage;
+        let n = LijWallet::import_backup_file(mnemonic, &config, &storage, &blob)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(format!("{{\"channels\":{n}}}"))
     }
 
     #[wasm_bindgen]

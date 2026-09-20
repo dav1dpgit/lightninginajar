@@ -41,6 +41,13 @@ export class LijWalletHandle {
      */
     backup_now(): Promise<any>;
     /**
+     * v268 (S48, DP): the words screen's question, asked BEFORE anything is written — see
+     * LijWallet::backup_probe. Resolves to {"found":true,"channels":n,"version":v} or
+     * {"found":false}; REJECTS with the reason when the service gave no answer (no
+     * connection, service down) — the page treats that as a third outcome, never as "none".
+     */
+    static backup_probe(mnemonic: string, config_json: string): Promise<any>;
+    /**
      * v166 (#29-4b): RBF-replace one of OUR pending on-chain sends at a
      * higher fee. Same inputs, same destination; the delta comes out of the
      * change. The engine enforces BIP-125 economics and answers with
@@ -213,6 +220,13 @@ export class LijWalletHandle {
      * on the reboot.
      */
     import_backup_blob(blob_json: string): string;
+    /**
+     * v268 (S48, DP): a device backup file opened with the words only — no node built, no
+     * network — so the restore flow can take a file before any state exists on the device,
+     * and a phone with no connection can still reach its offline room. Writes the file's
+     * channel state; the page reloads after. Returns {"channels":n}.
+     */
+    static import_backup_file(mnemonic: string, config_json: string, blob_json: string): string;
     /**
      * Session 23 (1b engine half): version of the last vault push, read
      * from KEY_BACKUP_VERSION (u64 BE). Returns 0 when no push has ever
@@ -711,6 +725,7 @@ export interface InitOutput {
     readonly lijwallethandle_background_tick: (a: number, b: bigint) => [number, number];
     readonly lijwallethandle_backup: (a: number) => any;
     readonly lijwallethandle_backup_now: (a: number) => any;
+    readonly lijwallethandle_backup_probe: (a: number, b: number, c: number, d: number) => any;
     readonly lijwallethandle_bump_onchain_send: (a: number, b: number, c: number, d: number) => any;
     readonly lijwallethandle_chain_events_json: (a: number, b: number) => [number, number, number, number];
     readonly lijwallethandle_claimed_payments_json: (a: number) => [number, number, number, number];
@@ -739,6 +754,7 @@ export interface InitOutput {
     readonly lijwallethandle_get_fee_rates: (a: number) => [number, number, number, number];
     readonly lijwallethandle_identify_own_output: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_import_backup_blob: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_import_backup_file: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly lijwallethandle_last_backup_version: (a: number) => [number, number, number];
     readonly lijwallethandle_list_closed_channels: (a: number) => [number, number, number, number];
     readonly lijwallethandle_list_lsps: (a: number) => any;
@@ -811,8 +827,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_108: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_109: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_110: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_111: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
