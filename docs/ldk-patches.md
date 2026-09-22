@@ -1,4 +1,4 @@
-# LDK patches — the full diff against upstream `lightning` 0.2.6
+# LDK patches — the full diff against upstream `lightning` 0.2.6 (refreshed 2026-09-21, engine v272)
 
 The engine (`lij/lij-core`, `lij/lij-wasm`) builds against `lij/patches/lightning`, a copy of the `lightning` crate at 0.2.6 with local changes (`lij/Cargo.toml`: `lightning = { path = "patches/lightning" }`). This document is the complete diff, hunk by hunk, with the purpose of each. It supersedes the 0.0.123 edition of this file (engine ≤ v240); the engine moved to 0.2.6 at v241 (2026-09-12) and every hunk below is the re-port of a 0.0.123 hunk except one, the re-exposed `force_close_without_broadcasting_txn` (removed upstream in 0.1). To reproduce the diff yourself:
 
@@ -17,6 +17,7 @@ diff -u  lightning-0.2.6/Cargo.toml lij/patches/lightning/Cargo.toml
 | `src/chain/chaininterface.rs` | 12 | 0 |
 | `src/chain/channelmonitor.rs` | 106 | 0 |
 | `src/ln/channel.rs` | 11 | 4 |
+| `src/ln/channel_state.rs` | 10 | 0 |
 | `src/ln/channelmanager.rs` | 32 | 6 |
 | `src/ln/outbound_payment.rs` | 2 | 2 |
 | `src/ln/peer_handler.rs` | 1 | 1 |
@@ -26,14 +27,15 @@ diff -u  lightning-0.2.6/Cargo.toml lij/patches/lightning/Cargo.toml
 | `src/offers/refund.rs` | 5 | 5 |
 | `src/onion_message/dns_resolution.rs` | 1 | 1 |
 | `src/routing/gossip.rs` | 10 | 10 |
+| `src/routing/router.rs` | 2 | 1 |
 | `src/util/sweep.rs` | 11 | 0 |
 | `src/util/time.rs` | 50 | 1 |
 | `Cargo.toml` | 4 | 0 |
-| **total, 15 files** | **252** | **37** |
+| **total, 17 files** | **264** | **38** |
 
-Two kinds of change. (a) **Behavioural** — five files: `chain/chaininterface.rs`, `chain/channelmonitor.rs`, `ln/channel.rs`, `ln/channelmanager.rs`, `util/sweep.rs`. Each is read-only or narrows LDK's behaviour toward not broadcasting; none touches signing, key derivation, HTLC handling, routing or gossip. (b) **Wall-clock substitutions** — `SystemTime` / `Instant` do not exist on `wasm32-unknown-unknown`, so every wall-clock call in the crate goes through `util/time.rs` (`lij_now`, `lij_since_epoch`, a browser-clock `Instant`), which reads `js_sys::Date` on wasm32 and the standard clock on every other target. Ten files carry only these substitutions; native builds are unchanged in behaviour. (The 0.0.123 edition had the same two kinds; 0.2.6 calls the clock in more places, which is why the file list grew.)
+Two kinds of change. (a) **Behavioural** — five files: `chain/chaininterface.rs`, `chain/channelmonitor.rs`, `ln/channel.rs`, `ln/channelmanager.rs`, `util/sweep.rs`; plus one **read-only field** (engine v269, 2026-09-21): `ln/channel_state.rs` adds `ChannelDetails::lij_value_to_self_msat`, LDK's own `value_to_self_msat` carried out unchanged (TLV 49, odd, default 0), and `routing/router.rs` sets it to 0 in two test/bench constructors. Each is read-only or narrows LDK's behaviour toward not broadcasting; none touches signing, key derivation, HTLC handling, routing or gossip. (b) **Wall-clock substitutions** — `SystemTime` / `Instant` do not exist on `wasm32-unknown-unknown`, so every wall-clock call in the crate goes through `util/time.rs` (`lij_now`, `lij_since_epoch`, a browser-clock `Instant`), which reads `js_sys::Date` on wasm32 and the standard clock on every other target. Ten files carry only these substitutions; native builds are unchanged in behaviour. (The 0.0.123 edition had the same two kinds; 0.2.6 calls the clock in more places, which is why the file list grew.)
 
-Files NOT touched, for the avoidance of doubt (identical to upstream byte for byte): `ln/onion_utils.rs`, `chain/chainmonitor.rs`, `chain/onchaintx.rs`, `chain/package.rs`, `routing/router.rs`, `sign/mod.rs`, `ln/msgs.rs`, `ln/features.rs`, and every file not listed in the table above.
+Files NOT touched, for the avoidance of doubt (identical to upstream byte for byte): `ln/onion_utils.rs`, `chain/chainmonitor.rs`, `chain/onchaintx.rs`, `chain/package.rs`, `sign/mod.rs`, `ln/msgs.rs`, `ln/features.rs`, and every file not listed in the table above.
 
 Kept deliberately from the 0.0.123 engine (these are in `lij-core`, not in this crate, but a reviewer will look for them): the ChannelMonitor persistence keys are byte-identical to the 0.0.123 ones so restored state finds its monitors; the KeysManager's remote-key derivation stays the pre-0.1 form (LiJ pins `to_remote` to the wallet's own m/84 key itself); inbound splices are rejected at both `UserConfig` sites (`docs/ldk-0.2-splice-readiness.md` lists what must change before that is switched on).
 
@@ -678,6 +680,75 @@ The clock shims. `wasm32-unknown-unknown` has no wall clock: `std::time::SystemT
 +	#[cfg(not(target_arch = "wasm32"))]
 +	{ std::time::SystemTime::UNIX_EPOCH.elapsed() }
 +}
+```
+
+## `src/ln/channel_state.rs`
+
+Engine v269 (2026-09-21, running totals): `ChannelDetails` carries the channel's exact local balance, `lij_value_to_self_msat` — LDK's own `FundingScope::value_to_self_msat`, the figure it reports as `last_local_balance_msat` when a channel closes — so the wallet's Lightning book has one exact number to foot against (the previous approximation, outbound capacity + reserve, undercounts a channel the wallet funded by the funder's commitment-fee buffer). Read-only: an odd TLV (49, default 0) on a struct that nothing in the state machine, persistence or signing reads back.
+
+```diff
+@@ -440,6 +440,13 @@
+ 	pub force_close_spend_delay: Option<u16>,
+ 	/// True if the channel was initiated (and thus funded) by us.
+ 	pub is_outbound: bool,
++	/// LiJ (engine v269, running totals): our side of the channel in millisatoshis, exact —
++	/// LDK's own `value_to_self_msat`: what this node owns on the channel, before the
++	/// commitment fee, the anchors and the reserve are carved out of it, and excluding HTLCs in
++	/// flight in either direction (an outbound HTLC has already left it; an inbound one has not
++	/// yet arrived). `value_to_self + value_to_remote + pending HTLCs = channel_value`. This is the
++	/// figure LDK reports as `last_local_balance_msat` when the channel closes. Read-only.
++	pub lij_value_to_self_msat: u64,
+ 	/// True if the channel is confirmed, channel_ready messages have been exchanged, and the
+ 	/// channel is not currently being shut down. `channel_ready` message exchange implies the
+ 	/// required confirmation count has been reached (and we were connected to the peer at some
+@@ -587,6 +594,7 @@
+ 			confirmations: Some(funding.get_funding_tx_confirmations(best_block_height)),
+ 			force_close_spend_delay: funding.get_counterparty_selected_contest_delay(),
+ 			is_outbound: funding.is_outbound(),
++			lij_value_to_self_msat: funding.get_value_to_self_msat(),
+ 			is_channel_ready: context.is_usable(),
+ 			is_usable: context.is_live(),
+ 			is_announced: context.should_announce(),
+@@ -636,6 +644,7 @@
+ 	(43, pending_inbound_htlcs, optional_vec),
+ 	(45, pending_outbound_htlcs, optional_vec),
+ 	(47, funding_redeem_script, option),
++	(49, lij_value_to_self_msat, (default_value, 0)),
+ 	(_unused, user_channel_id, (static_value,
+ 		_user_channel_id_low.unwrap_or(0) as u128 | ((_user_channel_id_high.unwrap_or(0) as u128) << 64)
+ 	)),
+@@ -731,6 +740,7 @@
+ 			confirmations: Some(73),
+ 			force_close_spend_delay: Some(10),
+ 			is_outbound: true,
++			lij_value_to_self_msat: 0,
+ 			is_channel_ready: false,
+ 			is_usable: true,
+ 			is_announced: false,
+```
+
+## `src/routing/router.rs`
+
+The two test/bench constructors of `ChannelDetails` set the new field to 0; nothing else.
+
+```diff
+@@ -4045,7 +4045,7 @@
+ 			confirmations_required: None,
+ 			confirmations: None,
+ 			force_close_spend_delay: None,
+-			is_outbound: true, is_channel_ready: true,
++			is_outbound: true, lij_value_to_self_msat: 0, is_channel_ready: true,
+ 			is_usable: true, is_announced: true,
+ 			inbound_htlc_minimum_msat: None,
+ 			inbound_htlc_maximum_msat: None,
+@@ -9507,6 +9507,7 @@
+ 			confirmations: None,
+ 			force_close_spend_delay: None,
+ 			is_outbound: true,
++			lij_value_to_self_msat: 0,
+ 			is_channel_ready: true,
+ 			is_usable: true,
+ 			is_announced: true,
 ```
 
 ## `Cargo.toml`

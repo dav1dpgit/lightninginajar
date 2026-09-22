@@ -23,6 +23,11 @@ pub struct PaymentResult {
     pub success: bool,
     pub preimage: Option<String>, // hex-encoded payment preimage on success
     pub fee_sats: Option<u64>,
+    /// v270 (running totals, DP 2026-09-21): the fee actually paid, in millisatoshis — exact.
+    /// fee_sats above is this floored to whole sats, which lost up to 999 msat per send; the
+    /// Lightning book keeps its rows in msat so it foots against owned_msat to the sat.
+    #[serde(default)]
+    pub fee_msat: Option<u64>,
     pub error: Option<String>,
 }
 
@@ -98,6 +103,14 @@ pub struct ChannelInfo {
     /// before anything is sendable. Serde default keeps old JSON readable.
     #[serde(default)]
     pub our_balance_gross_sats: u64,
+    /// v269 (running totals, DP 2026-09-21): our side of the channel in millisatoshis, EXACT —
+    /// LDK's own value_to_self_msat (see the vendored ChannelDetails::lij_value_to_self_msat):
+    /// what this wallet owns on the channel before the commitment fee, anchors and reserve are
+    /// carved out, excluding HTLCs in flight. The Lightning book foots against Σ of this.
+    /// our_balance_gross_sats (outbound capacity + reserve) undercounts a channel WE funded by
+    /// the funder's fee buffer; this does not. Serde default keeps old JSON readable.
+    #[serde(default)]
+    pub owned_msat: u64,
     /// R3 (v174): true while the channel is anywhere in LDK's shutdown
     /// pipeline (ShutdownInitiated → ShutdownComplete). Lets the frontend
     /// distinguish a not-yet-ready OPENING channel (a genuine pending

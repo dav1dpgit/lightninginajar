@@ -199,6 +199,23 @@ pub struct Tier2View {
     /// v256: kind tags by transaction id (channel open / sweep, from the pending list).
     #[serde(default)]
     pub kinds: std::collections::HashMap<String, TxKind>,
+    /// v271 (running totals, DP 2026-09-21): funding txids of every channel this wallet has
+    /// had — the closed-channel log's funding outpoints and the live channels' funding txids,
+    /// noted by the sync at each call and only ever added to. Unlike `kinds` this is NOT
+    /// walk-derived and is NOT cleared by a rebuild: a funding tx this wallet paid for derives
+    /// as ChannelOpen under any walk, because the record of the channel is the node's, not the
+    /// scanner's. (Before v271 the S46 rebuild dropped every pre-rebuild open's tag, so those
+    /// rows read as plain sends and the Lightning book lost its "+moved to Lightning" rows.)
+    #[serde(default)]
+    pub funding_txids: std::collections::HashSet<String>,
+    /// v272: the same record for CLOSES — every closing txid the closed-channel log has ever
+    /// held (plus a live channel's closing txid once its funding spend is sighted), noted at each
+    /// sync, only ever added to, NOT cleared by a rebuild. The walk's close hints are computed
+    /// from the log at walk time; the log does not ride the cloud copy, so on a reloaded phone a
+    /// later rebuild would have tagged the opens (v271's record travels in this view) but not the
+    /// closes. Symmetric records, symmetric rows.
+    #[serde(default)]
+    pub closing_txids: std::collections::HashSet<String>,
     /// v256: close hints by transaction id — true = a close transaction itself, false =
     /// a transaction spending a close's output (a close only when net-incoming).
     #[serde(default)]
@@ -253,8 +270,31 @@ pub const NET_WIDEN_MARGIN: u32 = 100;
 /// v256: blocks re-walked by the daily tail verification.
 pub const TAIL_VERIFY_BLOCKS: u32 = 144;
 
+/// v271: note funding txids from the node's records (closed-channel log + live channels).
+/// Only ever adds; returns true when the set grew (the caller saves the view then).
+pub fn note_funding_txids<I: IntoIterator<Item = String>>(view: &mut Tier2View, txids: I) -> bool {
+    let mut grew = false;
+    for t in txids {
+        if t.is_empty() { continue; }
+        if view.funding_txids.insert(t) { grew = true; }
+    }
+    grew
+}
+
+/// v272: note closing txids from the node's records (closed-channel log + live sightings).
+/// Only ever adds; returns true when the set grew.
+pub fn note_closing_txids<I: IntoIterator<Item = String>>(view: &mut Tier2View, txids: I) -> bool {
+    let mut grew = false;
+    for t in txids {
+        if t.is_empty() { continue; }
+        if view.closing_txids.insert(t) { grew = true; }
+    }
+    grew
+}
+
 /// v256: rebuild the ledger from scratch under the current rules — nothing copied but the
-/// birthday. Coins, spend marks, rows, tags and the head cursor are re-derived by the walk.
+/// birthday (and, v271/v272, the node's funding- and closing-txid records). Coins, spend
+/// marks, rows, tags and the head cursor are re-derived by the walk.
 pub fn rebuild_from_birthday(view: &mut Tier2View, now_ms: u64) {
     view.utxos.clear();
     view.history.clear();
@@ -262,6 +302,7 @@ pub fn rebuild_from_birthday(view: &mut Tier2View, now_ms: u64) {
     view.used_next.clear();
     view.rewalk_at.clear();
     view.kinds.clear();
+    // v271/v272: funding_txids and closing_txids are deliberately NOT cleared — the node's records, not the walk's.
     view.close_hints.clear();
     view.down = None;
     view.pending_spends.clear();
@@ -1101,6 +1142,10 @@ pub fn derive_history(view: &Tier2View) -> Vec<OnchainHistoryEntry> {
             None => match view.close_hints.get(&txid) {
                 Some(true) => TxKind::ChannelClose,
                 Some(false) if delta > 0 => TxKind::ChannelClose,
+                // v271: a funding tx this wallet paid for is a ChannelOpen under any walk (the
+                // node's record, see Tier2View::funding_txids) — net-outgoing only, so a coin
+                // that merely arrived in a funding tx (never ours to fund) is not mislabeled.
+                _ if delta < 0 && view.funding_txids.contains(&txid) => TxKind::ChannelOpen,
                 _ => TxKind::default(),
             },
         };
@@ -1133,7 +1178,14 @@ pub async fn sync_down(
     max_batches: u32,
 ) -> LijResult<(u32, String)> {
     let mut batches = 0u32;
-    let close_txids = crate::closed_channel_log::ClosedChannelLog::closing_txids(storage);
+    // v272: the walk's close hints come from the log ∪ the view's own record (the record is what
+    // survives a rebuild on a reloaded phone, where the log is empty); the log's txids are noted
+    // into the record here so the two never drift apart.
+    let mut close_txids = crate::closed_channel_log::ClosedChannelLog::closing_txids(storage);
+    if note_closing_txids(view, close_txids.iter().cloned()) {
+        save_view(storage, view)?;
+    }
+    close_txids.extend(view.closing_txids.iter().cloned());
     // ── (0) a fresh view: the top is the tip itself ──
     if view.cursor.scanned_to == 0 || view.down.is_none() {
         let flts: crate::tier2_sync::FiltersResp =
@@ -1441,5 +1493,41 @@ mod tests {
             .expect("confirmed funding row");
         assert_eq!(row.kind, TxKind::ChannelOpen, "marker carried to confirmed row");
         assert_eq!(sm2.spendable_sats, 0, "fully spent, no change to us");
+    }
+
+    /// v271: a funding tx whose tag the rebuild dropped derives as ChannelOpen again once the
+    /// node's funding-txid record is noted — and the record itself survives a rebuild.
+    #[test]
+    fn funding_txids_retag_opens_across_rebuilds() {
+        let s = scripts();
+        let mut view = Tier2View::default();
+        let recv = tx_paying(our_receive_spk(&s), 33_000);
+        let recv_txid = recv.txid();
+        apply_txs(&mut view, &s, &[recv], 900_000);
+        let funding = tx_spending(recv_txid, 0, ScriptBuf::new(), 0);
+        let funding_txid = funding.txid().to_string();
+        apply_txs(&mut view, &s, &[funding], 900_005);
+        view.cursor.scanned_to = 900_005;
+        // no pending record ever reconciled (a restored phone, or a tag lost to the S46 rebuild)
+        let before = derive_history(&view);
+        let row = before.iter().find(|h| h.txid == funding_txid).expect("funding row");
+        assert_eq!(row.kind, TxKind::Onchain, "untagged: a plain send");
+        assert!(note_funding_txids(&mut view, vec![funding_txid.clone()]));
+        assert!(!note_funding_txids(&mut view, vec![funding_txid.clone()]), "second note adds nothing");
+        let after = derive_history(&view);
+        let row = after.iter().find(|h| h.txid == funding_txid).expect("funding row");
+        assert_eq!(row.kind, TxKind::ChannelOpen, "noted: a channel open");
+        // the receive row that merely arrived is untouched even if its txid were noted
+        assert!(note_funding_txids(&mut view, vec![recv_txid.to_string()]));
+        let again = derive_history(&view);
+        let rrow = again.iter().find(|h| h.txid == recv_txid.to_string()).expect("receive row");
+        assert_eq!(rrow.kind, TxKind::Onchain, "net-incoming stays a receive");
+        // a rebuild keeps the records — funding (v271) and closing (v272) alike
+        assert!(note_closing_txids(&mut view, vec!["c0ffee".to_string()]));
+        assert!(!note_closing_txids(&mut view, vec!["c0ffee".to_string(), String::new()]), "a repeat and an empty id add nothing");
+        rebuild_from_birthday(&mut view, 0);
+        assert!(view.funding_txids.contains(&funding_txid), "funding record survives the rebuild");
+        assert!(view.closing_txids.contains("c0ffee"), "closing record survives the rebuild");
+        assert!(view.kinds.is_empty() && view.utxos.is_empty() && view.close_hints.is_empty(), "the walk's own data is gone");
     }
 }

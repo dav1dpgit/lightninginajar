@@ -4345,12 +4345,12 @@ impl LijNode {
     ) {
         Ok(_) => {
             log::info!("Payment initiated");
-            Ok(PaymentResult { success: true, preimage: None, fee_sats: None, error: None })
+            Ok(PaymentResult { success: true, preimage: None, fee_sats: None, fee_msat: None, error: None })
         }
         Err(e) => {
             let msg = format!("{:?}", e);
             log::warn!("Payment failed: {}", msg);
-            Ok(PaymentResult { success: false, preimage: None, fee_sats: None, error: Some(msg) })
+            Ok(PaymentResult { success: false, preimage: None, fee_sats: None, fee_msat: None, error: Some(msg) })
         }
     }
 }
@@ -4609,12 +4609,12 @@ impl LijNode {
                     log::info!("Phase10b v222: internal payment initiated (hash={:?} amount_msat={})",
                         prep.payment_hash, prep.amount_msat);
                     self.pump_outbound();   // v227: the HTLC leaves now, not on the next tick
-                    Ok(PaymentResult { success: true, preimage: None, fee_sats: None, error: None })
+                    Ok(PaymentResult { success: true, preimage: None, fee_sats: None, fee_msat: None, error: None })
                 }
                 Err(e) => {
                     let msg = format!("{:?}", e);
                     log::warn!("Phase10b v222: internal payment failed (synchronous): {}", msg);
-                    Ok(PaymentResult { success: false, preimage: None, fee_sats: None, error: Some(msg) })
+                    Ok(PaymentResult { success: false, preimage: None, fee_sats: None, fee_msat: None, error: Some(msg) })
                 }
             };
         }
@@ -4725,12 +4725,12 @@ impl LijNode {
                 log::info!("Phase10b: payment initiated (hash={:?} amount_msat={})",
                     prep.payment_hash, prep.amount_msat);
                 self.pump_outbound();   // v227: the HTLC leaves now, not on the next tick
-                Ok(PaymentResult { success: true, preimage: None, fee_sats: None, error: None })
+                Ok(PaymentResult { success: true, preimage: None, fee_sats: None, fee_msat: None, error: None })
             }
             Err(e) => {
                 let msg = format!("{:?}", e);
                 log::warn!("Phase10b: payment failed (synchronous): {}", msg);
-                Ok(PaymentResult { success: false, preimage: None, fee_sats: None, error: Some(msg) })
+                Ok(PaymentResult { success: false, preimage: None, fee_sats: None, fee_msat: None, error: Some(msg) })
             }
         }
     }
@@ -5043,7 +5043,7 @@ impl LijNode {
             Ok(_) => {
                 log::info!("MPP: multipath payment initiated (hash={:?})", payment_hash);
                 self.pump_outbound();   // v227: every shard leaves now, not on the next tick
-                Ok(PaymentResult { success: true, preimage: None, fee_sats: None, error: None })
+                Ok(PaymentResult { success: true, preimage: None, fee_sats: None, fee_msat: None, error: None })
             }
             Err(e) => {
                 let msg = format!("{:?}", e);
@@ -5053,7 +5053,7 @@ impl LijNode {
                 // abandoned and fires the failure event once any in-flight
                 // HTLCs resolve back.
                 cm.abandon_payment(payment_id);
-                Ok(PaymentResult { success: false, preimage: None, fee_sats: None, error: Some(msg) })
+                Ok(PaymentResult { success: false, preimage: None, fee_sats: None, fee_msat: None, error: Some(msg) })
             }
         }
     }
@@ -5149,6 +5149,7 @@ impl LijNode {
                 // v212: full our-side balance incl. reserve — the ledger's
                 // "built up so far" reads min(gross, reserve).
                 our_balance_gross_sats: (c.outbound_capacity_msat + c.unspendable_punishment_reserve.unwrap_or(0) * 1000) / 1000   /* 0.2: balance_msat is gone; outbound capacity plus our reserve is the gross local side */,
+                owned_msat: c.lij_value_to_self_msat,   // v269: exact — LDK's value_to_self_msat (the running-totals book)
                 their_reserve_sats: c.counterparty.unspendable_punishment_reserve,
                 inbound_unlock_after_sats: {
                     // remote_total = capacity − our full balance (balance_msat
@@ -5213,6 +5214,8 @@ impl LijNode {
                 // e.g. LSPS1) the funder's commit-fee/anchor obligation. These
                 // make the zero-inbound arithmetic exact instead of inferred.
                 "balance_msat":             (c.outbound_capacity_msat + c.unspendable_punishment_reserve.unwrap_or(0) * 1000),
+                "owned_msat":               c.lij_value_to_self_msat,   // v269: exact — value_to_self_msat; the Lightning book foots against Σ of this
+                "is_outbound":              c.is_outbound,              // v269: true when this wallet funded the channel
                 "our_reserve_sats":         c.unspendable_punishment_reserve,
                 "their_reserve_sats":       c.counterparty.unspendable_punishment_reserve,
                 "inbound_htlc_minimum_msat": c.inbound_htlc_minimum_msat,

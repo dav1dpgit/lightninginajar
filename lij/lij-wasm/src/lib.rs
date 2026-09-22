@@ -96,7 +96,11 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v268".to_string()  // v268 (S48, DP): the words screen asks the cloud copy service BEFORE anything is written (backup_probe: found + channel count / none / no answer), and a device backup file can be loaded with the words alone (import_backup_file: no node, no network) so a phone with no connection can still reach its offline room and escape kit.
+    "phase11-v272".to_string()  // v272 (S48, DP GO 22:10, symmetric with v271): the scanner also keeps the node's record of CLOSING txids (closed-channel log + live sightings, noted at every sync, never cleared by a rebuild) and walks with log ∪ record — the log does not ride the cloud copy, so a reloaded phone's later rebuild would have tagged its opens but not its closes.
+    // "phase11-v271".to_string()  // v271 (S48, DP GO 2026-09-21, running totals — "no patchwork"): the scanner keeps the node's record of funding txids (closed-channel log + live channels, noted at every sync, never cleared by a rebuild) and derives any net-outgoing funding tx as ChannelOpen under any walk — the S46 rebuild had dropped those tags, so pre-rebuild self-funded opens read as plain sends and the Lightning book lost its "+moved to Lightning" rows. Retroactive at the next sync.
+    // "phase11-v270".to_string()  // v270 (S48, DP GO 2026-09-21, running totals): a send result carries fee_msat — LDK's fee_paid_msat, exact — beside the floored fee_sats, so the Lightning book keeps whole-msat rows and foots against owned_msat to the sat.
+    // "phase11-v269".to_string()  // v269 (S48, DP GO 2026-09-21, running totals): every channel now reports owned_msat — LDK's exact value_to_self_msat (our side before the commitment fee, anchors and reserve are carved out; HTLCs in flight excluded), carried out through the vendored ChannelDetails (lij_value_to_self_msat), get_channels and the dump (with is_outbound). The Lightning running-total book foots against Σ owned_msat; the old outbound+reserve gross undercounted a channel we funded by the fee buffer. Read-only.
+    // "phase11-v268".to_string()  // v268 (S48, DP): the words screen asks the cloud copy service BEFORE anything is written (backup_probe: found + channel count / none / no answer), and a device backup file can be loaded with the words alone (import_backup_file: no node, no network) so a phone with no connection can still reach its offline room and escape kit.
     // v267 (S47, DP GO): a self-funded open whose funding tx cannot be built is closed at once (force_close_without_broadcasting_txn on the temp channel; no funds moved, no close record) instead of dangling until LDK's unfunded timeout — and the failure (temp id, value, reason, time) is kept for the page (open_failures_json), so the retry loop stops and the "moving to Lightning" marks clear.
     // v266 (S47, DP: quorum stuck at 0/4 after a long phone sleep until a restart): a demoted independent endpoint was never asked again (rounds asked healthy endpoints only), so once all four were demoted nothing could reinstate one. Rounds now also ask demoted endpoints 60 s after their last failure, and all of them when none is healthy; broadcasts use the same list.
     // v265 (S47, DP GO): identify_own_output (the recover-close watch) searches the walk's 2,500-address net first, then the old window above the frontier; each outcome is one [recover-watch] line on the tape (not at the sources yet / our output #n, sats, chain, index / no output pays this wallet).
@@ -761,12 +765,20 @@ impl LijWalletHandle {
     pub fn tier2_onchain_sync(&self, birthday: f64) -> js_sys::Promise {
         let inner = self.inner.clone();
         future_to_promise(async move {
-            let (root_key, network) = {
+            let (root_key, network, live_funding, live_closing) = {
                 let wallet = inner
                     .lock()
                     .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
                 let (rk, _independent, net) = wallet.onchain_handles();
-                (rk, net)
+                // v271: the live channels' funding txids — the node's record, read under the
+                // same lock the handles come from (no second lock later, across awaits)
+                // v272: and a live channel's closing txid once its funding spend is sighted
+                let (lf, lc): (Vec<String>, Vec<String>) = wallet.node().get_channels().map(|cs| {
+                    let mut f = Vec::new(); let mut c = Vec::new();
+                    for ch in cs { if let Some(t) = ch.funding_txid { f.push(t); } if let Some(t) = ch.closing_txid { c.push(t); } }
+                    (f, c)
+                }).unwrap_or_default();
+                (rk, net, lf, lc)
             };
             let base = "https://filters.lightning-mod.com";
             let http: Arc<dyn lij_core::independent::EsploraHttp> =
@@ -799,6 +811,19 @@ impl LijWalletHandle {
                 lij_core::tier2_wallet::save_view(storage.as_ref(), &view).map_err(|e| JsValue::from_str(&e.to_string()))?;
             }
             if view.net_width < lij_core::tier2_wallet::NET_WIDTH { view.net_width = lij_core::tier2_wallet::NET_WIDTH; }
+            // v271: note every funding txid the node knows (closed-channel log + live channels) so a
+            // funding tx this wallet paid for derives as ChannelOpen under any walk — the S46 rebuild
+            // had dropped those tags and the Lightning book lost its "+moved to Lightning" rows.
+            {
+                let mut fund = lij_core::closed_channel_log::ClosedChannelLog::funding_txids(storage.as_ref());
+                fund.extend(live_funding.iter().cloned());
+                let grew_f = lij_core::tier2_wallet::note_funding_txids(&mut view, fund);
+                let grew_c = lij_core::tier2_wallet::note_closing_txids(&mut view, live_closing.iter().cloned());   // v272 (the log's own closing txids are noted inside sync_down)
+                if grew_f || grew_c {
+                    log::info!("[tier2] v271/v272: records now hold {} funding / {} closing txids", view.funding_txids.len(), view.closing_txids.len());
+                    lij_core::tier2_wallet::save_view(storage.as_ref(), &view).map_err(|e| JsValue::from_str(&e.to_string()))?;
+                }
+            }
 
             let pending = lij_core::tier2_wallet::load_pending(storage.as_ref());
             // v256: the fixed net — every branch watched from index 0 to net_width (2,500).
@@ -1689,7 +1714,7 @@ impl LijWalletHandle {
                             log::info!("[MPP] settled: all shards claimed by recipient");
                             emit(r#"{"phase":"mpp_settled"}"#.to_string());
                             Ok(payment_result_json(true, preimage_hex,
-                                fee_paid_msat.map(|m| m / 1000), None))
+                                fee_paid_msat, None))   // v270: msat through
                         }
                         Some(PaymentOutcome::PathFailed { failed_scid, is_permanent, .. }) => {
                             let scid_str = failed_scid.map(|s| s.to_string())
@@ -1740,7 +1765,7 @@ impl LijWalletHandle {
                                     log::info!("[MPP] late settle after timeout — payment succeeded");
                                     emit(r#"{"phase":"mpp_settled"}"#.to_string());
                                     Ok(payment_result_json(true, preimage_hex,
-                                        fee_paid_msat.map(|m| m / 1000), None))
+                                        fee_paid_msat, None))   // v270: msat through
                                 }
                                 Some(_) => Ok(payment_result_json(false, None, None, Some(
                                     "split payment failed back — nothing was delivered; funds returned to you; safe to retry".to_string()))),
@@ -1979,7 +2004,7 @@ impl LijWalletHandle {
                         return Ok(payment_result_json(
                             true,
                             preimage_hex,
-                            fee_paid_msat.map(|m| m / 1000),
+                            fee_paid_msat,   // v270: msat through
                             None,
                         ));
                     }
@@ -2131,7 +2156,7 @@ impl LijWalletHandle {
                                 log::info!("[6a-guard] late settle after timeout — payment succeeded");
                                 emit(format!(r#"{{"phase":"late_settle","attempt":{}}}"#, attempt));
                                 return Ok(payment_result_json(true, preimage_hex,
-                                    fee_paid_msat.map(|m| m / 1000), None));
+                                    fee_paid_msat, None));   // v270: msat through
                             }
                             Some(PaymentOutcome::PathFailed { .. }) => {
                                 // PaymentPathFailed IS the fail-back receipt:
@@ -4012,22 +4037,25 @@ async fn wait_for_outcome(
 }
 
 /// Convenience: serialize a PaymentResult to a JsValue for return to JS.
+/// v270 (running totals): the fee arrives in MILLISATS (LDK's fee_paid_msat) and goes out both
+/// ways — fee_msat exact for the Lightning book, fee_sats (floored) for every older reader.
 fn payment_result_json(
     success: bool,
     preimage: Option<String>,
-    fee_sats: Option<u64>,
+    fee_msat: Option<u64>,
     error: Option<String>,
 ) -> JsValue {
     let result = lij_core::types::PaymentResult {
         success,
         preimage,
-        fee_sats,
+        fee_sats: fee_msat.map(|m| m / 1000),
+        fee_msat,
         error,
     };
     match serde_json::to_string(&result) {
         Ok(s) => JsValue::from_str(&s),
         Err(_) => JsValue::from_str(
-            r#"{"success":false,"preimage":null,"fee_sats":null,"error":"serde_json failure"}"#,
+            r#"{"success":false,"preimage":null,"fee_sats":null,"fee_msat":null,"error":"serde_json failure"}"#,
         ),
     }
 }

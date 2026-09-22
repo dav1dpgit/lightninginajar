@@ -440,6 +440,13 @@ pub struct ChannelDetails {
 	pub force_close_spend_delay: Option<u16>,
 	/// True if the channel was initiated (and thus funded) by us.
 	pub is_outbound: bool,
+	/// LiJ (engine v269, running totals): our side of the channel in millisatoshis, exact —
+	/// LDK's own `value_to_self_msat`: what this node owns on the channel, before the
+	/// commitment fee, the anchors and the reserve are carved out of it, and excluding HTLCs in
+	/// flight in either direction (an outbound HTLC has already left it; an inbound one has not
+	/// yet arrived). `value_to_self + value_to_remote + pending HTLCs = channel_value`. This is the
+	/// figure LDK reports as `last_local_balance_msat` when the channel closes. Read-only.
+	pub lij_value_to_self_msat: u64,
 	/// True if the channel is confirmed, channel_ready messages have been exchanged, and the
 	/// channel is not currently being shut down. `channel_ready` message exchange implies the
 	/// required confirmation count has been reached (and we were connected to the peer at some
@@ -587,6 +594,7 @@ impl ChannelDetails {
 			confirmations: Some(funding.get_funding_tx_confirmations(best_block_height)),
 			force_close_spend_delay: funding.get_counterparty_selected_contest_delay(),
 			is_outbound: funding.is_outbound(),
+			lij_value_to_self_msat: funding.get_value_to_self_msat(),
 			is_channel_ready: context.is_usable(),
 			is_usable: context.is_live(),
 			is_announced: context.should_announce(),
@@ -636,6 +644,7 @@ impl_writeable_tlv_based!(ChannelDetails, {
 	(43, pending_inbound_htlcs, optional_vec),
 	(45, pending_outbound_htlcs, optional_vec),
 	(47, funding_redeem_script, option),
+	(49, lij_value_to_self_msat, (default_value, 0)),
 	(_unused, user_channel_id, (static_value,
 		_user_channel_id_low.unwrap_or(0) as u128 | ((_user_channel_id_high.unwrap_or(0) as u128) << 64)
 	)),
@@ -731,6 +740,7 @@ mod tests {
 			confirmations: Some(73),
 			force_close_spend_delay: Some(10),
 			is_outbound: true,
+			lij_value_to_self_msat: 0,
 			is_channel_ready: false,
 			is_usable: true,
 			is_announced: false,

@@ -197,6 +197,25 @@ impl ClosedChannelLog {
         set
     }
 
+    /// v271 (running totals): the funding TXIDS of every closed channel on record — the
+    /// scanner's re-tag list for ChannelOpen rows (see tier2_wallet::Tier2View::funding_txids).
+    pub fn funding_txids(storage: &dyn LijStorage) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Ok(Some(bytes)) = storage.get(KEY_CLOSED_CHANNELS) {
+            if let Ok(s) = std::str::from_utf8(&bytes) {
+                if let Ok(records) = serde_json::from_str::<Vec<ClosedChannelRecord>>(s) {
+                    for r in records {
+                        if let Some(f) = r.funding_txo_hex {
+                            let txid = f.split(':').next().unwrap_or("").to_string();
+                            if !txid.is_empty() { out.push(txid); }
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// v180: funding outpoints ("txid:vout") of records that are still BLIND —
     /// closed, but with no closing txid recorded. These are healable from the
     /// chain: whatever spent the funding outpoint IS the closing tx.
