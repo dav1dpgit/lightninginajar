@@ -44,6 +44,13 @@ pub struct InvoiceResult {
     pub payment_secret: String,
 }
 
+/// v274: one of our outbound HTLCs still pending on a channel.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct PendingOut {
+    pub hash: String,
+    pub msat: u64,
+}
+
 /// Summary of a single Lightning channel.
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ChannelInfo {
@@ -106,11 +113,22 @@ pub struct ChannelInfo {
     /// v269 (running totals, DP 2026-09-21): our side of the channel in millisatoshis, EXACT —
     /// LDK's own value_to_self_msat (see the vendored ChannelDetails::lij_value_to_self_msat):
     /// what this wallet owns on the channel before the commitment fee, anchors and reserve are
-    /// carved out, excluding HTLCs in flight. The Lightning book foots against Σ of this.
+    /// carved out. v274 (read in LDK's bytes): an OUTBOUND HTLC in flight is still inside this
+    /// number — value_to_self_msat moves only when the HTLC is removed with success — so the
+    /// Lightning book foots against Σ (owned_msat − inflight_out_msat).
     /// our_balance_gross_sats (outbound capacity + reserve) undercounts a channel WE funded by
     /// the funder's fee buffer; this does not. Serde default keeps old JSON readable.
     #[serde(default)]
     pub owned_msat: u64,
+    /// v274 (S48, DP — the Sendable book): Σ amount_msat of our outbound HTLCs still pending on
+    /// this channel (LDK's pending_outbound_htlcs). Inside owned_msat until they settle; outside
+    /// spendable. Serde default keeps old JSON readable.
+    #[serde(default)]
+    pub inflight_out_msat: u64,
+    /// v274: those pending outbound HTLCs, (payment hash hex, amount msat) — the page places an
+    /// in-flight send on its channel by hash.
+    #[serde(default)]
+    pub pending_out: Vec<PendingOut>,
     /// R3 (v174): true while the channel is anywhere in LDK's shutdown
     /// pipeline (ShutdownInitiated → ShutdownComplete). Lets the frontend
     /// distinguish a not-yet-ready OPENING channel (a genuine pending

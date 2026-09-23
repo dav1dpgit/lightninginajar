@@ -108,6 +108,79 @@ export class LijWalletHandle {
         return ret;
     }
     /**
+     * v275 (Black Start): the sealed, signed push — see node::black_start_bundle_json. Read-only.
+     * @returns {string}
+     */
+    black_start_bundle_json() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_black_start_bundle_json(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * v276 (Black Start): the kit's fingerprint — {"fp","channels"}; cheap, no signing. try_lock.
+     * @returns {string}
+     */
+    black_start_fingerprint_json() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_black_start_fingerprint_json(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * v211 (ESCAPE KIT): per-channel signed latest holder commitment
+     * ("THE CLOSE") + pre-signed to_local sweep ("THE COLLECT",
+     * nSequence = to_self_delay, two feerates — no RBF after the fact),
+     * destination = PEEKED m/84 allocator index. Read-only by
+     * constitution: nothing broadcast, nothing queued, counter not
+     * advanced, state unchanged. Runs on the offline read-only instance.
+     * Returns the kit as a JSON string.
+     * v275 (Black Start): the NIP-06 identity — {"npub","pubkey"}. try_lock — WALLET_BUSY.
+     * @returns {string}
+     */
+    black_start_identity_json() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_black_start_identity_json(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * v166 (#29-4b): RBF-replace one of OUR pending on-chain sends at a
      * higher fee. Same inputs, same destination; the delta comes out of the
      * change. The engine enforces BIP-125 economics and answers with
@@ -446,13 +519,6 @@ export class LijWalletHandle {
         }
     }
     /**
-     * v211 (ESCAPE KIT): per-channel signed latest holder commitment
-     * ("THE CLOSE") + pre-signed to_local sweep ("THE COLLECT",
-     * nSequence = to_self_delay, two feerates — no RBF after the fact),
-     * destination = PEEKED m/84 allocator index. Read-only by
-     * constitution: nothing broadcast, nothing queued, counter not
-     * advanced, state unchanged. Runs on the offline read-only instance.
-     * Returns the kit as a JSON string.
      * @returns {string}
      */
     escape_export() {
@@ -1347,6 +1413,29 @@ export class LijWalletHandle {
         const len2 = WASM_VECTOR_LEN;
         const ret = wasm.lijwallethandle_send_payment_with_retries(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, max_retries, progress_callback, !isLikeNone(amount_sats_override), isLikeNone(amount_sats_override) ? BigInt(0) : amount_sats_override, !isLikeNone(amount_msat_override), isLikeNone(amount_msat_override) ? BigInt(0) : amount_msat_override);
         return ret;
+    }
+    /**
+     * v274: the channel(s) each settled outbound payment left by (see node::sent_parts_json).
+     * try_lock — the page asks again on WALLET_BUSY.
+     * @returns {string}
+     */
+    sent_parts_json() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_sent_parts_json(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
     }
     /**
      * v210 (quorum wiring): set the independent quorum endpoint list at
@@ -2410,7 +2499,7 @@ function __wbg_get_imports() {
             console.warn(arg0, arg1, arg2, arg3);
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1690, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1701, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed);
             return ret;
         },
@@ -2421,16 +2510,16 @@ function __wbg_get_imports() {
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("ErrorEvent")], shim_idx: 7, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_110);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_114);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 7, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_111);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_115);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 1396, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 1407, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f);
             return ret;
         },
@@ -2468,12 +2557,12 @@ function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_110(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_110(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_114(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_114(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_111(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_111(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_115(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_115(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed(arg0, arg1, arg2) {

@@ -2383,6 +2383,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		(txs, to_local, inner.on_holder_tx_csv)
 	}
 
+	/// LiJ v276 (Black Start, read-only): the txid of the latest holder commitment — what the
+	/// escape kit would export — without building or signing anything. The wallet fingerprints
+	/// its kit with this every tick and re-pushes only when a channel's state moved.
+	pub fn lij_latest_holder_commitment_txid(&self) -> Txid {
+		let inner = self.inner.lock().unwrap();
+		inner.funding.current_holder_commitment_tx.trust().txid()
+	}
+
 	/// LiJ v223 (re-ported to 0.2.6): true when every balance is claimed AND the funding spend
 	/// was seen — the monitor is only waiting out the archive threshold. Read-only twin of
 	/// `is_fully_resolved` with no height latch and no threshold test; the spend walker uses it

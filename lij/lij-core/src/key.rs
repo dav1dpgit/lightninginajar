@@ -86,6 +86,20 @@ impl RootKey {
     /// Was previously m/535h (Mutiny-compatible). Migrated to m/525h —
     /// LiJ's own purpose-level namespace — when Mutiny was deemed
     /// non-existent. No wallets in the wild required migration.
+    /// v275 (Black Start): the BIP32 master private key bytes — the HKDF input of the kit key.
+    /// Recomputable by the /recover page as the left half of HMAC-SHA512("Bitcoin seed", seed).
+    pub fn root_secret_bytes(&self) -> [u8; 32] {
+        self.master_xprv.private_key.secret_bytes()
+    }
+
+    /// v275 (Black Start): any child of the master key (the NIP-06 identity lives at m/44'/1237'/0'/0/0).
+    pub fn derive_priv(&self, path: &DerivationPath) -> LijResult<ExtendedPrivKey> {
+        let secp = Secp256k1::new();
+        self.master_xprv
+            .derive_priv(&secp, path)
+            .map_err(|e| LijError::Key(format!("Key derivation failed: {e}")))
+    }
+
     pub fn lightning_node_key(&self) -> LijResult<ExtendedPrivKey> {
         let secp = Secp256k1::new();
         let path: DerivationPath = "m/525h"

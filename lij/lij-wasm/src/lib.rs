@@ -96,7 +96,11 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v272".to_string()  // v272 (S48, DP GO 22:10, symmetric with v271): the scanner also keeps the node's record of CLOSING txids (closed-channel log + live sightings, noted at every sync, never cleared by a rebuild) and walks with log ∪ record — the log does not ride the cloud copy, so a reloaded phone's later rebuild would have tagged its opens but not its closes.
+    "phase11-v278".to_string()  // v278 (S48, DP 2026-09-23 00:20 — the 724-sat gap): the owned-at-close backfill reads "we funded" from the scanner's history too and redoes v277 backfills once (owned_backfill_ver); the event's figure is never redone. v277 (S48, DP 2026-09-22 23:37): the cancelled-open sweep's honest proof (history + a definitive quorum 404 + a persisted two-hour floor); ClosedChannelRecord.our_owned_msat_at_close from Event::ChannelClosed (+ the watcher's backfill from the closing tx); IndependentClient::tx_known. Was: v276 (S48, Black Start): black_start_fingerprint_json — SHA-256 of the sorted latest holder commitment txids (a read-only monitor accessor, no signing) so the page pushes a kit only when a channel's state moved
+    // "phase11-v275".to_string()  // v275 (S48, DP GO 2026-09-22 18:15, BLACK START BS1): black_start module — the kit key (HKDF of the master key), the NIP-06 identity, the sealed envelope (AES-256-GCM, AAD-bound to the npub), the ECDSA holder body, the BIP-340 NIP-78 relay event; black_start_identity_json + black_start_bundle_json exports (read-only, from escape_export)
+    // "phase11-v274".to_string()  // v274 (S48, DP GO 2026-09-22 14:58, the Sendable book): per channel inflight_out_msat + pending_out (hash, msat); sent_parts_json — the channel(s) each settled send left by (PaymentPathSuccessful); the closed-channel record keeps our_reserve_sats; owned_msat's doc corrected (an outbound HTLC in flight is still inside it)
+    // "phase11-v273".to_string()  // v273 (S48, DP GO 2026-09-22 14:22, items 2 + 4): a claimed receive is recorded in msat with the counterparty skim and the HTLCs' channels (claimed_payments_json: msat, skim_msat, parts) — the page's ledger records the exact amount; sats stays
+    // "phase11-v272".to_string()  // v272 (S48, DP GO 22:10, symmetric with v271): the scanner also keeps the node's record of CLOSING txids (closed-channel log + live sightings, noted at every sync, never cleared by a rebuild) and walks with log ∪ record — the log does not ride the cloud copy, so a reloaded phone's later rebuild would have tagged its opens but not its closes.
     // "phase11-v271".to_string()  // v271 (S48, DP GO 2026-09-21, running totals — "no patchwork"): the scanner keeps the node's record of funding txids (closed-channel log + live channels, noted at every sync, never cleared by a rebuild) and derives any net-outgoing funding tx as ChannelOpen under any walk — the S46 rebuild had dropped those tags, so pre-rebuild self-funded opens read as plain sends and the Lightning book lost its "+moved to Lightning" rows. Retroactive at the next sync.
     // "phase11-v270".to_string()  // v270 (S48, DP GO 2026-09-21, running totals): a send result carries fee_msat — LDK's fee_paid_msat, exact — beside the floored fee_sats, so the Lightning book keeps whole-msat rows and foots against owned_msat to the sat.
     // "phase11-v269".to_string()  // v269 (S48, DP GO 2026-09-21, running totals): every channel now reports owned_msat — LDK's exact value_to_self_msat (our side before the commitment fee, anchors and reserve are carved out; HTLCs in flight excluded), carried out through the vendored ChannelDetails (lij_value_to_self_msat), get_channels and the dump (with is_outbound). The Lightning running-total book foots against Σ owned_msat; the old outbound+reserve gross undercounted a channel we funded by the fee buffer. Read-only.
@@ -2832,6 +2836,17 @@ impl LijWalletHandle {
         Ok(wallet.node().open_failures_json())
     }
 
+    #[wasm_bindgen]
+    /// v274: the channel(s) each settled outbound payment left by (see node::sent_parts_json).
+    /// try_lock — the page asks again on WALLET_BUSY.
+    pub fn sent_parts_json(&self) -> Result<String, JsValue> {
+        let wallet = match self.inner.try_lock() {
+            Ok(w) => w,
+            Err(_) => return Err(JsValue::from_str("WALLET_BUSY")),
+        };
+        Ok(wallet.node().sent_parts_json())
+    }
+
     pub fn claimed_payments_json(&self) -> Result<String, JsValue> {
         let wallet = match self.inner.try_lock() {
             Ok(w) => w,
@@ -3035,6 +3050,36 @@ impl LijWalletHandle {
     /// constitution: nothing broadcast, nothing queued, counter not
     /// advanced, state unchanged. Runs on the offline read-only instance.
     /// Returns the kit as a JSON string.
+    #[wasm_bindgen]
+    /// v275 (Black Start): the NIP-06 identity — {"npub","pubkey"}. try_lock — WALLET_BUSY.
+    pub fn black_start_identity_json(&self) -> Result<String, JsValue> {
+        let wallet = match self.inner.try_lock() {
+            Ok(w) => w,
+            Err(_) => return Err(JsValue::from_str("WALLET_BUSY")),
+        };
+        wallet.node().black_start_identity_json().map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    #[wasm_bindgen]
+    /// v276 (Black Start): the kit's fingerprint — {"fp","channels"}; cheap, no signing. try_lock.
+    pub fn black_start_fingerprint_json(&self) -> Result<String, JsValue> {
+        let wallet = match self.inner.try_lock() {
+            Ok(w) => w,
+            Err(_) => return Err(JsValue::from_str("WALLET_BUSY")),
+        };
+        wallet.node().black_start_fingerprint_json().map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    #[wasm_bindgen]
+    /// v275 (Black Start): the sealed, signed push — see node::black_start_bundle_json. Read-only.
+    pub fn black_start_bundle_json(&self) -> Result<String, JsValue> {
+        let wallet = match self.inner.try_lock() {
+            Ok(w) => w,
+            Err(_) => return Err(JsValue::from_str("WALLET_BUSY")),
+        };
+        wallet.node().black_start_bundle_json().map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
     #[wasm_bindgen]
     pub fn escape_export(&self) -> Result<String, JsValue> {
         let wallet = match self.inner.try_lock() {

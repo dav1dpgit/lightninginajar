@@ -48,4 +48,6 @@ pub mod closed_channel_log;
 pub mod closed_channel_watcher;
 pub mod sweeper;
 pub mod registry_client;
+pub mod black_start;   // v275 (S48, DP): BLACK START BS1 — the sealed, signed escape kit (docs/black-start-standard.md)
+pub mod cancelled_open;   // v277 (S48, DP): the cancelled-open sweep's honest proof (history + quorum + a two-hour floor)
 

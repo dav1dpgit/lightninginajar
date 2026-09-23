@@ -934,6 +934,41 @@ impl IndependentClient {
         )))
     }
 
+    /// v277 (S48, DP — the cancelled-open sweep's honest proof): does the quorum know this txid?
+    /// Some(true): at least one server returned it (mempool or confirmed). Some(false): no server
+    /// has it and at least one reachable server said so definitively (HTTP 404). None: the quorum
+    /// could not answer — no healthy endpoint, or only transport failures — which proves nothing.
+    pub async fn tx_known(&self, txid: &str) -> Option<bool> {
+        if self.healthy_count() == 0 {
+            return None;
+        }
+        let http = self.http.lock().unwrap().clone();
+        let txid = txid.to_string();
+        let results = self
+            .query_all(|url| {
+                let url_owned = format!("{url}/tx/{txid}");
+                let http = http.clone();
+                Box::pin(async move {
+                    let resp = http.get(&url_owned).await?;
+                    match resp.status {
+                        200 => Ok(true),
+                        404 => Ok(false),
+                        s => Err(LijError::Lsp(format!("tx status {s}"))),
+                    }
+                })
+            })
+            .await;
+        let mut definitive_no = false;
+        for (_url, r) in &results {
+            match r {
+                Ok(true) => return Some(true),
+                Ok(false) => definitive_no = true,
+                Err(_) => {}
+            }
+        }
+        if definitive_no { Some(false) } else { None }
+    }
+
     /// v186 (S27): block position of a CONFIRMED tx via
     /// `/tx/{txid}/merkle-proof`. Returns (block_height, pos). Errors when
     /// the tx is unconfirmed (endpoints answer non-200) or all endpoints

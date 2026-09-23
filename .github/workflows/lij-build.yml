@@ -120,7 +120,9 @@ jobs:
           G=$(sha256sum lij-pwa/frontend/pkg/lij_wasm.js | cut -d' ' -f1)
           SW=$(sha256sum lij-pwa/frontend/wallet/sw.js | cut -d' ' -f1)
           Z=$(sha256sum "$GITHUB_WORKSPACE/$ZIPNAME" | cut -d' ' -f1)
-          ROW="| $(date -u +%F) | phase11-v${PAGE} | phase11-v${ENG} | \`${W}\` | \`${G}\` | \`${SW}\` | commit ${GITHUB_SHA::8}; CI zip \`${ZIPNAME}\` sha256 \`${Z}\` |"
+          R=$(sha256sum lij-pwa/frontend/recover/index.html | cut -d' ' -f1)   # v817 (DP): the Black start page's hash — the "Keep your own copy" check on /recover points here
+          RB=$(grep -oP "const RECOVER_BUILD = '\K[^']+" lij-pwa/frontend/recover/index.html || echo '?')
+          ROW="| $(date -u +%F) | phase11-v${PAGE} | phase11-v${ENG} | \`${W}\` | \`${G}\` | \`${SW}\` | commit ${GITHUB_SHA::8}; CI zip \`${ZIPNAME}\` sha256 \`${Z}\`; recover/index.html (build ${RB}) sha256 \`${R}\` |"
           append_row () {   # $1 = repo dir
             f="$1/docs/releases.md"
             [ -f "$f" ] || { echo "no $f — skipping"; return 0; }

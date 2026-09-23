@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<title>Black start — Lightning in a Jar</title>
+<!-- LIJOX Black Start BS1 — the /recover page (S48, DP GO 2026-09-22; v817 (DP 21:56, "erase after use and
+     verified copy, no split mode"): the words are used once and erased — the page holds only the non-extractable
+     kit key and the public name (Forget drops them); the keep-your-own-copy card with the download link and the
+     SHA-256 check against docs/releases.md; the build stamp at the foot; v816: "Black start", the LiJ sentence case, and "Black start kit" — DP 21:41; v814: the copies card — every copy
+     the search saw, opened or not, with its raw envelope and the way to look at it yourself — and the
+     About section: what a kit looks like inside and sealed, how it is sealed and how this page opens it).
+     One file, no install: your 12 words become your kit key and your identity here, in the
+     browser; the page asks every LIJOX provider and the relays for your sealed escape kit,
+     opens it, and lets you broadcast THE CLOSE and, after the delay, THE COLLECT. Nothing
+     leaves this page but the requests you see in the log and the transactions you broadcast.
+     The standard: docs/black-start-standard.md in the lightninginajar repo. -->
+<style>
+:root { --bg:#f6f1e7; --ink:#26190f; --ink2:#5a4a3b; --ink3:#8a7a6a; --rule:#d9cfbf; --card:#fffdf5; --amber:#c9871a; --red:#a33d2e; --ok:#3d7a4a; }
+@media (prefers-color-scheme: dark) { :root { --bg:#0a080c; --ink:#f0e8dc; --ink2:#c7bcae; --ink3:#8e8377; --rule:#2a2530; --card:#15121a; --amber:#e0a23b; --red:#e06a58; --ok:#6fbf7a; } }
+* { box-sizing:border-box } html { background:var(--bg) } body { margin:0; font:15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; color:var(--ink); background:var(--bg); padding:20px 16px 60px; max-width:720px; margin:0 auto }
+h1 { font-size:22px; margin:0 0 4px } h2 { font-size:16px; margin:22px 0 8px } .sub { color:var(--ink2); margin:0 0 18px }
+.card { background:var(--card); border:1px solid var(--rule); border-radius:12px; padding:14px 16px; margin:12px 0 }
+label { display:block; font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink3); margin:10px 0 6px }
+textarea, input { width:100%; font:14px/1.4 ui-monospace, Menlo, Consolas, monospace; padding:10px; border:1px solid var(--rule); border-radius:8px; background:var(--bg); color:var(--ink) }
+button { font:600 14px/1 inherit; padding:11px 16px; border-radius:10px; border:1px solid var(--rule); background:var(--card); color:var(--ink); cursor:pointer; margin:6px 6px 0 0 }
+button.primary { background:var(--amber); border-color:var(--amber); color:#1b1206 } button.danger { border-color:var(--red); color:var(--red) } button:disabled { opacity:.45; cursor:default }
+.log { font:12px/1.5 ui-monospace, Menlo, Consolas, monospace; color:var(--ink2); white-space:pre-wrap; max-height:220px; overflow:auto; border-top:1px dashed var(--rule); margin-top:10px; padding-top:8px }
+.warn { border-color:var(--red); background:color-mix(in srgb, var(--red) 8%, var(--card)) } .warn h2 { color:var(--red); margin-top:0 }
+.ok { color:var(--ok) } .bad { color:var(--red) } .mono { font:13px/1.45 ui-monospace, Menlo, Consolas, monospace; word-break:break-all } .dim { color:var(--ink3) }
+.row { display:flex; justify-content:space-between; gap:12px; padding:5px 0; border-bottom:1px solid var(--rule) } .row:last-child { border-bottom:none } .k { color:var(--ink3) } .v { text-align:right }
+details { margin-top:8px } summary { cursor:pointer; color:var(--ink2) }
+</style>
+</head>
+<body>
+<h1>Black start</h1>
+<p class="sub">Recover with your 12 words alone — when the phone, its cloud copy and your provider are all gone. Everything here runs in your browser.</p>
+
+<div class="card" id="keep">
+  <h2 style="margin-top:0">Keep your own copy of this page</h2>
+  <p>This page is one file with nothing else to load. Save it now, keep it with your 12 words, and on the day you need it open the saved copy — then no server is involved. <a id="dl" href="index.html" download="lij-black-start.html">Download this page</a></p>
+  <details><summary>Check the copy before you trust it with your words</summary>
+    <p class="dim">The file's SHA-256 must equal the <span class="mono">recover/index.html</span> hash in <span class="mono">docs/releases.md</span> of the lightninginajar repository on GitHub (<span class="mono">github.com/dav1dpgit/lightninginajar</span>), in the row for the page build shown at the foot of this page. To get the hash of your copy: Mac <span class="mono">shasum -a 256 lij-black-start.html</span> · Windows <span class="mono">certutil -hashfile lij-black-start.html SHA256</span> · Linux <span class="mono">sha256sum lij-black-start.html</span>. A copy that does not match is not this page — do not give it your words.</p>
+  </details>
+</div>
+
+<div class="card">
+  <label for="words">Your 12 words</label>
+  <textarea id="words" rows="3" autocapitalize="none" autocorrect="off" autocomplete="off" spellcheck="false" placeholder="twelve words, in order"></textarea>
+  <p class="dim" style="margin:8px 0 0">Your words are used once, here in your browser, to make two things — the key that opens your kit and your public name — and are then erased from this page. What the page keeps cannot spend your coins.</p>
+  <details><summary>Where the page looks</summary>
+    <label for="dir">LIJOX directory</label><input id="dir" value="https://lij-worker.dp-a95.workers.dev/lsps">
+    <label for="relays">Relays · one per line</label><textarea id="relays" rows="4">wss://relay.damus.io
+wss://nos.lol
+wss://relay.primal.net
+wss://relay.nostr.band
+wss://relay.snort.social
+wss://nostr.mom</textarea>
+    <label for="esplora">Chain servers · one per line (broadcast and confirmations)</label><textarea id="esplora" rows="3">https://mempool.space/api
+https://blockstream.info/api
+https://mempool.emzy.de/api</textarea>
+  </details>
+  <div><button class="primary" id="find">Find my kit</button> <button id="forget" style="display:none">Forget the keys</button> <span id="ident" class="dim mono"></span></div>
+  <div class="log" id="log"></div>
+</div>
+
+<div id="alive" class="card warn" style="display:none">
+  <h2>Your provider answered</h2>
+  <p>Your provider is reachable, so this is not a Black start. Install Lightning in a Jar, restore with your words, and let it close your channels the normal way — that pays you the current balances. Broadcasting a Black start kit while your provider is alive can be punished as a cheat if the kit is older than your latest payment.</p>
+  <p><button class="danger" id="override">I understand — show the kit anyway</button></p>
+</div>
+
+<div id="copies" style="display:none"></div>
+<div id="kit" style="display:none"></div>
+
+<div class="card" id="about">
+  <h2 style="margin-top:0">What a kit is</h2>
+  <p>A Black start kit is the set of transactions your wallet pre-signed for the day nothing else is left, sealed so that only your 12 words open it. Two transactions per channel: <b>the close</b> (your latest commitment, already carrying your provider’s signature) and <b>the collect</b> (the sweep of your side of it to an address on your words, usable after the channel’s delay). The wallet seals the kit and hands the sealed copy to your provider, twenty other LIJOX providers and public Nostr relays whenever a channel changes. Holders and relays keep ciphertext and the public name it is filed under — nothing that opens it.</p>
+  <details><summary>What a kit looks like — inside (what this page shows you after it opens)</summary>
+    <div class="mono" style="white-space:pre-wrap;margin-top:8px">{ "v": 1, "made_at": 1758600000000, "seq": 1758600000000,
+  "lsp": { "pubkey": "02a1b2…(66 hex)", "endpoint": "https://lsp.example.net" },
+  "sweep_destination_index": 3, "sweep_destination_address": "bc1q…",
+  "feerate_normal_sat_vb": 10, "feerate_high_sat_vb": 40,
+  "channels": [ {
+    "channel_id": "8f3c…(64 hex)", "open": true, "claimable_sats": 123456,
+    "funding_txo": "…(txid):1", "counterparty": "02a1b2…",
+    "commitment_txid": "…(64 hex)", "commitment_hex": "0200000001…",   ← THE CLOSE
+    "htlc_tx_hexes": [],
+    "to_self_delay": 144, "our_to_local_sats": 123456, "has_to_local": true,
+    "sweep_txid_normal": "…", "sweep_hex_normal": "0200000001…",        ← THE COLLECT (normal fee)
+    "sweep_txid_high": "…",   "sweep_hex_high": "0200000001…"           ← THE COLLECT (high fee)
+  } ] }</div>
+    <p class="dim">A wallet with no open channels keeps an empty kit (<span class="mono">"channels": []</span>) so this page can tell “nothing to close” from “nothing found”. <span class="mono">seq</span> is the freshness order: the newest copy wins.</p>
+  </details>
+  <details><summary>What a kit looks like — sealed (what holders and relays keep)</summary>
+    <div class="mono" style="white-space:pre-wrap;margin-top:8px">{ "v": 1, "alg": "A256GCM", "kdf": "hkdf-sha256:lijox-black-start:escape-kit-v1",
+  "npub": "17162c92…(64 hex — your public name, from your words)",
+  "seq": 1758600000000,
+  "nonce": "9f1e…(24 hex, fresh for every seal)",
+  "ct": "…(hex — the kit above, encrypted, plus a 16-byte check tag)" }</div>
+    <p class="dim">A holder stores <span class="mono">{ "seq", "at", "pubkey", "kit": &lt;that envelope&gt; }</span> under your npub and serves it back to anyone who asks — it is ciphertext. A relay stores it as a Nostr event of kind 30078 with the tag <span class="mono">["d","lijox-kit-v1"]</span>, its <span class="mono">content</span> the envelope as text, signed by your key.</p>
+  </details>
+  <details><summary>How it is sealed, and how this page opens it</summary>
+    <ol style="padding-left:20px;margin:8px 0">
+      <li><b>seed</b> = PBKDF2-HMAC-SHA512 over your 12 words (NFKD, joined by spaces), salt <span class="mono">"mnemonic"</span>, 2048 rounds, 64 bytes — BIP39, no passphrase (as your wallet has always done).</li>
+      <li><b>root</b> = the first 32 bytes of HMAC-SHA512(key <span class="mono">"Bitcoin seed"</span>, seed) — the BIP32 master private key.</li>
+      <li><b>kit key K</b> = HKDF-SHA256(ikm = root, salt <span class="mono">"lijox-black-start"</span>, info <span class="mono">"escape-kit-v1"</span>, 32 bytes). Used for AES-256-GCM only; it is not the cloud copy’s key.</li>
+      <li><b>identity</b> = the BIP32 child key at <span class="mono">m/44'/1237'/0'/0/0</span> (NIP-06). <b>pubkey</b> = its 33-byte compressed public key; <b>npub</b> = the x coordinate, 32 bytes hex. That is the name every holder and relay files your kit under — public by design.</li>
+      <li><b>seal</b> (the wallet): AES-256-GCM with K, a fresh random 12-byte nonce, and the associated data <span class="mono">"lijox-kit-v1:" + npub</span> (so a kit cannot be re-filed under another name); the ciphertext and its 16-byte tag are <span class="mono">ct</span>. The envelope is <span class="mono">{ v, alg, kdf, npub, seq, nonce, ct }</span>.</li>
+      <li><b>hand-out</b> (the wallet): to a holder, <span class="mono">POST /v1/kit</span> with an ECDSA signature by the identity key over SHA-256 of <span class="mono">"lijox-kit-put-v1" ‖ pubkey ‖ seq (8 bytes big-endian) ‖ SHA-256(envelope)</span>; the holder keeps the highest seq. To a relay, the envelope as the content of a kind-30078 event, Schnorr-signed (BIP-340) by the same key.</li>
+      <li><b>open</b> (this page): steps 1–4 again from your words, here in the browser (WebCrypto and a small secp256k1). It asks every provider in the directory <span class="mono">GET /v1/kit?npub=…</span> and every relay for kind 30078 by your npub, then tries the copies newest first: AES-256-GCM decrypt with K, the copy’s nonce and the same associated data. A wrong key, a wrong name or a single changed byte fails the tag and the copy “did not open”. Nothing secret leaves the page — the requests carry only your npub.</li>
+    </ol>
+    <p class="dim">To look at a copy yourself: a holder answers <span class="mono">https://&lt;provider&gt;/v1/kit?npub=&lt;your npub&gt;</span> in any browser; a relay answers the request <span class="mono">["REQ","x",{"kinds":[30078],"authors":["&lt;your npub&gt;"],"#d":["lijox-kit-v1"]}]</span> over its websocket (with the nak tool: <span class="mono">nak req -k 30078 -a &lt;npub&gt; -t d=lijox-kit-v1 wss://relay.damus.io</span>). After a search, the copies card above lists every copy this page saw, with its raw envelope and those links, and whether your words opened it. The standard is <span class="mono">docs/black-start-standard.md</span> in the lightninginajar repository.</p>
+  </details>
+</div>
+
+<p class="dim" style="margin-top:28px;font-size:12px">Black start page — build <span id="build"></span> · lightninginajar.xyz/recover · the standard: docs/black-start-standard.md in the lightninginajar repository</p>
+
+<script>
+(function () {
+'use strict';
+// ── constants of the standard ──────────────────────────────────────────────────────────────────
+const HKDF_SALT = 'lijox-black-start', HKDF_INFO = 'escape-kit-v1', AAD_PREFIX = 'lijox-kit-v1:';
+const NOSTR_KIND = 30078, NOSTR_D = 'lijox-kit-v1';
+const RECOVER_BUILD = 'v817';   // bumped by hand whenever this file changes; the releases row for that page build carries this file's SHA-256
+const WORDS = "abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve acid acoustic acquire across act action actor actress actual adapt add addict address adjust admit adult advance advice aerobic affair afford afraid again age agent agree ahead aim air airport aisle alarm album alcohol alert alien all alley allow almost alone alpha already also alter always amateur amazing among amount amused analyst anchor ancient anger angle angry animal ankle announce annual another answer antenna antique anxiety any apart apology appear apple approve april arch arctic area arena argue arm armed armor army around arrange arrest arrive arrow art artefact artist artwork ask aspect assault asset assist assume asthma athlete atom attack attend attitude attract auction audit august aunt author auto autumn average avocado avoid awake aware away awesome awful awkward axis baby bachelor bacon badge bag balance balcony ball bamboo banana banner bar barely bargain barrel base basic basket battle beach bean beauty because become beef before begin behave behind believe below belt bench benefit best betray better between beyond bicycle bid bike bind biology bird birth bitter black blade blame blanket blast bleak bless blind blood blossom blouse blue blur blush board boat body boil bomb bone bonus book boost border boring borrow boss bottom bounce box boy bracket brain brand brass brave bread breeze brick bridge brief bright bring brisk broccoli broken bronze broom brother brown brush bubble buddy budget buffalo build bulb bulk bullet bundle bunker burden burger burst bus business busy butter buyer buzz cabbage cabin cable cactus cage cake call calm camera camp can canal cancel candy cannon canoe canvas canyon capable capital captain car carbon card cargo carpet carry cart case cash casino castle casual cat catalog catch category cattle caught cause caution cave ceiling celery cement census century cereal certain chair chalk champion change chaos chapter charge chase chat cheap check cheese chef cherry chest chicken chief child chimney choice choose chronic chuckle chunk churn cigar cinnamon circle citizen city civil claim clap clarify claw clay clean clerk clever click client cliff climb clinic clip clock clog close cloth cloud clown club clump cluster clutch coach coast coconut code coffee coil coin collect color column combine come comfort comic common company concert conduct confirm congress connect consider control convince cook cool copper copy coral core corn correct cost cotton couch country couple course cousin cover coyote crack cradle craft cram crane crash crater crawl crazy cream credit creek crew cricket crime crisp critic crop cross crouch crowd crucial cruel cruise crumble crunch crush cry crystal cube culture cup cupboard curious current curtain curve cushion custom cute cycle dad damage damp dance danger daring dash daughter dawn day deal debate debris decade december decide decline decorate decrease deer defense define defy degree delay deliver demand demise denial dentist deny depart depend deposit depth deputy derive describe desert design desk despair destroy detail detect develop device devote diagram dial diamond diary dice diesel diet differ digital dignity dilemma dinner dinosaur direct dirt disagree discover disease dish dismiss disorder display distance divert divide divorce dizzy doctor document dog doll dolphin domain donate donkey donor door dose double dove draft dragon drama drastic draw dream dress drift drill drink drip drive drop drum dry duck dumb dune during dust dutch duty dwarf dynamic eager eagle early earn earth easily east easy echo ecology economy edge edit educate effort egg eight either elbow elder electric elegant element elephant elevator elite else embark embody embrace emerge emotion employ empower empty enable enact end endless endorse enemy energy enforce engage engine enhance enjoy enlist enough enrich enroll ensure enter entire entry envelope episode equal equip era erase erode erosion error erupt escape essay essence estate eternal ethics evidence evil evoke evolve exact example excess exchange excite exclude excuse execute exercise exhaust exhibit exile exist exit exotic expand expect expire explain expose express extend extra eye eyebrow fabric face faculty fade faint faith fall false fame family famous fan fancy fantasy farm fashion fat fatal father fatigue fault favorite feature february federal fee feed feel female fence festival fetch fever few fiber fiction field figure file film filter final find fine finger finish fire firm first fiscal fish fit fitness fix flag flame flash flat flavor flee flight flip float flock floor flower fluid flush fly foam focus fog foil fold follow food foot force forest forget fork fortune forum forward fossil foster found fox fragile frame frequent fresh friend fringe frog front frost frown frozen fruit fuel fun funny furnace fury future gadget gain galaxy gallery game gap garage garbage garden garlic garment gas gasp gate gather gauge gaze general genius genre gentle genuine gesture ghost giant gift giggle ginger giraffe girl give glad glance glare glass glide glimpse globe gloom glory glove glow glue goat goddess gold good goose gorilla gospel gossip govern gown grab grace grain grant grape grass gravity great green grid grief grit grocery group grow grunt guard guess guide guilt guitar gun gym habit hair half hammer hamster hand happy harbor hard harsh harvest hat have hawk hazard head health heart heavy hedgehog height hello helmet help hen hero hidden high hill hint hip hire history hobby hockey hold hole holiday hollow home honey hood hope horn horror horse hospital host hotel hour hover hub huge human humble humor hundred hungry hunt hurdle hurry hurt husband hybrid ice icon idea identify idle ignore ill illegal illness image imitate immense immune impact impose improve impulse inch include income increase index indicate indoor industry infant inflict inform inhale inherit initial inject injury inmate inner innocent input inquiry insane insect inside inspire install intact interest into invest invite involve iron island isolate issue item ivory jacket jaguar jar jazz jealous jeans jelly jewel job join joke journey joy judge juice jump jungle junior junk just kangaroo keen keep ketchup key kick kid kidney kind kingdom kiss kit kitchen kite kitten kiwi knee knife knock know lab label labor ladder lady lake lamp language laptop large later latin laugh laundry lava law lawn lawsuit layer lazy leader leaf learn leave lecture left leg legal legend leisure lemon lend length lens leopard lesson letter level liar liberty library license life lift light like limb limit link lion liquid list little live lizard load loan lobster local lock logic lonely long loop lottery loud lounge love loyal lucky luggage lumber lunar lunch luxury lyrics machine mad magic magnet maid mail main major make mammal man manage mandate mango mansion manual maple marble march margin marine market marriage mask mass master match material math matrix matter maximum maze meadow mean measure meat mechanic medal media melody melt member memory mention menu mercy merge merit merry mesh message metal method middle midnight milk million mimic mind minimum minor minute miracle mirror misery miss mistake mix mixed mixture mobile model modify mom moment monitor monkey monster month moon moral more morning mosquito mother motion motor mountain mouse move movie much muffin mule multiply muscle museum mushroom music must mutual myself mystery myth naive name napkin narrow nasty nation nature near neck need negative neglect neither nephew nerve nest net network neutral never news next nice night noble noise nominee noodle normal north nose notable note nothing notice novel now nuclear number nurse nut oak obey object oblige obscure observe obtain obvious occur ocean october odor off offer office often oil okay old olive olympic omit once one onion online only open opera opinion oppose option orange orbit orchard order ordinary organ orient original orphan ostrich other outdoor outer output outside oval oven over own owner oxygen oyster ozone pact paddle page pair palace palm panda panel panic panther paper parade parent park parrot party pass patch path patient patrol pattern pause pave payment peace peanut pear peasant pelican pen penalty pencil people pepper perfect permit person pet phone photo phrase physical piano picnic picture piece pig pigeon pill pilot pink pioneer pipe pistol pitch pizza place planet plastic plate play please pledge pluck plug plunge poem poet point polar pole police pond pony pool popular portion position possible post potato pottery poverty powder power practice praise predict prefer prepare present pretty prevent price pride primary print priority prison private prize problem process produce profit program project promote proof property prosper protect proud provide public pudding pull pulp pulse pumpkin punch pupil puppy purchase purity purpose purse push put puzzle pyramid quality quantum quarter question quick quit quiz quote rabbit raccoon race rack radar radio rail rain raise rally ramp ranch random range rapid rare rate rather raven raw razor ready real reason rebel rebuild recall receive recipe record recycle reduce reflect reform refuse region regret regular reject relax release relief rely remain remember remind remove render renew rent reopen repair repeat replace report require rescue resemble resist resource response result retire retreat return reunion reveal review reward rhythm rib ribbon rice rich ride ridge rifle right rigid ring riot ripple risk ritual rival river road roast robot robust rocket romance roof rookie room rose rotate rough round route royal rubber rude rug rule run runway rural sad saddle sadness safe sail salad salmon salon salt salute same sample sand satisfy satoshi sauce sausage save say scale scan scare scatter scene scheme school science scissors scorpion scout scrap screen script scrub sea search season seat second secret section security seed seek segment select sell seminar senior sense sentence series service session settle setup seven shadow shaft shallow share shed shell sheriff shield shift shine ship shiver shock shoe shoot shop short shoulder shove shrimp shrug shuffle shy sibling sick side siege sight sign silent silk silly silver similar simple since sing siren sister situate six size skate sketch ski skill skin skirt skull slab slam sleep slender slice slide slight slim slogan slot slow slush small smart smile smoke smooth snack snake snap sniff snow soap soccer social sock soda soft solar soldier solid solution solve someone song soon sorry sort soul sound soup source south space spare spatial spawn speak special speed spell spend sphere spice spider spike spin spirit split spoil sponsor spoon sport spot spray spread spring spy square squeeze squirrel stable stadium staff stage stairs stamp stand start state stay steak steel stem step stereo stick still sting stock stomach stone stool story stove strategy street strike strong struggle student stuff stumble style subject submit subway success such sudden suffer sugar suggest suit summer sun sunny sunset super supply supreme sure surface surge surprise surround survey suspect sustain swallow swamp swap swarm swear sweet swift swim swing switch sword symbol symptom syrup system table tackle tag tail talent talk tank tape target task taste tattoo taxi teach team tell ten tenant tennis tent term test text thank that theme then theory there they thing this thought three thrive throw thumb thunder ticket tide tiger tilt timber time tiny tip tired tissue title toast tobacco today toddler toe together toilet token tomato tomorrow tone tongue tonight tool tooth top topic topple torch tornado tortoise toss total tourist toward tower town toy track trade traffic tragic train transfer trap trash travel tray treat tree trend trial tribe trick trigger trim trip trophy trouble truck true truly trumpet trust truth try tube tuition tumble tuna tunnel turkey turn turtle twelve twenty twice twin twist two type typical ugly umbrella unable unaware uncle uncover under undo unfair unfold unhappy uniform unique unit universe unknown unlock until unusual unveil update upgrade uphold upon upper upset urban urge usage use used useful useless usual utility vacant vacuum vague valid valley valve van vanish vapor various vast vault vehicle velvet vendor venture venue verb verify version very vessel veteran viable vibrant vicious victory video view village vintage violin virtual virus visa visit visual vital vivid vocal voice void volcano volume vote voyage wage wagon wait walk wall walnut want warfare warm warrior wash wasp waste water wave way wealth weapon wear weasel weather web wedding weekend weird welcome west wet whale what wheat wheel when where whip whisper wide width wife wild will win window wine wing wink winner winter wire wisdom wise wish witness wolf woman wonder wood wool word work world worry worth wrap wreck wrestle wrist write wrong yard year yellow you young youth zebra zero zone zoo".split(' ');
+const $ = (id) => document.getElementById(id);
+const log = (m, cls) => { const el = $('log'); const d = document.createElement('div'); if (cls) d.className = cls; d.textContent = m; el.appendChild(d); el.scrollTop = el.scrollHeight; };
+const enc = new TextEncoder();
+const hex = (u8) => Array.from(u8, (b) => b.toString(16).padStart(2, '0')).join('');
+const unhex = (h) => { const o = new Uint8Array(h.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(h.substr(i * 2, 2), 16); return o; };
+const cat = (...as) => { const n = as.reduce((s, a) => s + a.length, 0); const o = new Uint8Array(n); let p = 0; for (const a of as) { o.set(a, p); p += a.length; } return o; };
+const sha256 = async (u8) => new Uint8Array(await crypto.subtle.digest('SHA-256', u8));
+async function hmac512(key, data) { const k = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-512' }, false, ['sign']); return new Uint8Array(await crypto.subtle.sign('HMAC', k, data)); }
+
+// ── secp256k1, just enough for BIP32 public keys (no signing on this page) ─────────────────────
+const P = (1n << 256n) - (1n << 32n) - 977n, N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141n;
+const G = { x: 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798n, y: 0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8n };
+const mod = (a, m = P) => ((a % m) + m) % m;
+function inv(a, m = P) { let [g, x, y, u] = [mod(a, m), 1n, 0n, m]; while (g !== 0n) { const q = u / g; [u, g] = [g, u - q * g]; [y, x] = [x, y - q * x]; } return mod(y, m); }
+function add(a, b) { if (!a) return b; if (!b) return a; if (a.x === b.x) { if (a.y !== b.y || a.y === 0n) return null; const l = mod(3n * a.x * a.x * inv(2n * a.y)); const x = mod(l * l - 2n * a.x); return { x, y: mod(l * (a.x - x) - a.y) }; } const l = mod((b.y - a.y) * inv(b.x - a.x)); const x = mod(l * l - a.x - b.x); return { x, y: mod(l * (a.x - x) - a.y) }; }
+function mul(k, pt) { let r = null, q = pt; while (k > 0n) { if (k & 1n) r = add(r, q); q = add(q, q); k >>= 1n; } return r; }
+const big = (u8) => BigInt('0x' + hex(u8)); const be32 = (x) => unhex(x.toString(16).padStart(64, '0'));
+const compress = (pt) => cat(new Uint8Array([pt.y & 1n ? 3 : 2]), be32(pt.x));
+
+// ── BIP39 → BIP32 → the two keys (§1) ─────────────────────────────────────────────────────────
+function checkWords(text) {
+  const ws = text.trim().toLowerCase().split(/\s+/); if (ws.length !== 12) throw new Error('twelve words are needed (' + ws.length + ' given)');
+  const idx = ws.map((w) => WORDS.indexOf(w)); const bad = ws.filter((w, i) => idx[i] < 0); if (bad.length) throw new Error('not in the word list: ' + bad.join(', '));
+  return { ws, idx };
+}
+async function checksumOk(idx) { let bits = ''; for (const i of idx) bits += i.toString(2).padStart(11, '0'); const ent = new Uint8Array(16); for (let i = 0; i < 16; i++) ent[i] = parseInt(bits.substr(i * 8, 8), 2); const h = await sha256(ent); return (h[0] >> 4) === parseInt(bits.substr(128, 4), 2); }
+async function seedOf(ws) { const k = await crypto.subtle.importKey('raw', enc.encode(ws.join(' ').normalize('NFKD')), 'PBKDF2', false, ['deriveBits']); return new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-512', salt: enc.encode('mnemonic'), iterations: 2048 }, k, 512)); }
+async function derive(seed) {
+  const I = await hmac512(enc.encode('Bitcoin seed'), seed); let k = big(I.slice(0, 32)), c = I.slice(32);
+  const root = be32(k);   // the BIP32 master private key — the kit key's HKDF input; the caller zeroes it once K exists
+  I.fill(0);
+  const H = 0x80000000;
+  for (const i of [44 + H, 1237 + H, 0 + H, 0, 0]) {   // NIP-06
+    const data = i >= H ? cat(new Uint8Array([0]), be32(k), unhex(i.toString(16).padStart(8, '0'))) : cat(compress(mul(k, G)), unhex(i.toString(16).padStart(8, '0')));
+    const J = await hmac512(c, data); k = mod(big(J.slice(0, 32)) + k, N); c = J.slice(32); J.fill(0); data.fill(0);
+  }
+  const pub = compress(mul(k, G));
+  return { root, pubkey: hex(pub), npub: hex(pub.slice(1)) };
+}
+async function kitKey(root) { const k = await crypto.subtle.importKey('raw', root, 'HKDF', false, ['deriveKey']); return crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: enc.encode(HKDF_SALT), info: enc.encode(HKDF_INFO) }, k, { name: 'AES-GCM', length: 256 }, false, ['decrypt']); }
+async function openKit(key, env, npub) { if (env.npub !== npub) throw new Error('not this identity'); const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unhex(env.nonce), additionalData: enc.encode(AAD_PREFIX + npub) }, key, unhex(env.ct)); return JSON.parse(new TextDecoder().decode(pt)); }
+
+// ── where the kits are (§3, §5) ────────────────────────────────────────────────────────────────
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
+async function fetchJson(url, opts) { const r = await withTimeout(fetch(url, Object.assign({ cache: 'no-store' }, opts || {})), 9000); return { status: r.status, json: await r.json().catch(() => null) }; }
+async function askHolder(ep, npub) { try { const r = await fetchJson(String(ep).replace(/\/+$/, '') + '/v1/kit?npub=' + npub); if (r.status === 200 && r.json && r.json.ok && r.json.kit) return { seq: Number(r.json.seq) || 0, kit: r.json.kit, from: ep }; if (r.status === 404) return { none: true, from: ep }; return { err: 'HTTP ' + r.status, from: ep }; } catch (e) { return { err: e.message, from: ep }; } }
+function askRelay(url, npub) {
+  return new Promise((resolve) => {
+    const found = []; let ws = null, done = false; const finish = () => { if (done) return; done = true; try { ws && ws.close(); } catch (e) {} resolve({ from: url, found }); };
+    try { ws = new WebSocket(url); } catch (e) { resolve({ from: url, found, err: e.message }); return; }
+    const t = setTimeout(finish, 9000);
+    ws.onopen = () => ws.send(JSON.stringify(['REQ', 'lij', { kinds: [NOSTR_KIND], authors: [npub], '#d': [NOSTR_D], limit: 8 }]));
+    ws.onmessage = (m) => { try { const a = JSON.parse(m.data); if (a[0] === 'EVENT' && a[2] && a[2].pubkey === npub && a[2].kind === NOSTR_KIND) { try { const env = JSON.parse(a[2].content); found.push({ seq: Number(env.seq) || 0, kit: env, from: url }); } catch (e) {} } if (a[0] === 'EOSE') { clearTimeout(t); finish(); } } catch (e) {} };
+    ws.onerror = () => { clearTimeout(t); finish(); }; ws.onclose = () => { clearTimeout(t); finish(); };
+  });
+}
+
+// ── the chain (§7.4) ───────────────────────────────────────────────────────────────────────────
+const servers = () => $('esplora').value.split(/\n+/).map((s) => s.trim().replace(/\/+$/, '')).filter((s) => /^(https:\/\/|http:\/\/127\.0\.0\.1)/.test(s));
+async function broadcast(hexTx) { const out = []; for (const s of servers()) { try { const r = await withTimeout(fetch(s + '/tx', { method: 'POST', body: hexTx, headers: { 'Content-Type': 'text/plain' } }), 12000); const t = await r.text(); out.push({ s, ok: r.ok, t: t.slice(0, 160) }); } catch (e) { out.push({ s, ok: false, t: e.message }); } } return out; }
+async function txStatus(txid) { for (const s of servers()) { try { const st = await fetchJson(s + '/tx/' + txid + '/status'); if (st.status === 200 && st.json) { const tip = await fetchJson(s + '/blocks/tip/height'); const tipH = Number(await (await fetch(s + '/blocks/tip/height')).text()); return { seen: true, confirmed: !!st.json.confirmed, height: st.json.block_height || 0, confs: st.json.confirmed ? Math.max(0, tipH - st.json.block_height + 1) : 0, s }; } if (st.status === 404) return { seen: false, s }; } catch (e) {} } return null; }
+
+// ── the flow ───────────────────────────────────────────────────────────────────────────────────
+// What the page holds after the words have served: KEY, the kit key as a non-extractable WebCrypto key
+// (it can decrypt here and cannot be read out), and KEYS = { pubkey, npub }, the public name. The words,
+// the seed and the master key are erased as soon as those exist — the page never keeps anything that
+// can spend. Forget drops the two.
+let KIT = null, KEYS = null, KEY = null;
+$('build').textContent = RECOVER_BUILD;
+function forget() { KEY = null; KEYS = null; $('ident').textContent = ''; $('forget').style.display = 'none'; }
+$('forget').onclick = () => { forget(); log('the keys are forgotten — enter the words again to search again'); };
+$('find').onclick = async () => {
+  $('log').textContent = ''; $('alive').style.display = 'none'; $('kit').style.display = 'none'; $('kit').innerHTML = ''; $('copies').style.display = 'none'; $('copies').innerHTML = ''; $('find').disabled = true;
+  try {
+    const typed = $('words').value.trim();
+    if (typed) {
+      const { ws, idx } = checkWords(typed);
+      if (!(await checksumOk(idx))) throw new Error('the words do not check out — a word is wrong or out of order');
+      const seed = await seedOf(ws);
+      const d = await derive(seed);
+      KEY = await kitKey(d.root);           // non-extractable; decrypt only
+      d.root.fill(0); seed.fill(0); ws.length = 0; idx.length = 0;
+      KEYS = { pubkey: d.pubkey, npub: d.npub };
+      $('words').value = '';                // the words leave the page
+      $('forget').style.display = '';
+      log('words used once and erased from this page; the kit key (not readable) and your public name are held until you close this tab or press Forget');
+    } else if (!KEY || !KEYS) { throw new Error('enter your 12 words'); }
+    else { log('using the keys held from before (the words are no longer on this page)'); }
+    $('ident').textContent = 'npub ' + KEYS.npub.slice(0, 16) + '…';
+    log('identity ' + KEYS.npub);
+    const key = KEY;
+    // the directory
+    let dir = [];
+    try { const r = await fetchJson($('dir').value.trim()); dir = ((r.json && r.json.lsps) || []).filter((l) => l && /^(https:\/\/|http:\/\/127\.0\.0\.1)/.test(l.endpoint || '')); log('directory: ' + dir.length + ' providers'); } catch (e) { log('directory unreachable: ' + e.message, 'bad'); }
+    const relays = $('relays').value.split(/\n+/).map((s) => s.trim()).filter((s) => /^wss:\/\//.test(s));
+    const [hr, rr] = await Promise.all([Promise.all(dir.map((l) => askHolder(l.endpoint, KEYS.npub))), Promise.all(relays.map((u) => askRelay(u, KEYS.npub)))]);
+    const cands = [];
+    for (const h of hr) { if (h.kit) { cands.push(h); log('holder ' + h.from + ': kit seq ' + h.seq); } else if (h.none) log('holder ' + h.from + ': no kit'); else log('holder ' + h.from + ': ' + h.err, 'dim'); }
+    for (const r of rr) { if (r.found.length) { for (const f of r.found) cands.push(f); log('relay ' + r.from + ': ' + r.found.length + ' event(s), newest seq ' + Math.max(...r.found.map((f) => f.seq))); } else log('relay ' + r.from + ': nothing' + (r.err ? ' (' + r.err + ')' : ''), 'dim'); }
+    cands.sort((a, b) => b.seq - a.seq);
+    let kit = null, from = null;
+    for (const c of cands) { try { const k = await openKit(key, c.kit, KEYS.npub); c.opened = true; c.made_at = Number(k.made_at) || 0; c.nchan = (k.channels || []).length; if (!kit) { kit = k; from = c; } } catch (e) { c.opened = false; c.why = e.message; log('a copy from ' + c.from + ' (seq ' + c.seq + ') did not open: ' + e.message, 'dim'); } }
+    renderCopies(cands, KEYS.npub);
+    if (!kit) { log(cands.length ? 'no copy opened with these words' : 'no kit found anywhere for this identity', 'bad'); return; }
+    KIT = kit; log('kit opened — seq ' + from.seq + ' from ' + from.from + ' · made ' + new Date(Number(kit.made_at) || 0).toLocaleString() + ' · ' + (kit.channels || []).length + ' channel(s)', 'ok');
+    // §7.3: the LSP first
+    let alive = false;
+    if (kit.lsp && kit.lsp.endpoint) { try { await withTimeout(fetch(String(kit.lsp.endpoint).replace(/\/+$/, '') + '/health', { mode: 'no-cors', cache: 'no-store' }), 8000); alive = true; } catch (e) { alive = false; } log('your provider ' + kit.lsp.endpoint + ': ' + (alive ? 'ANSWERED' : 'no answer'), alive ? 'bad' : 'ok'); }
+    if (alive) { $('alive').style.display = ''; $('override').onclick = () => { $('alive').style.display = 'none'; render(kit); }; } else render(kit);
+  } catch (e) { log(e.message, 'bad'); } finally { $('find').disabled = false; }
+};
+
+// every copy the search saw — where, how fresh, whether the words opened it, the raw envelope and the way to look at it yourself
+function renderCopies(cands, npub) {
+  const box = $('copies'); box.innerHTML = ''; box.style.display = '';
+  const d = document.createElement('div'); d.className = 'card';
+  let h = '<h2 style="margin-top:0">Copies found · ' + cands.length + '</h2>' + row('filed under (npub)', esc(npub), true);
+  if (!cands.length) h += '<p class="dim">No holder and no relay had a kit under this name. Either this wallet never kept one (the switch off, or the wallet older than v813), or the words are not the wallet’s.</p>';
+  cands.forEach((c, i) => {
+    const isRelay = /^wss:/.test(c.from);
+    const link = isRelay ? '' : '<a href="' + esc(String(c.from).replace(/\/+$/, '') + '/v1/kit?npub=' + npub) + '" target="_blank" rel="noopener">open the holder’s answer</a>';
+    const req = isRelay ? '<div class="mono" style="margin-top:6px">["REQ","x",{"kinds":[30078],"authors":["' + esc(npub) + '"],"#d":["lijox-kit-v1"]}]</div>' : '';
+    h += '<details style="margin-top:8px"><summary>' + (c.opened ? '<span class="ok">✓ opened</span>' : '<span class="bad">✗ did not open</span>') + ' · ' + (isRelay ? 'relay ' : 'holder ') + esc(c.from) + ' · seq ' + esc(c.seq) + (c.opened ? ' · made ' + esc(new Date(c.made_at).toLocaleString()) + ' · ' + c.nchan + ' channel(s)' : (c.why ? ' · ' + esc(c.why) : '')) + '</summary>'
+       + '<label>the sealed envelope, as kept</label><div class="mono" style="white-space:pre-wrap">' + esc(JSON.stringify(c.kit, null, 1)) + '</div>'
+       + (link ? '<p class="dim">' + link + '</p>' : '') + (req ? '<p class="dim">the relay request that returns it:' + req + '</p>' : '')
+       + '</details>';
+  });
+  d.innerHTML = h; box.appendChild(d);
+}
+function row(k, v, mono) { return '<div class="row"><span class="k">' + k + '</span><span class="v' + (mono ? ' mono' : '') + '">' + v + '</span></div>'; }
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function render(kit) {
+  const box = $('kit'); box.style.display = ''; box.innerHTML = '';
+  const chans = (kit.channels || []);
+  const head = document.createElement('div'); head.className = 'card';
+  head.innerHTML = '<h2 style="margin-top:0">Your kit</h2>' + row('made', esc(new Date(Number(kit.made_at) || 0).toLocaleString())) + row('channels', chans.length) + row('funds land at', esc(kit.sweep_destination_address || '—'), true)
+    + '<p class="dim">The close pays the balances as they were when this kit was made. Funds reach the address above — any wallet on your 12 words shows them (BIP84; a third-party wallet may need its address gap limit raised to 500).</p>';
+  box.appendChild(head);
+  if (!chans.length) { const d = document.createElement('div'); d.className = 'card'; d.innerHTML = '<p>This kit says the wallet had no open channels when it was last kept. There is nothing to close; your on-chain funds are on your words already.</p>'; box.appendChild(d); return; }
+  chans.forEach((c, i) => {
+    const d = document.createElement('div'); d.className = 'card';
+    d.innerHTML = '<h2 style="margin-top:0">Channel ' + (i + 1) + (c.open === false ? ' <span class="dim">(the kit thought it closed)</span>' : '') + '</h2>'
+      + row('yours in it', esc((Number(c.our_to_local_sats) || 0).toLocaleString()) + ' sats') + row('wait after the close', esc(c.to_self_delay) + ' blocks') + row('close txid', esc(c.commitment_txid), true)
+      + '<p><button class="primary" data-close="' + i + '">1 · Broadcast the close</button> <span class="dim" id="cst' + i + '"></span></p><p class="dim" id="cwatch' + i + '"></p>'
+      + '<p><button data-sweep="' + i + '" data-fee="normal"' + (c.sweep_hex_normal ? '' : ' disabled') + '>2 · Broadcast the collect (normal fee)</button> <button data-sweep="' + i + '" data-fee="high"' + (c.sweep_hex_high ? '' : ' disabled') + '>2 · high fee</button> <span class="dim" id="sst' + i + '"></span></p>'
+      + '<details><summary>Raw transactions (broadcast anywhere)</summary><label>the close</label><div class="mono">' + esc(c.commitment_hex) + '</div>' + (c.htlc_tx_hexes && c.htlc_tx_hexes.length ? '<label>HTLC transactions</label><div class="mono">' + c.htlc_tx_hexes.map(esc).join('<br><br>') + '</div>' : '') + (c.sweep_hex_normal ? '<label>the collect · normal</label><div class="mono">' + esc(c.sweep_hex_normal) + '</div>' : '') + (c.sweep_hex_high ? '<label>the collect · high</label><div class="mono">' + esc(c.sweep_hex_high) + '</div>' : '') + '</details>';
+    box.appendChild(d);
+  });
+  box.querySelectorAll('[data-close]').forEach((b) => { b.onclick = async () => { const c = chans[Number(b.dataset.close)]; if (!confirm('Broadcast the close for channel ' + (Number(b.dataset.close) + 1) + '? This cannot be undone.')) return; b.disabled = true; const r = await broadcast(c.commitment_hex); const st = $('cst' + b.dataset.close); st.textContent = r.map((x) => (x.ok ? 'accepted' : 'refused') + ' by ' + x.s.replace(/^https:\/\//, '') + (x.ok ? '' : ' (' + x.t + ')')).join(' · '); b.disabled = !r.some((x) => x.ok); if (r.some((x) => x.ok)) pollNow(Number(b.dataset.close)); }; });
+  box.querySelectorAll('[data-sweep]').forEach((b) => { b.onclick = async () => { const c = chans[Number(b.dataset.sweep)]; const hx = b.dataset.fee === 'high' ? c.sweep_hex_high : c.sweep_hex_normal; b.disabled = true; const r = await broadcast(hx); $('sst' + b.dataset.sweep).textContent = r.map((x) => (x.ok ? 'accepted' : 'refused') + ' by ' + x.s.replace(/^https:\/\//, '') + (x.ok ? '' : ' (' + x.t + ')')).join(' · ') + (r.some((x) => x.ok) ? '' : ' — too early? the collect is valid only ' + c.to_self_delay + ' blocks after the close confirms'); b.disabled = false; }; });
+  chans.forEach((c, i) => watch(i, c));
+}
+const watching = {};
+function watch(i, c) {
+  if (watching[i]) return;
+  const tick = async () => { try { const st = await txStatus(c.commitment_txid); const el = $('cwatch' + i); if (el) { if (st && st.seen) el.textContent = st.confirmed ? ('close confirmed · ' + st.confs + ' of ' + c.to_self_delay + ' blocks' + (st.confs >= Number(c.to_self_delay) ? ' — the collect can go now' : ' — then the collect')) : 'close seen on the network, not yet confirmed'; else if (st) el.textContent = 'close not seen on the network yet'; } } catch (e) {} watching[i].t = setTimeout(tick, 60000); };
+  watching[i] = { tick, t: null }; tick();
+}
+function pollNow(i) { const w = watching[i]; if (!w) return; if (w.t) clearTimeout(w.t); w.tick(); }
+})();
+</script>
+</body>
+</html>

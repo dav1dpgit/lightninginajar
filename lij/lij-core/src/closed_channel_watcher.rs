@@ -103,8 +103,40 @@ impl ClosedChannelWatcher {
         network: Network,
         current_counter: u32,
         now_unix_secs: u64,
+        funded_by_us: &std::collections::HashSet<String>,   // v277: funding txids this wallet paid for (the view's record)
     ) -> LijResult<()> {
         let records = log.list()?;
+        // v277 (S48, DP): the backfill of "what we owned at the close" for records written before
+        // the engine recorded it — from the closing transaction, once per record, when that
+        // transaction was the counterparty's commitment or a cooperative close (our output is a
+        // plain address of ours): our output, plus the close fee when this wallet funded the
+        // channel (the funder pays it). Our own commitment is left alone (its to_local is a
+        // script, swept later; the engine records new ones from the event anyway).
+        let backfill: Vec<ClosedChannelRecord> = records
+            .iter()
+            .filter(|r| crate::closed_channel_log::backfill_wanted(r))   // v278: never a figure from the event; a v277 backfill is redone once
+            .cloned()
+            .collect();
+        if !backfill.is_empty() {
+            let shutdown_xpriv = root_key.shutdown_xpriv()?;
+            let static_remotekey_xpriv = root_key.static_remotekey_xpriv()?;
+            let table = build_address_table(&shutdown_xpriv, &static_remotekey_xpriv, current_counter, network)?;
+            for r in backfill {
+                let ctx = match r.closing_txid_hex.as_deref() { Some(t) => t.to_string(), None => continue };
+                let tx = match independent.fetch_tx(&ctx).await { Ok(t) => t, Err(_) => continue };   // the quorum's next round retries
+                let ours: u64 = tx.vouts.iter().filter(|v| table.match_script(&v.scriptpubkey, network).is_some()).map(|v| v.value).sum();
+                let funding_txid = r.funding_txo_hex.as_deref().and_then(|f| f.split(':').next()).unwrap_or("").to_string();
+                let we_funded = funded_by_us.contains(&funding_txid);
+                let owned = if ours > 0 { Some((ours + if we_funded { tx.fee } else { 0 }) * 1000) } else { None };
+                log::info!("closed_channel_watcher: v277 backfill {} → owned_at_close={:?} (our outputs {} sats, fee {} sats, funded by us: {})",
+                    &r.channel_id_hex[..16.min(r.channel_id_hex.len())], owned, ours, tx.fee, we_funded);
+                let _ = log.update_by_channel_id(&r.channel_id_hex, |rec| {
+                    if owned.is_some() || rec.our_owned_msat_at_close.is_none() { rec.our_owned_msat_at_close = owned; }   // v278: a redo may correct a v277 value
+                    rec.owned_backfill_done = true;
+                    rec.owned_backfill_ver = Some(crate::closed_channel_log::OWNED_BACKFILL_VER);
+                });
+            }
+        }
         let pending: Vec<ClosedChannelRecord> = records
             .into_iter()
             // S45: keep polling until a spend has CONFIRMED — a txid seen in the

@@ -404,6 +404,15 @@ pub fn quote_total_fee_msat_from_response(response_text: &str, amount_msat: u64)
 /// v219 (DEFECT B): realm-global socket-id sequence — see next_socket_id().
 static NEXT_SOCKET_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+/// v273 (S48, DP): one claimed inbound payment — the exact msat, the counterparty's skim, and the
+/// HTLCs that made it up as `(channel id hex, value msat)` (several for an MPP receive).
+#[derive(Clone, Debug)]
+pub struct ClaimedRecord {
+    pub msat: u64,
+    pub skim_msat: u64,
+    pub parts: Vec<(String, u64)>,
+}
+
 pub struct LijNode {
     pub config: WalletConfig,
     pub network: Network,
@@ -432,7 +441,18 @@ pub struct LijNode {
     /// pending receive only when its payment_hash appears here, replacing the
     /// unsound balance-delta heuristic that could fabricate "received" rows from
     /// a resync balance blip. In-memory / per-session by design.
-    claimed_payments: Arc<Mutex<std::collections::HashMap<String, u64>>>,
+    /// v273 (S48, DP): the record keeps the claim in msat, the counterparty's skim (0 unless
+    /// underpaying HTLCs are accepted) and the HTLCs' channels with their msat — the page's
+    /// ledger records the exact amount and, for the Sendable book, which channel took it.
+    claimed_payments: Arc<Mutex<std::collections::HashMap<String, ClaimedRecord>>>,
+    /// v274 (S48, DP — the Sendable book): the channel(s) each SETTLED outbound payment left by —
+    /// payment hash hex → [(channel id hex, msat over that channel = the part's value + its fees)],
+    /// one entry per successful path (PaymentPathSuccessful; several for an MPP send). In-memory /
+    /// per-session, like claimed_payments; LDK replays the events at relaunch.
+    sent_parts: Arc<Mutex<std::collections::HashMap<String, Vec<(String, u64)>>>>,
+    /// v274: our reserve per channel id hex as last listed — written into the closed-channel record
+    /// at ChannelClosed (the channel is gone from list_channels by then).
+    chan_reserves: Arc<Mutex<std::collections::HashMap<String, u64>>>,
     /// v267 (S47, DP): self-funded opens whose funding tx could not be built this session —
     /// `(temp channel id hex, channel value sats, reason, ms)`. The page's open-retry loop reads
     /// them to stop retrying an open that will fail the same way again, and to clear its
@@ -683,6 +703,8 @@ impl LijNode {
             funding_spend_sightings: Arc::new(Mutex::new(std::collections::HashMap::new())),
             payment_outcomes: Arc::new(Mutex::new(std::collections::HashMap::new())),
             claimed_payments: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            sent_parts: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            chan_reserves: Arc::new(Mutex::new(std::collections::HashMap::new())),
             open_failures: Arc::new(Mutex::new(Vec::new())),
             #[allow(deprecated)]
             closed_channel_watcher: crate::closed_channel_watcher::ClosedChannelWatcher::new(),
@@ -1029,6 +1051,8 @@ impl LijNode {
             funding_spend_sightings: Arc::new(Mutex::new(std::collections::HashMap::new())),
             payment_outcomes: Arc::new(Mutex::new(std::collections::HashMap::new())),
             claimed_payments: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            sent_parts: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            chan_reserves: Arc::new(Mutex::new(std::collections::HashMap::new())),
             open_failures: Arc::new(Mutex::new(Vec::new())),
             #[allow(deprecated)]
             closed_channel_watcher: crate::closed_channel_watcher::ClosedChannelWatcher::new(),
@@ -1914,7 +1938,7 @@ impl LijNode {
                         }
                     }
                 }
-                lightning::events::Event::PaymentClaimed { payment_hash, amount_msat, .. } => {
+                lightning::events::Event::PaymentClaimed { payment_hash, amount_msat, htlcs, .. } => {
                     log::info!(
                         "PaymentClaimed: hash={:?} amount_msat={} — funds settled into balance",
                         payment_hash, amount_msat
@@ -1922,10 +1946,32 @@ impl LijNode {
                     // v206: record the claimed hash so the frontend ledger can
                     // complete the matching pending receive authoritatively
                     // (replaces the unsound balance-delta heuristic).
+                    // v273: in msat, with the skim and the HTLCs' channels.
+                    let skim_msat: u64 = htlcs.iter().map(|h| h.counterparty_skimmed_fee_msat).sum();
+                    let parts: Vec<(String, u64)> = htlcs.iter().map(|h| (hex::encode(h.channel_id.0), h.value_msat)).collect();
                     self.claimed_payments
                         .lock()
                         .unwrap()
-                        .insert(hex::encode(payment_hash.0), amount_msat / 1000);
+                        .insert(hex::encode(payment_hash.0), ClaimedRecord { msat: amount_msat, skim_msat, parts });
+                }
+                lightning::events::Event::PaymentPathSuccessful { payment_hash, path, .. } => {
+                    // v274: which of our channels this part left by, and how much crossed it (the
+                    // part's value plus every hop's fee — all of it leaves our first hop). The
+                    // first hop's scid may be the channel's real scid or one of its aliases.
+                    if let (Some(hash), Some(cm)) = (payment_hash, self.channel_manager.as_ref()) {
+                        if let Some(first) = path.hops.first() {
+                            let scid = first.short_channel_id;
+                            let cid = cm.list_channels().iter().find(|c| {
+                                c.short_channel_id == Some(scid) || c.outbound_scid_alias == Some(scid) || c.inbound_scid_alias == Some(scid)
+                            }).map(|c| hex::encode(c.channel_id.0));
+                            if let Some(cid) = cid {
+                                let over = path.final_value_msat() + path.fee_msat();
+                                self.sent_parts.lock().unwrap().entry(hex::encode(hash.0)).or_default().push((cid, over));
+                            } else {
+                                log::warn!("PaymentPathSuccessful: first hop scid {} matches no channel", scid);
+                            }
+                        }
+                    }
                 }
                 lightning::events::Event::PaymentSent { payment_id, payment_hash, fee_paid_msat, payment_preimage, .. } => {
                     log::info!(
@@ -2254,6 +2300,7 @@ impl LijNode {
                     channel_capacity_sats,
                     channel_funding_txo,
                     user_channel_id,
+                    last_local_balance_msat,   // v277: what we owned at the close, LDK's own figure
                     ..
                 } => {
                     // Phase 1c-write Step 1+2 SCOPE: we intentionally do NOT
@@ -2406,6 +2453,10 @@ impl LijNode {
                             terminus_pinned: Some(
                                 (user_channel_id & crate::signer::UCID_TERMINUS_PIN_BIT) != 0,
                             ),
+                            our_reserve_sats: self.chan_reserves.lock().ok().and_then(|m| m.get(&channel_id_hex).cloned()),   // v274
+                            our_owned_msat_at_close: last_local_balance_msat,   // v277: the books' one figure for this close
+                            owned_backfill_done: false,   // v278: "done" means a backfill produced the value; the event's figure is never redone
+                            owned_backfill_ver: None,
                         };
                         let log = ClosedChannelLog::new(self.storage.clone());
                         if let Err(e) = log.append(record) {
@@ -3113,10 +3164,22 @@ impl LijNode {
                 }
             };
             let now = current_time_secs();
+            // v277/v278: for the owned-at-close backfill — "this wallet funded it" is the node's funding record OR the
+            // scanner's own history (a ChannelOpen the wallet paid for); v277 read only the former and missed a funding the
+            // node never noted (the abandoned channel), storing our output without the fee (the 724-sat gap).
+            let funded_by_us: std::collections::HashSet<String> = crate::tier2_wallet::load_view(&*storage)
+                .map(|v| {
+                    let mut s = v.funding_txids.clone();
+                    for h in crate::tier2_wallet::derive_history(&v) {
+                        if h.kind == crate::tier2_wallet::TxKind::ChannelOpen && h.delta_sats < 0 { s.insert(h.txid.clone()); }
+                    }
+                    s
+                })
+                .unwrap_or_default();
             wasm_bindgen_futures::spawn_local(async move {
                 let log = crate::closed_channel_log::ClosedChannelLog::new(storage);
                 if let Err(e) = watcher
-                    .poll_pending_closes(log, independent, &root_key, network, counter, now)
+                    .poll_pending_closes(log, independent, &root_key, network, counter, now, &funded_by_us)
                     .await
                 {
                     log::warn!("closed_channel_watcher poll failed: {e}");
@@ -3359,40 +3422,73 @@ impl LijNode {
         // zero-conf JIT channels are ready immediately. Discard without
         // broadcasting — the funding never existed, so there is nothing
         // on-chain to close, no timelock, no sweep.
+        // v277 (S48, DP 2026-09-22 23:37 — "fix the proof, don't delete the janitor"): the sweep
+        // keeps its job (a zombie open's value would otherwise sit on the Lightning face for
+        // 2016 blocks) and loses its false premise. v257's "not in the pending list ⇒ never on
+        // chain" abandoned a REAL funded channel on 2026-09-22: the scanner had confirmed the
+        // funding (the record left the pending list) tens of seconds before the LSP's node
+        // reported the block, LDK still counted zero, and the channel was thrown away without a
+        // close. The proof now lives in crate::cancelled_open — the confirmed history is read
+        // again, the chain-server quorum must say DEFINITIVELY that it has never seen the tx
+        // (a 404, not a failure), and it must have looked that way at every check for two hours;
+        // the clock is persisted so a reload does not restart it. The LSP's open-intent records
+        // play no part here (DP's note): only the wallet's own books, LDK and the quorum.
         #[cfg(target_arch = "wasm32")]
         if tick_count % 30 == 29 {
-            if let Some(cm) = self.channel_manager.as_ref() {
-                let mut dead: Vec<(lightning::ln::types::ChannelId, bitcoin::secp256k1::PublicKey, String)> = Vec::new();
-                {
-                    // v257: the coin ledger is encrypted at rest and its rows are derived; this
-                    // audit only ever acted on UNCONFIRMED outbound fundings, which live in the
-                    // pending list — the confirmed rows it used to read were never load-bearing.
-                    let pending = crate::tier2_wallet::load_pending(&*self.storage);
-                    let tracked: std::collections::HashSet<String> =
-                        pending.iter().map(|p| p.txid.clone()).collect();
-                    for c in cm.list_channels() {
-                        // v193 (S29) — DP ruling "harden for outbound now":
-                        // the untracked-test only proves death for spends WE
-                        // authored; inbound is categorically outside the
-                        // sweep's jurisdiction.
-                        if !c.is_outbound || c.is_channel_ready || c.confirmations.unwrap_or(0) > 0 {
-                            continue;
-                        }
-                        if let Some(f) = c.funding_txo {
-                            let ftx = f.txid.to_string();
-                            if !tracked.contains(&ftx) {
-                                dead.push((c.channel_id, c.counterparty.node_id, ftx));
+            if let Some(cm) = self.channel_manager.clone() {
+                let storage = self.storage.clone();
+                let indep = self.independent.clone();
+                let pending: std::collections::HashSet<String> =
+                    crate::tier2_wallet::load_pending(&*storage).iter().map(|p| p.txid.clone()).collect();
+                let history: std::collections::HashSet<String> = crate::tier2_wallet::load_view(&*storage)
+                    .map(|v| crate::tier2_wallet::derive_history(&v).into_iter().map(|h| h.txid).collect())
+                    .unwrap_or_default();
+                let mut candidates: Vec<(lightning::ln::types::ChannelId, bitcoin::secp256k1::PublicKey, String)> = Vec::new();
+                for c in cm.list_channels() {
+                    // v193 (S29) — DP ruling "harden for outbound now": the untracked-test only
+                    // proves death for spends WE authored; inbound is outside the sweep's
+                    // jurisdiction. A channel with no funding yet is LDK's own timer's business.
+                    if !c.is_outbound || c.is_channel_ready || c.confirmations.unwrap_or(0) > 0 {
+                        continue;
+                    }
+                    if let Some(f) = c.funding_txo {
+                        candidates.push((c.channel_id, c.counterparty.node_id, f.txid.to_string()));
+                    }
+                }
+                wasm_bindgen_futures::spawn_local(async move {
+                    use crate::cancelled_open::{load_dead_map, save_dead_map, verdict, Verdict, ABANDON_MESSAGE};
+                    let mut map = load_dead_map(&*storage);
+                    let now = crate::tier2_wallet::now_ms();
+                    let mut changed = false;
+                    let live: std::collections::HashSet<String> = candidates.iter().map(|c| c.2.clone()).collect();
+                    let before = map.len();
+                    map.retain(|k, _| live.contains(k));   // a channel that left the list takes its clock with it
+                    if map.len() != before { changed = true; }
+                    for (chan_id, peer, ftx) in candidates {
+                        let in_pending = pending.contains(&ftx);
+                        let in_history = history.contains(&ftx);
+                        let quorum_knows = if in_pending || in_history { Some(true) } else { indep.tx_known(&ftx).await };
+                        let short = &ftx[..16.min(ftx.len())];
+                        match verdict(in_pending, in_history, quorum_knows, map.get(&ftx).copied(), now) {
+                            Verdict::Alive => {
+                                if map.remove(&ftx).is_some() { changed = true; log::info!("[CONFLICT-AUDIT] funding {short}… is known again — the clock is cleared"); }
+                            }
+                            Verdict::Unknown => {}
+                            Verdict::Watching => {
+                                if !map.contains_key(&ftx) {
+                                    map.insert(ftx.clone(), now); changed = true;
+                                    log::warn!("[CONFLICT-AUDIT] funding {short}… unknown to the books and the quorum — watching; discarded only if still unknown after two hours");
+                                }
+                            }
+                            Verdict::Dead => {
+                                log::warn!("[CONFLICT-AUDIT] cancelled unfunded open {short}… — unknown to the books and the quorum for two hours; funding never reached the chain; funds never left");
+                                let _ = cm.force_close_without_broadcasting_txn(&chan_id, &peer, ABANDON_MESSAGE.to_string());
+                                map.remove(&ftx); changed = true;
                             }
                         }
                     }
-                }
-                for (chan_id, peer, ftx) in dead {
-                    log::info!(
-                        "[CONFLICT-AUDIT] cancelled unfunded open {} — funding never reached the chain; funds never left",
-                        &ftx[..16.min(ftx.len())]
-                    );
-                    let _ = cm.force_close_without_broadcasting_txn(&chan_id, &peer, "LiJ: stale channel abandoned locally".to_string());
-                }
+                    if changed { save_dead_map(&*storage, &map); }
+                });
             }
         }
 
@@ -5113,7 +5209,12 @@ impl LijNode {
 
     pub fn get_channels(&self) -> LijResult<Vec<ChannelInfo>> {
         Ok(self.channel_manager.as_ref().map(|cm| {
-            cm.list_channels().iter().map(|c| ChannelInfo {
+            let listed = cm.list_channels();
+            // v274: remember every listed channel's reserve for its closed-channel record
+            if let Ok(mut m) = self.chan_reserves.lock() {
+                for c in listed.iter() { if let Some(r) = c.unspendable_punishment_reserve { m.insert(hex::encode(c.channel_id.0), r); } }
+            }
+            listed.iter().map(|c| ChannelInfo {
                 channel_id: hex::encode(c.channel_id.0),
                 counterparty_pubkey: hex::encode(c.counterparty.node_id.serialize()),
                 balance_sats: c.outbound_capacity_msat / 1000,
@@ -5150,6 +5251,8 @@ impl LijNode {
                 // "built up so far" reads min(gross, reserve).
                 our_balance_gross_sats: (c.outbound_capacity_msat + c.unspendable_punishment_reserve.unwrap_or(0) * 1000) / 1000   /* 0.2: balance_msat is gone; outbound capacity plus our reserve is the gross local side */,
                 owned_msat: c.lij_value_to_self_msat,   // v269: exact — LDK's value_to_self_msat (the running-totals book)
+                inflight_out_msat: c.pending_outbound_htlcs.iter().map(|h| h.amount_msat).sum(),   // v274: still inside owned_msat, outside spendable
+                pending_out: c.pending_outbound_htlcs.iter().map(|h| crate::types::PendingOut { hash: hex::encode(h.payment_hash.0), msat: h.amount_msat }).collect(),   // v274
                 their_reserve_sats: c.counterparty.unspendable_punishment_reserve,
                 inbound_unlock_after_sats: {
                     // remote_total = capacity − our full balance (balance_msat
@@ -5214,7 +5317,8 @@ impl LijNode {
                 // e.g. LSPS1) the funder's commit-fee/anchor obligation. These
                 // make the zero-inbound arithmetic exact instead of inferred.
                 "balance_msat":             (c.outbound_capacity_msat + c.unspendable_punishment_reserve.unwrap_or(0) * 1000),
-                "owned_msat":               c.lij_value_to_self_msat,   // v269: exact — value_to_self_msat; the Lightning book foots against Σ of this
+                "owned_msat":               c.lij_value_to_self_msat,
+                "inflight_out_msat":        c.pending_outbound_htlcs.iter().map(|h| h.amount_msat).sum::<u64>(),   // v274   // v269: exact — value_to_self_msat; the Lightning book foots against Σ of this
                 "is_outbound":              c.is_outbound,              // v269: true when this wallet funded the channel
                 "our_reserve_sats":         c.unspendable_punishment_reserve,
                 "their_reserve_sats":       c.counterparty.unspendable_punishment_reserve,
@@ -5650,6 +5754,60 @@ impl LijNode {
             .unwrap_or(false)
     }
 
+    /// v275 (S48, DP GO — BLACK START BS1): the identity the words make — the NIP-06 key.
+    /// {"npub": x-only hex, "pubkey": 33-byte hex}. See docs/black-start-standard.md §1.
+    pub fn black_start_identity_json(&self) -> LijResult<String> {
+        let k = crate::black_start::BlackStartKeys::from_root(&self.root_key)?;
+        Ok(format!("{{\"npub\":\"{}\",\"pubkey\":\"{}\"}}", k.npub_hex(), k.pubkey_hex()))
+    }
+
+    /// v276 (Black Start): a fingerprint of what the kit would contain — SHA-256 over the sorted
+    /// latest holder commitment txids of every retained monitor plus their count — read-only and
+    /// cheap (no signing). The page re-pushes when it changes. {"fp": hex, "channels": n}
+    pub fn black_start_fingerprint_json(&self) -> LijResult<String> {
+        use bitcoin::hashes::{sha256, Hash};
+        let chain_monitor = self.chain_monitor.as_ref()
+            .ok_or_else(|| LijError::Node("chain monitor not initialized".to_string()))?;
+        let mut ids: Vec<String> = Vec::new();
+        for channel_id in chain_monitor.list_monitors() {
+            if let Ok(m) = chain_monitor.get_monitor(channel_id) {
+                ids.push(m.lij_latest_holder_commitment_txid().to_string());
+            }
+        }
+        ids.sort();
+        let joined = format!("{}:{}", ids.len(), ids.join(","));
+        let fp = sha256::Hash::hash(joined.as_bytes());
+        Ok(format!("{{\"fp\":\"{}\",\"channels\":{}}}", hex::encode(fp.to_byte_array()), ids.len()))
+    }
+
+    /// v275: the whole push, ready to send — the escape kit (v211) plus the LSP it was made under,
+    /// sealed (§2), the holder body (§3) and the relay event (§5). Read-only like escape_export.
+    /// {"npub","pubkey","seq","channels": n,"bytes": envelope length,"put": <body>,"event": <event>}
+    pub fn black_start_bundle_json(&self) -> LijResult<String> {
+        let k = crate::black_start::BlackStartKeys::from_root(&self.root_key)?;
+        let kit_s = self.escape_export()?;
+        let mut kit: serde_json::Value = serde_json::from_str(&kit_s)
+            .map_err(|e| LijError::Key(format!("escape kit: {e}")))?;
+        let now_ms = current_time_secs() * 1000;
+        let channels = kit["channels"].as_array().map(|a| a.len()).unwrap_or(0);
+        if let Some(obj) = kit.as_object_mut() {
+            obj.insert("made_at".into(), serde_json::json!(now_ms));
+            obj.insert("seq".into(), serde_json::json!(now_ms));
+            obj.insert("lsp".into(), match self.active_lsp.as_ref() {
+                Some(a) => serde_json::json!({ "pubkey": a.info.pubkey, "endpoint": a.info.endpoint }),
+                None => serde_json::Value::Null,
+            });
+        }
+        let plain = serde_json::to_string(&kit).map_err(|e| LijError::Key(format!("escape kit: {e}")))?;
+        let envelope = k.seal(plain.as_bytes(), now_ms)?;
+        let put = k.put_body(&envelope, now_ms);
+        let event = k.nostr_event(&envelope, current_time_secs())?;
+        Ok(format!(
+            "{{\"npub\":\"{}\",\"pubkey\":\"{}\",\"seq\":{},\"channels\":{},\"bytes\":{},\"put\":{},\"event\":{}}}",
+            k.npub_hex(), k.pubkey_hex(), now_ms, channels, envelope.len(), put, event
+        ))
+    }
+
     /// v211 — ESCAPE KIT export (read-only). For every retained channel
     /// monitor: the fully signed latest holder commitment ("THE CLOSE") and,
     /// when a to_local output exists, a pre-signed sweep of it ("THE
@@ -5874,11 +6032,33 @@ impl LijNode {
     /// `[{"hash":"<hex>","sats":N}]`. The frontend matches pending receive
     /// ledger entries by payment_hash to complete them only on a real claim,
     /// never on a balance delta (which a resync blip could fake).
+    /// v274: the channel(s) each settled outbound payment left by —
+    /// [{"hash", "parts":[{"cid","msat"}]}]; msat over a channel = the part's value + its fees.
+    pub fn sent_parts_json(&self) -> String {
+        let map = self.sent_parts.lock().unwrap();
+        let items: Vec<String> = map
+            .iter()
+            .map(|(hash, parts)| {
+                let ps: Vec<String> = parts.iter().map(|(cid, m)| format!("{{\"cid\":\"{}\",\"msat\":{}}}", cid, m)).collect();
+                format!("{{\"hash\":\"{}\",\"parts\":[{}]}}", hash, ps.join(","))
+            })
+            .collect();
+        format!("[{}]", items.join(","))
+    }
+
     pub fn claimed_payments_json(&self) -> String {
         let map = self.claimed_payments.lock().unwrap();
         let items: Vec<String> = map
             .iter()
-            .map(|(hash, sats)| format!("{{\"hash\":\"{}\",\"sats\":{}}}", hash, sats))
+            .map(|(hash, r)| {
+                // v273: sats (floored) stays for the page's existing reads; msat is the exact claim;
+                // skim_msat what the counterparty kept; parts the HTLCs' channels and their msat.
+                let parts: Vec<String> = r.parts.iter().map(|(cid, m)| format!("{{\"cid\":\"{}\",\"msat\":{}}}", cid, m)).collect();
+                format!(
+                    "{{\"hash\":\"{}\",\"sats\":{},\"msat\":{},\"skim_msat\":{},\"parts\":[{}]}}",
+                    hash, r.msat / 1000, r.msat, r.skim_msat, parts.join(",")
+                )
+            })
             .collect();
         format!("[{}]", items.join(","))
     }

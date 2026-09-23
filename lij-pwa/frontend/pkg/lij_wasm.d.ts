@@ -48,6 +48,25 @@ export class LijWalletHandle {
      */
     static backup_probe(mnemonic: string, config_json: string): Promise<any>;
     /**
+     * v275 (Black Start): the sealed, signed push — see node::black_start_bundle_json. Read-only.
+     */
+    black_start_bundle_json(): string;
+    /**
+     * v276 (Black Start): the kit's fingerprint — {"fp","channels"}; cheap, no signing. try_lock.
+     */
+    black_start_fingerprint_json(): string;
+    /**
+     * v211 (ESCAPE KIT): per-channel signed latest holder commitment
+     * ("THE CLOSE") + pre-signed to_local sweep ("THE COLLECT",
+     * nSequence = to_self_delay, two feerates — no RBF after the fact),
+     * destination = PEEKED m/84 allocator index. Read-only by
+     * constitution: nothing broadcast, nothing queued, counter not
+     * advanced, state unchanged. Runs on the offline read-only instance.
+     * Returns the kit as a JSON string.
+     * v275 (Black Start): the NIP-06 identity — {"npub","pubkey"}. try_lock — WALLET_BUSY.
+     */
+    black_start_identity_json(): string;
+    /**
      * v166 (#29-4b): RBF-replace one of OUR pending on-chain sends at a
      * higher fee. Same inputs, same destination; the delta comes out of the
      * change. The engine enforces BIP-125 economics and answers with
@@ -147,15 +166,6 @@ export class LijWalletHandle {
      * outcomes: [{ "channel_id_hex": "...", "ok": true/false, "error": "..." }, ...]
      */
     end_lsp_relationship(lsp_pubkey_hex: string): string;
-    /**
-     * v211 (ESCAPE KIT): per-channel signed latest holder commitment
-     * ("THE CLOSE") + pre-signed to_local sweep ("THE COLLECT",
-     * nSequence = to_self_delay, two feerates — no RBF after the fact),
-     * destination = PEEKED m/84 allocator index. Read-only by
-     * constitution: nothing broadcast, nothing queued, counter not
-     * advanced, state unchanged. Runs on the offline read-only instance.
-     * Returns the kit as a JSON string.
-     */
     escape_export(): string;
     /**
      * v209: the SAME ciphertext the cloud sink receives, returned to the page
@@ -480,6 +490,11 @@ export class LijWalletHandle {
      */
     send_payment_with_retries(bolt11: string, route_endpoint: string, route_macaroon_hex: string, max_retries: number, progress_callback: Function, amount_sats_override?: bigint | null, amount_msat_override?: bigint | null): Promise<any>;
     /**
+     * v274: the channel(s) each settled outbound payment left by (see node::sent_parts_json).
+     * try_lock — the page asks again on WALLET_BUSY.
+     */
+    sent_parts_json(): string;
+    /**
      * v210 (quorum wiring): set the independent quorum endpoint list at
      * runtime. urls_json = JSON array of https base URLs (LSP defaults ∪
      * wallet additions, page-merged, additive-only). Empty = rejected.
@@ -726,6 +741,9 @@ export interface InitOutput {
     readonly lijwallethandle_backup: (a: number) => any;
     readonly lijwallethandle_backup_now: (a: number) => any;
     readonly lijwallethandle_backup_probe: (a: number, b: number, c: number, d: number) => any;
+    readonly lijwallethandle_black_start_bundle_json: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_black_start_fingerprint_json: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_black_start_identity_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_bump_onchain_send: (a: number, b: number, c: number, d: number) => any;
     readonly lijwallethandle_chain_events_json: (a: number, b: number) => [number, number, number, number];
     readonly lijwallethandle_claimed_payments_json: (a: number) => [number, number, number, number];
@@ -792,6 +810,7 @@ export interface InitOutput {
     readonly lijwallethandle_send_payment: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_send_payment_via_lsp_route: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
     readonly lijwallethandle_send_payment_with_retries: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: any, j: number, k: bigint, l: number, m: bigint) => any;
+    readonly lijwallethandle_sent_parts_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_set_quorum_endpoints: (a: number, b: number, c: number) => [number, number];
     readonly lijwallethandle_sign_message: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_spendable_outputs_log: (a: number) => [number, number];
@@ -827,8 +846,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_110: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_111: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_114: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_115: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

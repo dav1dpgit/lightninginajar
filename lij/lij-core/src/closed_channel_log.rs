@@ -86,6 +86,31 @@ pub struct ClosedChannelRecord {
     /// deserialization of pre-v178 records (None = unknown/legacy).
     #[serde(default)]
     pub terminus_pinned: Option<bool>,
+    /// v274 (S48, DP — the Sendable book): our unspendable reserve on this channel, in sats, as LDK
+    /// last reported it while the channel lived (cached by get_channels). Fixed for the channel's
+    /// life; the page's per-channel Sendable walk needs it after the channel is gone. None for
+    /// records written before v274 or for a channel never listed before it closed.
+    #[serde(default)]
+    pub our_reserve_sats: Option<u64>,
+    /// v277 (S48, DP 2026-09-22 — "the number the books need when a channel closes"): what this
+    /// wallet owned on the channel at the moment it closed, in msat — LDK's last local balance from
+    /// Event::ChannelClosed (the one figure the close row and the Lightning book use, for every
+    /// kind of close, recorded by the engine rather than caught by the page on the way down).
+    /// For records written before v277 the watcher backfills it from the closing transaction when
+    /// the close was the counterparty's commitment or a cooperative close: our output plus the fee
+    /// when this wallet funded the channel (the funder pays the close fee). None when unknown.
+    #[serde(default)]
+    pub our_owned_msat_at_close: Option<u64>,
+    /// v277: the backfill above was attempted against a fetched closing tx (whatever it found), so
+    /// the watcher does not fetch the same tx on every round.
+    #[serde(default)]
+    pub owned_backfill_done: bool,
+    /// v278: the backfill rule's version that produced the value (2 = "we funded" read from the
+    /// scanner's history as well as the node's funding record — v277's rule missed a funding the
+    /// node never noted, and stored our output without the fee: the 724-sat gap on 2026-09-23).
+    /// A backfilled record below the current version is redone once.
+    #[serde(default)]
+    pub owned_backfill_ver: Option<u8>,
     /// Hex-encoded funding outpoint (txid:vout). Used to locate the
     /// closing tx via onchain watch (8c.2b).
     pub funding_txo_hex: Option<String>,
@@ -142,6 +167,19 @@ pub struct ClosedChannelRecord {
 }
 
 /// Append-only log of closed channels.
+/// v278: the current backfill rule's version.
+pub const OWNED_BACKFILL_VER: u8 = 2;
+
+/// v278: does this record want the owned-at-close backfill? Only a record with a closing tx that
+/// is not our own commitment; either never given a figure, or given one by an older backfill rule.
+/// A figure recorded from the close event itself (not `owned_backfill_done`) is never touched.
+pub fn backfill_wanted(r: &ClosedChannelRecord) -> bool {
+    if r.closing_txid_hex.is_none() { return false; }
+    if r.holder_commitment_txid_hex.is_some() && r.holder_commitment_txid_hex.as_deref() == r.closing_txid_hex.as_deref() { return false; }
+    if r.our_owned_msat_at_close.is_none() { return r.owned_backfill_ver != Some(OWNED_BACKFILL_VER); }
+    r.owned_backfill_done && r.owned_backfill_ver != Some(OWNED_BACKFILL_VER)
+}
+
 pub struct ClosedChannelLog {
     storage: Arc<dyn LijStorage>,
 }
@@ -352,6 +390,39 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     use crate::storage::native_storage::MemoryStorage;
 
+    #[test]
+    fn v277_owned_at_close_is_optional_and_round_trips() {
+        let mut r = sample_record();
+        let legacy = serde_json::to_string(&r).unwrap().replace(",\"our_owned_msat_at_close\":null", "").replace(",\"owned_backfill_done\":false", "").replace(",\"owned_backfill_ver\":null", "");
+        let back: ClosedChannelRecord = serde_json::from_str(&legacy).expect("a pre-v277 record parses");
+        assert_eq!(back.our_owned_msat_at_close, None);
+        assert!(!back.owned_backfill_done);
+        r.our_owned_msat_at_close = Some(35_000_000);
+        r.owned_backfill_done = true;
+        let s = serde_json::to_string(&r).unwrap();
+        assert!(s.contains("\"our_owned_msat_at_close\":35000000"));
+        let back: ClosedChannelRecord = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.our_owned_msat_at_close, Some(35_000_000));
+        assert!(back.owned_backfill_done);
+        assert_eq!(back.owned_backfill_ver, None);
+        // v278: a v277 backfill (done, no version) is redone; a v278 one (version 2) is not; an event-recorded
+        // figure (not done) is never touched; no closing tx or our own commitment → never
+        assert!(!super::backfill_wanted(&back), "no closing tx on the sample: nothing to read");
+        r.closing_txid_hex = Some("cc".into());
+        assert!(super::backfill_wanted(&r));
+        r.holder_commitment_txid_hex = Some("cc".into());
+        assert!(!super::backfill_wanted(&r), "our own commitment is never backfilled");
+        r.holder_commitment_txid_hex = Some("hh".into());
+        r.owned_backfill_ver = Some(2);
+        assert!(!super::backfill_wanted(&r));
+        r.owned_backfill_done = false; r.owned_backfill_ver = None;
+        assert!(!super::backfill_wanted(&r));
+        r.our_owned_msat_at_close = None;
+        assert!(super::backfill_wanted(&r));
+        r.closing_txid_hex = None;
+        assert!(!super::backfill_wanted(&r));
+    }
+
     fn sample_record() -> ClosedChannelRecord {
         ClosedChannelRecord {
             channel_id_hex: "a".repeat(64),
@@ -361,6 +432,10 @@ mod tests {
             closed_at_unix_secs: 1_700_000_000,
             channel_capacity_sats: Some(100_000),
             terminus_pinned: None,
+            our_reserve_sats: None,
+            our_owned_msat_at_close: None,
+            owned_backfill_done: false,
+            owned_backfill_ver: None,
             funding_txo_hex: Some("c".repeat(64) + ":0"),
             closing_txid_hex: None,
             destination_address: None,
