@@ -19,6 +19,7 @@ pub mod storage;
 pub mod lsp;
 pub mod lsps2;
 pub mod node;
+pub mod push;   // v280 (S49): Push Key — the pure half (link, pair, records)
 pub mod peer;
 pub mod persist;
 pub mod seed_vault;

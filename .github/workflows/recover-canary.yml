@@ -1,0 +1,38 @@
+name: recover-canary
+
+# S49 draft (DP 2026-09-23: "build a draft and let's discuss") — NOT pushed.
+# Once a day: fetch the page served at lightninginajar.xyz/recover, hash it, and
+# compare against (1) the hash listed for that build in docs/releases.md and
+# (2) the file in this repository. Reads only — this workflow never writes to
+# the repository. A mismatch fails the run (GitHub posts a commit comment on a
+# failure) and the "last confirmed" time on /recover stops advancing.
+
+on:
+  schedule:
+    - cron: '17 3 * * *'   # daily 03:17 UTC (20:17 PDT)
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch the served /recover page and compare it to the listed hash
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 30 -H 'Cache-Control: no-cache' -o served.html https://lightninginajar.xyz/recover/index.html
+          SERVED=$(sha256sum served.html | cut -d' ' -f1)
+          STAMP=$(grep -oP "const RECOVER_BUILD = '\K[^']+" served.html || echo '?')
+          LISTED=$( (grep -oP "recover/index.html \(build ${STAMP}\) sha256 \`\K[0-9a-f]{64}" docs/releases.md || true) | tail -1)
+          REPO=$(sha256sum lij-pwa/frontend/recover/index.html | cut -d' ' -f1)
+          echo "served  build ${STAMP}  sha256 ${SERVED}"
+          echo "listed  for ${STAMP}     ${LISTED:-none}"
+          echo "repo    file             ${REPO}"
+          [ -n "$LISTED" ] || { echo "CANARY FAIL: docs/releases.md has no row for build ${STAMP}"; exit 1; }
+          [ "$SERVED" = "$LISTED" ] || { echo "CANARY FAIL: served page != listed hash"; exit 1; }
+          [ "$SERVED" = "$REPO" ]   || { echo "CANARY FAIL: served page != the file in this repository"; exit 1; }
+          echo "CANARY OK $(date -u +%FT%TZ) build ${STAMP}"

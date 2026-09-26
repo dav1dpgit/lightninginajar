@@ -96,7 +96,9 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v278".to_string()  // v278 (S48, DP 2026-09-23 00:20 — the 724-sat gap): the owned-at-close backfill reads "we funded" from the scanner's history too and redoes v277 backfills once (owned_backfill_ver); the event's figure is never redone. v277 (S48, DP 2026-09-22 23:37): the cancelled-open sweep's honest proof (history + a definitive quorum 404 + a persisted two-hour floor); ClosedChannelRecord.our_owned_msat_at_close from Event::ChannelClosed (+ the watcher's backfill from the closing tx); IndependentClient::tx_known. Was: v276 (S48, Black Start): black_start_fingerprint_json — SHA-256 of the sorted latest holder commitment txids (a read-only monitor accessor, no signing) so the page pushes a kit only when a channel's state moved
+    "phase11-v280".to_string()  // v280 (S49, DP GO 2026-09-25 00:53 — PUSH KEY, step A, the engine): push module (the link fragment v1.<amount>.<expiry>.<lsp16>.<key b64url>, the pair check, the two records); RootKey::push_preimage (HKDF, own salt — derived, never stored); push_prepare (the pair at the next index, the record, the fragment), push_lock (pay the provider's hold invoice for the hash on the internal self-hop and RETURN once the HTLC is out — no 30-s wait; the record turns locked with its payment_id), push_mark (void), push_out_json (LDK's word folded in: taken / returned), push_out_preimage (Copy link re-derives), push_accept (a link's key against its hash, the hash registered inbound for the window, the key into the LNURLp pool so the one claim path claims the delivery), push_in_json; PaymentSent/PaymentFailed latch a push's fate; the three keys ride in the state blob. DP rulings: 72 h, recipient gets the exact amount (the sender's lock carries the delivery fee), void by node-key signature (adapter step).
+    // "phase11-v279".to_string()  // v279 (S49, 2026-09-23 22:54 — the six refused address invoices, 0x400f from the UM890): the LSP route's LAST hop always carries the invoice's final CLTV delta — the one-hop case (the LSP is the destination's direct peer, e.g. an LSP-2 wallet paying an @address held at LSP-1) used to take the first-hop rule and lock the LSP's forwarding delta (80) where the hold invoice asked 144. parse_lnd_route_response; a native test.
+    // "phase11-v278".to_string()  // v278 (S48, DP 2026-09-23 00:20 — the 724-sat gap): the owned-at-close backfill reads "we funded" from the scanner's history too and redoes v277 backfills once (owned_backfill_ver); the event's figure is never redone. v277 (S48, DP 2026-09-22 23:37): the cancelled-open sweep's honest proof (history + a definitive quorum 404 + a persisted two-hour floor); ClosedChannelRecord.our_owned_msat_at_close from Event::ChannelClosed (+ the watcher's backfill from the closing tx); IndependentClient::tx_known. Was: v276 (S48, Black Start): black_start_fingerprint_json — SHA-256 of the sorted latest holder commitment txids (a read-only monitor accessor, no signing) so the page pushes a kit only when a channel's state moved
     // "phase11-v275".to_string()  // v275 (S48, DP GO 2026-09-22 18:15, BLACK START BS1): black_start module — the kit key (HKDF of the master key), the NIP-06 identity, the sealed envelope (AES-256-GCM, AAD-bound to the npub), the ECDSA holder body, the BIP-340 NIP-78 relay event; black_start_identity_json + black_start_bundle_json exports (read-only, from escape_export)
     // "phase11-v274".to_string()  // v274 (S48, DP GO 2026-09-22 14:58, the Sendable book): per channel inflight_out_msat + pending_out (hash, msat); sent_parts_json — the channel(s) each settled send left by (PaymentPathSuccessful); the closed-channel record keeps our_reserve_sats; owned_msat's doc corrected (an outbound HTLC in flight is still inside it)
     // "phase11-v273".to_string()  // v273 (S48, DP GO 2026-09-22 14:22, items 2 + 4): a claimed receive is recorded in msat with the counterparty skim and the HTLCs' channels (claimed_payments_json: msat, skim_msat, parts) — the page's ledger records the exact amount; sats stays
@@ -2469,6 +2471,106 @@ impl LijWalletHandle {
     /// Preimages never cross this boundary.
     /// v229: `start_hint` = the LSP's next_index for this name (the page passes
     /// it from the register probe; undefined/None when the LSP is older).
+    // ── v280 (S49, DP GO — Push Key, step A) ─────────────────────────────────────────────────
+    /// The sender's first step. JSON {index, hash, preimage, amount_sats, expiry, window_secs, fragment}.
+    pub fn push_prepare(&self, amount_sats: u64, window_secs: u64, lsp_pubkey_hex: &str) -> Result<String, JsValue> {
+        let wallet = self.inner.try_lock().map_err(|_| JsValue::from_str("WALLET_BUSY"))?;
+        wallet.node().push_prepare(amount_sats, window_secs, lsp_pubkey_hex).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// The sender pays the provider's hold invoice for the push's hash — the INTERNAL self-hop (the
+    /// invoice is the active provider's own) — and returns as soon as the HTLC is out: the lock is
+    /// meant to sit for the window, so there is nothing to wait for here. LDK's later word (settled =
+    /// taken, failed back = returned) reaches the record through the event latch and push_out_json.
+    /// JSON {ok, payment_id, hash} or {ok:false, error}.
+    pub fn push_lock(&self, bolt11: &str, route_endpoint: &str, route_macaroon_hex: &str) -> js_sys::Promise {
+        let inner = self.inner.clone();
+        let bolt11 = bolt11.to_string();
+        let route_endpoint = route_endpoint.to_string();
+        let route_macaroon_hex = route_macaroon_hex.to_string();
+        future_to_promise(async move {
+            let fail = |m: String| Ok(JsValue::from_str(&serde_json::json!({ "ok": false, "error": m }).to_string()));
+            let (mut prep, dest_is_lsp, hash_hex) = {
+                let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                let prep = match wallet.node().prepare_lsp_route_request_msat(&bolt11, &route_endpoint, &[], None) {
+                    Ok(p) => p,
+                    Err(e) => return fail(format!("prepare failed: {e}")),
+                };
+                let dest_is_lsp = wallet.node().dest_is_active_lsp(&prep.dest_pubkey_hex);
+                let hash_hex = hex::encode(prep.payment_hash.0);
+                (prep, dest_is_lsp, hash_hex)
+            };
+            if !dest_is_lsp { return fail("the lock invoice is not from this wallet's provider".into()); }
+            // the record must exist and be ours (prepared) — a foreign invoice is refused
+            {
+                let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                let out: Vec<serde_json::Value> = serde_json::from_str(&wallet.node().push_out_json()).unwrap_or_default();
+                let known = out.iter().any(|r| r.get("hash").and_then(|h| h.as_str()) == Some(hash_hex.as_str()));
+                if !known { return fail("this invoice is not for a push this wallet prepared".into()); }
+            }
+            // v249: the provider's height, so the self-hop clears LND's floor whatever the phone's tip says
+            let base = prep.url.split("/v1/").next().unwrap_or("").to_string();
+            let lsp_height: Option<u32> = if base.is_empty() { None } else {
+                match lij_core::node::fetch_get_with_macaroon(&format!("{base}/v1/outcome?hash={hash_hex}"), &route_macaroon_hex).await {
+                    Ok(t) => serde_json::from_str::<serde_json::Value>(&t).ok().and_then(|v| v.get("height").and_then(|h| h.as_u64()).map(|h| h as u32)),
+                    Err(_) => None,
+                }
+            };
+            let payment_id_hex = hex::encode(prep.payment_id.0);
+            let result = {
+                let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                if let (Some(h), Some(b)) = (lsp_height, wallet.node().ldk_best_block_height()) {
+                    if h > b { prep.final_cltv_delta += h - b; }
+                }
+                let r = match wallet.node().apply_lsp_route_and_send(r#"{"ok":false,"error":"destination_is_lsp","routes":[],"internal":true}"#, &prep) {
+                    Ok(r) => r,
+                    Err(e) => return fail(format!("send failed: {e}")),
+                };
+                if r.success {
+                    if let Err(e) = wallet.node().push_mark(&hash_hex, "locked", Some(&payment_id_hex)) { log::warn!("[push] mark locked failed: {e}"); }
+                }
+                r
+            };
+            if !r_success(&result) { return fail(result.error.clone().unwrap_or_else(|| "send rejected".into())); }
+            Ok(JsValue::from_str(&serde_json::json!({ "ok": true, "payment_id": payment_id_hex, "hash": hash_hex }).to_string()))
+        })
+    }
+
+    /// The page reports a void (the provider failed the unclaimed HTLC back on the sender's signed ask).
+    pub fn push_mark(&self, hash_hex: &str, status: &str, payment_id_hex: Option<String>) -> Result<(), JsValue> {
+        let wallet = self.inner.try_lock().map_err(|_| JsValue::from_str("WALLET_BUSY"))?;
+        wallet.node().push_mark(hash_hex, status, payment_id_hex.as_deref()).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    pub fn push_out_json(&self) -> Result<String, JsValue> {
+        let wallet = self.inner.try_lock().map_err(|_| JsValue::from_str("WALLET_BUSY"))?;
+        Ok(wallet.node().push_out_json())
+    }
+
+    /// "Copy link" later: the key re-derived from the record's index.
+    pub fn push_out_preimage(&self, hash_hex: &str) -> Result<String, JsValue> {
+        let wallet = self.inner.try_lock().map_err(|_| JsValue::from_str("WALLET_BUSY"))?;
+        wallet.node().push_out_preimage(hash_hex).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// The recipient: a pasted or opened link. JSON {hash, secret, expires, amount_sats, lsp_prefix};
+    /// the page registers (hash, secret) with this wallet's provider and asks the holder to deliver.
+    pub fn push_accept(&self, fragment: &str) -> Result<String, JsValue> {
+        let wallet = self.inner.try_lock().map_err(|_| JsValue::from_str("WALLET_BUSY"))?;
+        wallet.node().push_accept(fragment).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    pub fn push_in_json(&self) -> Result<String, JsValue> {
+        let wallet = self.inner.try_lock().map_err(|_| JsValue::from_str("WALLET_BUSY"))?;
+        Ok(wallet.node().push_in_json())
+    }
+
+    /// A link's facts without accepting it (the claim sheet before the tap). JSON or an error string.
+    pub fn push_link_parse(fragment: &str) -> Result<String, JsValue> {
+        let l = lij_core::push::parse_fragment(fragment).map_err(|e| JsValue::from_str(&e))?;
+        Ok(serde_json::json!({ "amount_sats": l.amount_sats, "expiry": l.expiry, "lsp_prefix": l.lsp_prefix, "hash": l.hash_hex }).to_string())
+    }
+
     pub fn lnurlp_prepare_hashes(&self, count: u32, start_hint: Option<u32>) -> js_sys::Promise {
         let inner = self.inner.clone();
         future_to_promise(async move {
@@ -4084,6 +4186,9 @@ async fn wait_for_outcome(
 /// Convenience: serialize a PaymentResult to a JsValue for return to JS.
 /// v270 (running totals): the fee arrives in MILLISATS (LDK's fee_paid_msat) and goes out both
 /// ways — fee_msat exact for the Lightning book, fee_sats (floored) for every older reader.
+/// v280: PaymentResult's success flag, read without moving the struct.
+fn r_success(r: &lij_core::types::PaymentResult) -> bool { r.success }
+
 fn payment_result_json(
     success: bool,
     preimage: Option<String>,

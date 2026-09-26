@@ -258,17 +258,6 @@ export class LijWalletHandle {
      */
     list_pending_json(): string;
     list_recent_payments_json(): string;
-    /**
-     * v188 (S27): OPEN-AMOUNT JIT invoice — zero-amount sibling of
-     * create_invoice_with_jit. Same Phase 0-4 choreography; buy carries
-     * NO payment_size (variable mode); register_secret sends total_msat=0
-     * (the variable sentinel — adapter fills the real total at flush).
-     * v195 (S30): LNURLp hash pool — generates preimages inside the wallet,
-     * persists them, and returns JSON [{hash, secret}] for LSP registration.
-     * Preimages never cross this boundary.
-     * v229: `start_hint` = the LSP's next_index for this name (the page passes
-     * it from the register probe; undefined/None when the LSP is older).
-     */
     lnurlp_prepare_hashes(count: number, start_hint?: number | null): Promise<any>;
     /**
      * Estimate for the + Add channel UI: spendable on-chain, the MAX channel
@@ -405,6 +394,46 @@ export class LijWalletHandle {
      * given outpoint. Throws on invalid txid hex or storage failure.
      */
     purge_force_closed_monitor(funding_txid_hex: string, output_index: number): boolean;
+    /**
+     * The recipient: a pasted or opened link. JSON {hash, secret, expires, amount_sats, lsp_prefix};
+     * the page registers (hash, secret) with this wallet's provider and asks the holder to deliver.
+     */
+    push_accept(fragment: string): string;
+    push_in_json(): string;
+    /**
+     * A link's facts without accepting it (the claim sheet before the tap). JSON or an error string.
+     */
+    static push_link_parse(fragment: string): string;
+    /**
+     * The sender pays the provider's hold invoice for the push's hash — the INTERNAL self-hop (the
+     * invoice is the active provider's own) — and returns as soon as the HTLC is out: the lock is
+     * meant to sit for the window, so there is nothing to wait for here. LDK's later word (settled =
+     * taken, failed back = returned) reaches the record through the event latch and push_out_json.
+     * JSON {ok, payment_id, hash} or {ok:false, error}.
+     */
+    push_lock(bolt11: string, route_endpoint: string, route_macaroon_hex: string): Promise<any>;
+    /**
+     * The page reports a void (the provider failed the unclaimed HTLC back on the sender's signed ask).
+     */
+    push_mark(hash_hex: string, status: string, payment_id_hex?: string | null): void;
+    push_out_json(): string;
+    /**
+     * "Copy link" later: the key re-derived from the record's index.
+     */
+    push_out_preimage(hash_hex: string): string;
+    /**
+     * v188 (S27): OPEN-AMOUNT JIT invoice — zero-amount sibling of
+     * create_invoice_with_jit. Same Phase 0-4 choreography; buy carries
+     * NO payment_size (variable mode); register_secret sends total_msat=0
+     * (the variable sentinel — adapter fills the real total at flush).
+     * v195 (S30): LNURLp hash pool — generates preimages inside the wallet,
+     * persists them, and returns JSON [{hash, secret}] for LSP registration.
+     * Preimages never cross this boundary.
+     * v229: `start_hint` = the LSP's next_index for this name (the page passes
+     * it from the register probe; undefined/None when the LSP is older).
+     * The sender's first step. JSON {index, hash, preimage, amount_sats, expiry, window_secs, fragment}.
+     */
+    push_prepare(amount_sats: bigint, window_secs: bigint, lsp_pubkey_hex: string): string;
     /**
      * v216 (S36, O6 fee headroom → exact-fee): the scan-time quote. Runs the
      * SAME route-build the send path uses (pure QueryRoutes proxy — verified
@@ -801,6 +830,14 @@ export interface InitOutput {
     readonly lijwallethandle_persist_skew_at_load: (a: number) => number;
     readonly lijwallethandle_pump_peer: (a: number, b: number) => [number, number];
     readonly lijwallethandle_purge_force_closed_monitor: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly lijwallethandle_push_accept: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_push_in_json: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_push_link_parse: (a: number, b: number) => [number, number, number, number];
+    readonly lijwallethandle_push_lock: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
+    readonly lijwallethandle_push_mark: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
+    readonly lijwallethandle_push_out_json: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_push_out_preimage: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_push_prepare: (a: number, b: bigint, c: bigint, d: number, e: number) => [number, number, number, number];
     readonly lijwallethandle_quote_route_fee: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: bigint) => any;
     readonly lijwallethandle_quote_route_fee_to_pubkey: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: bigint) => any;
     readonly lijwallethandle_register_push_subscription: (a: number, b: number, c: number) => any;
@@ -846,8 +883,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_114: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_115: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_122: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_123: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

@@ -608,6 +608,7 @@ a:hover { color: var(--color-accent-700); }
               <img src="/site/qr-wallet.svg" width="112" height="112" alt="QR code linking to lightninginajar.xyz/wallet/" style="flex: none; image-rendering: pixelated;">
               <p style="font-size: 14px; color: var(--color-neutral-700);">Scan it. The wallet opens in your browser — save it to your Home Screen.</p>
             </div>
+            <p id="lij-samsung-note" hidden style="font-size: 14px; color: var(--color-neutral-800); max-width: 400px; margin-top: 10px;">You are in Samsung Internet, whose install Android 14 and later flags as unsafe. Install from Chrome instead: <a id="lij-samsung-chrome" href="intent://lightninginajar.xyz/wallet/#Intent;scheme=https;package=com.android.chrome;S.browser_fallback_url=https%3A%2F%2Flightninginajar.xyz%2Fwallet%2F;end" style="color: var(--color-accent-700); text-decoration: underline;">Open in Chrome</a>.</p><!-- v826: the Samsung steer -->
           
         </div>
 
@@ -679,7 +680,7 @@ a:hover { color: var(--color-accent-700); }
         <ol style="flex: 1 1 520px; min-width: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: clamp(20px, 3vw, 40px);">
           <li style="border-top: 2px solid var(--color-text); padding-top: 16px; display: flex; flex-direction: column; gap: 10px;">
             <span aria-hidden="true" style="font-family: var(--font-heading); font-weight: 900; font-size: 13px; letter-spacing: 0.12em; color: var(--color-accent-700);">0:00</span>
-            <p style="color: var(--color-neutral-800);">Open the wallet and add it to your home screen.</p>
+            <p style="color: var(--color-neutral-800);">Open the wallet in Safari or Chrome and add it to your home screen.</p><!-- v826: Samsung Internet's install is flagged by Play Protect -->
           </li>
           <li style="border-top: 2px solid var(--color-text); padding-top: 16px; display: flex; flex-direction: column; gap: 10px;">
             <span aria-hidden="true" style="font-family: var(--font-heading); font-weight: 900; font-size: 13px; letter-spacing: 0.12em; color: var(--color-accent-700);">0:20</span>
@@ -902,6 +903,8 @@ a:hover { color: var(--color-accent-700); }
     wireReasonHover();
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount); else mount();
+  // v826 (S49): the Samsung steer — Samsung Internet's own install wrapper is flagged by Play Protect on Android 14+; show the note with the Open in Chrome link
+  try { if (/Android/i.test(navigator.userAgent || '') && /SamsungBrowser/i.test(navigator.userAgent || '')) { var sn = document.getElementById('lij-samsung-note'); if (sn) sn.hidden = false; } } catch (e) {}
 })();
 </script>
 </body>

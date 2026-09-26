@@ -52,6 +52,13 @@ use lightning::types::features::{NodeFeatures, ChannelFeatures};
 const KEY_LNURLP_PREIMAGES: &str = "lij_lnurlp_preimages";
 /// v229: the next derivation index for seed-derived LNURLp preimages.
 const KEY_LNURLP_NEXT_INDEX: &str = "lij_lnurlp_next_index";
+/// v280 (S49, DP GO — Push Key): the pushes this wallet made (hash → PushOut), the next push
+/// derivation index, and the pushes this wallet accepted from a link (hash → PushIn). All three
+/// ride in the state blob; an accepted push's KEY lives in the LNURLp pool (hash → preimage) so
+/// the one claim path finds it when the provider's delivery lands.
+const KEY_PUSH_OUT: &str = "lij_push_out";
+const KEY_PUSH_NEXT_INDEX: &str = "lij_push_next_index";
+const KEY_PUSH_IN: &str = "lij_push_in";
 /// v229 (DP: "decades"): how long a registered static-address hash stays
 /// valid in the wallet's own engine — 30 years. The same number is handed
 /// to the LSP as `expires`, so the two sides can never disagree again.
@@ -1990,6 +1997,7 @@ impl LijNode {
                             },
                         );
                     }
+                    self.push_latch(&hex::encode(payment_hash.0), true);   // v280: a push whose key was brought
                 }
                 lightning::events::Event::PaymentPathFailed {
                     payment_id,
@@ -2055,6 +2063,8 @@ impl LijNode {
                             PaymentOutcome::Failed { reason: reason_str },
                         );
                     }
+                    drop(map);
+                    if let Some(h) = payment_hash { self.push_latch(&hex::encode(h.0), false); }   // v280: a push nobody opened, or voided — back with the sender
                 }
                 // Outbound channel we initiated (open_channel_to_lsp). LDK has
                 // negotiated and now needs the funding transaction. We build +
@@ -3971,6 +3981,191 @@ impl LijNode {
         self.lnurlp_save_pool(&pool);
         log::info!("LNURLp pool: prepared {} derived hash(es) (indices up to {}); cache size now {}", n, next.saturating_sub(1), pool.len());
         Ok(serde_json::to_string(&out).unwrap_or_else(|_| "[]".into()))
+    }
+
+    // ── v280 (S49, DP GO 2026-09-25 — Push Key, step A) ───────────────────────────────────────
+    // The sender: a (preimage, hash) pair derived from the seed by index; the provider mints a hold
+    // invoice for the hash, this wallet pays it (push_lock in lij-wasm dispatches and returns — the
+    // HTLC then sits in this wallet's channel for the window), and the record follows LDK's word on
+    // the payment: taken (PaymentSent — the key was brought), returned (PaymentFailed — nobody did,
+    // or the sender voided it). The recipient: a link's key is verified against its hash, the hash
+    // is registered as an inbound for the window, and the key goes into the LNURLp pool so the
+    // claim path claims the provider's delivery with it. Records and keys ride in the state blob.
+    fn push_load_out(&self) -> std::collections::HashMap<String, crate::push::PushOut> {
+        match self.storage.get(KEY_PUSH_OUT) {
+            Ok(Some(b)) => std::str::from_utf8(&b).ok().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default(),
+            _ => Default::default(),
+        }
+    }
+    fn push_save_out(&self, m: &std::collections::HashMap<String, crate::push::PushOut>) {
+        match serde_json::to_string(m) {
+            Ok(j) => { if let Err(e) = self.storage.set(KEY_PUSH_OUT, j.as_bytes()) { log::error!("push out persist failed: {e}"); } }
+            Err(e) => log::error!("push out serialize failed: {e}"),
+        }
+    }
+    fn push_load_in(&self) -> std::collections::HashMap<String, crate::push::PushIn> {
+        match self.storage.get(KEY_PUSH_IN) {
+            Ok(Some(b)) => std::str::from_utf8(&b).ok().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default(),
+            _ => Default::default(),
+        }
+    }
+    fn push_save_in(&self, m: &std::collections::HashMap<String, crate::push::PushIn>) {
+        match serde_json::to_string(m) {
+            Ok(j) => { if let Err(e) = self.storage.set(KEY_PUSH_IN, j.as_bytes()) { log::error!("push in persist failed: {e}"); } }
+            Err(e) => log::error!("push in serialize failed: {e}"),
+        }
+    }
+    fn push_next_index(&self) -> u32 {
+        match self.storage.get(KEY_PUSH_NEXT_INDEX) {
+            Ok(Some(b)) => std::str::from_utf8(&b).ok().and_then(|t| t.trim().parse::<u32>().ok()).unwrap_or(0),
+            _ => 0,
+        }
+    }
+
+    /// The sender's first step: derive the pair at the next index, record the push as `prepared`,
+    /// and hand the page what it needs to register the hash with the provider and, once the lock
+    /// is paid, build the link. JSON: {index, hash, preimage, amount_sats, expiry, fragment}.
+    pub fn push_prepare(&self, amount_sats: u64, window_secs: u64, lsp_pubkey_hex: &str) -> LijResult<String> {
+        if amount_sats == 0 { return Err(LijError::Invoice("a push needs an amount".into())); }
+        let lsp = lsp_pubkey_hex.trim().to_ascii_lowercase();
+        if lsp.len() != 66 || !lsp.bytes().all(|b| b.is_ascii_hexdigit()) { return Err(LijError::Invoice("the provider's key is malformed".into())); }
+        let window = crate::push::clamp_window_secs(window_secs);
+        let now = current_time_secs();
+        let expiry = now.saturating_add(window);
+        let index = self.push_next_index();
+        let pre = self.root_key.push_preimage(index);
+        let hash_hex = hex::encode(crate::push::hash_of(&pre));
+        let mut out = self.push_load_out();
+        out.insert(hash_hex.clone(), crate::push::PushOut {
+            index, hash: hash_hex.clone(), amount_sats, expiry, created: now, lsp: lsp.clone(),
+            status: "prepared".into(), payment_id: None, updated: now,
+        });
+        self.push_save_out(&out);
+        if let Err(e) = self.storage.set(KEY_PUSH_NEXT_INDEX, index.saturating_add(1).to_string().as_bytes()) {
+            log::error!("push next-index persist failed: {e}");
+        }
+        let fragment = crate::push::build_fragment(amount_sats, expiry, &lsp, &pre);
+        log::info!("[push] prepared index={} hash={} amount={} sats window={}s", index, &hash_hex[..16], amount_sats, window);
+        Ok(serde_json::json!({
+            "index": index, "hash": hash_hex, "preimage": hex::encode(pre),
+            "amount_sats": amount_sats, "expiry": expiry, "window_secs": window, "fragment": fragment,
+        }).to_string())
+    }
+
+    /// The page reports the lock's dispatch (payment_id) or a void; taken/returned come from LDK.
+    pub fn push_mark(&self, hash_hex: &str, status: &str, payment_id: Option<&str>) -> LijResult<()> {
+        let h = hash_hex.trim().to_ascii_lowercase();
+        let mut out = self.push_load_out();
+        let rec = out.get_mut(&h).ok_or_else(|| LijError::Invoice("no such push".into()))?;
+        match status {
+            "locked" | "void" | "prepared" => {}
+            _ => return Err(LijError::Invoice(format!("push_mark does not set '{status}' — LDK does"))),
+        }
+        rec.status = status.to_string();
+        if let Some(p) = payment_id { rec.payment_id = Some(p.to_string()); }
+        rec.updated = current_time_secs();
+        self.push_save_out(&out);
+        Ok(())
+    }
+
+    /// A latch from the event pass: the lock's payment settled (the key was brought) or failed back
+    /// (nobody brought it in time, or the sender voided it). Idempotent; other hashes are ignored.
+    fn push_latch(&self, payment_hash_hex: &str, taken: bool) {
+        let mut out = self.push_load_out();
+        if let Some(rec) = out.get_mut(payment_hash_hex) {
+            let next = if taken { "taken" } else if rec.status == "void" { "void" } else { "returned" };
+            if rec.status != next {
+                log::info!("[push] {} → {}", &payment_hash_hex[..16], next);
+                rec.status = next.to_string();
+                rec.updated = current_time_secs();
+                self.push_save_out(&out);
+            }
+        }
+    }
+
+    /// Every push this wallet made, newest first, with LDK's current word folded in for the ones
+    /// still open (a fulfilled or abandoned payment the latch has not yet seen).
+    pub fn push_out_json(&self) -> String {
+        use lightning::ln::channelmanager::RecentPaymentDetails as RPD;
+        let mut out = self.push_load_out();
+        let mut changed = false;
+        if let Some(cm) = self.channel_manager.as_ref() {
+            for p in cm.list_recent_payments() {
+                let (h, taken) = match p {
+                    RPD::Fulfilled { payment_hash: Some(h), .. } => (hex::encode(h.0), true),
+                    RPD::Abandoned { payment_hash, .. } => (hex::encode(payment_hash.0), false),
+                    _ => continue,
+                };
+                if let Some(rec) = out.get_mut(&h) {
+                    if rec.status == "locked" || rec.status == "prepared" || (rec.status == "void" && taken) {
+                        rec.status = (if taken { "taken" } else if rec.status == "void" { "void" } else { "returned" }).to_string();
+                        rec.updated = current_time_secs(); changed = true;
+                    }
+                }
+            }
+        }
+        if changed { self.push_save_out(&out); }
+        let mut v: Vec<&crate::push::PushOut> = out.values().collect();
+        v.sort_by(|a, b| b.created.cmp(&a.created));
+        serde_json::to_string(&v).unwrap_or_else(|_| "[]".into())
+    }
+
+    /// "Copy link" later: the key re-derived from the record's index (never stored), checked
+    /// against the hash before it is handed out.
+    pub fn push_out_preimage(&self, hash_hex: &str) -> LijResult<String> {
+        let h = hash_hex.trim().to_ascii_lowercase();
+        let out = self.push_load_out();
+        let rec = out.get(&h).ok_or_else(|| LijError::Invoice("no such push".into()))?;
+        let pre = self.root_key.push_preimage(rec.index);
+        if hex::encode(crate::push::hash_of(&pre)) != h { return Err(LijError::Invoice("the record's index does not derive its hash".into())); }
+        Ok(hex::encode(pre))
+    }
+
+    /// The recipient: a link's key against its hash; the hash registered as an inbound for the
+    /// window (plus an hour of slack); the key into the LNURLp pool so the claim path claims the
+    /// provider's delivery with it. JSON: {hash, secret, expires, amount_sats}. The page then
+    /// registers (hash, secret) with THIS wallet's provider — the B-10 rail — and asks the holding
+    /// provider to deliver.
+    pub fn push_accept(&self, fragment: &str) -> LijResult<String> {
+        let link = crate::push::parse_fragment(fragment).map_err(LijError::Invoice)?;
+        let now = current_time_secs();
+        if link.expiry <= now { return Err(LijError::Invoice("this Push Key has expired — the sats went back to the sender".into())); }
+        let cm = self.channel_manager.as_ref()
+            .ok_or_else(|| LijError::Node("ChannelManager not initialized".into()))?;
+        let payment_hash = lightning::types::payment::PaymentHash({ let mut a = [0u8; 32]; a.copy_from_slice(&hex::decode(&link.hash_hex).map_err(|_| LijError::Invoice("hash".into()))?); a });
+        let life = (link.expiry - now).saturating_add(3600).min(u32::MAX as u64) as u32;
+        let secret = cm
+            .create_inbound_payment_for_hash(payment_hash, None, life, None)
+            .map_err(|()| LijError::Invoice("create_inbound_payment_for_hash failed (already registered?)".into()))?;
+        let mut pool = self.lnurlp_load_pool();
+        pool.insert(link.hash_hex.clone(), hex::encode(link.preimage));
+        self.lnurlp_save_pool(&pool);
+        let mut inn = self.push_load_in();
+        inn.insert(link.hash_hex.clone(), crate::push::PushIn {
+            hash: link.hash_hex.clone(), amount_sats: link.amount_sats, expiry: link.expiry, accepted: now,
+            lsp: link.lsp_prefix.clone(), status: "accepted".into(), updated: now,
+        });
+        self.push_save_in(&inn);
+        log::info!("[push] accepted hash={} amount={} sats from provider {}… (expires in {}s)", &link.hash_hex[..16], link.amount_sats, link.lsp_prefix, link.expiry - now);
+        Ok(serde_json::json!({
+            "hash": link.hash_hex, "secret": hex::encode(secret.0), "expires": link.expiry,
+            "amount_sats": link.amount_sats, "lsp_prefix": link.lsp_prefix,
+        }).to_string())
+    }
+
+    /// Every push this wallet accepted, newest first; `claimed` once the delivery was claimed.
+    pub fn push_in_json(&self) -> String {
+        let mut inn = self.push_load_in();
+        let claimed = self.claimed_payments.lock().unwrap();
+        let mut changed = false;
+        for (h, rec) in inn.iter_mut() {
+            if rec.status != "claimed" && claimed.contains_key(h) { rec.status = "claimed".into(); rec.updated = current_time_secs(); changed = true; }
+        }
+        drop(claimed);
+        if changed { self.push_save_in(&inn); }
+        let mut v: Vec<&crate::push::PushIn> = inn.values().collect();
+        v.sort_by(|a, b| b.accepted.cmp(&a.accepted));
+        serde_json::to_string(&v).unwrap_or_else(|_| "[]".into())
     }
 
     pub fn create_invoice(
@@ -6283,6 +6478,9 @@ impl LijNode {
             crate::persisted_counter::KEY_COUNTER_UPWARD_RATCHET,
             KEY_LNURLP_PREIMAGES,
             KEY_LNURLP_NEXT_INDEX,   // v229
+            KEY_PUSH_OUT,            // v280: the pushes made, accepted, and the next index ride too
+            KEY_PUSH_NEXT_INDEX,
+            KEY_PUSH_IN,
         ] {
             if let Some(v) = self.storage.get(key)? {
                 bundle.insert(key.to_string(), hex::encode(&v));
@@ -7059,20 +7257,25 @@ fn parse_lnd_route_response(json: &str, final_cltv_delta: u32) -> LijResult<Rout
 
     let mut hops: Vec<RouteHop> = Vec::with_capacity(raws.len());
     for (i, raw) in raws.iter().enumerate() {
-        let cltv_expiry_delta = if i == 0 {
-            // First hop: delta is total - first hop's expiry
-            total_time_lock.saturating_sub(raw.expiry)
-        } else if i < raws.len() - 1 {
-            // Middle hops: delta is previous - current
-            raws[i - 1].expiry.saturating_sub(raw.expiry)
-        } else {
+        let cltv_expiry_delta = if i == raws.len() - 1 {
             // Last hop: use the invoice's min_final_cltv_expiry_delta.
             // This is what the destination requires us to lock for, encoded
             // in the BOLT11 invoice itself (per BOLT 11 spec, default 18 if
             // not specified). Using the invoice's value is correct for
             // any-length route (1 hop or 8+ hops) since this represents the
             // destination's requirement, not a routing hop's.
+            // v279 (S49, the address send from an LSP-2 wallet — six invoices refused
+            // 0x400f at the UM890): this rule must come FIRST. A one-hop route from
+            // the LSP (the LSP is the destination's direct peer) is also hop 0, and
+            // the first-hop rule below used to win, handing the destination the
+            // LSP's forwarding delta (80) where its invoice asked 144.
             final_cltv_delta
+        } else if i == 0 {
+            // First hop: delta is total - first hop's expiry
+            total_time_lock.saturating_sub(raw.expiry)
+        } else {
+            // Middle hops: delta is previous - current
+            raws[i - 1].expiry.saturating_sub(raw.expiry)
         };
 
         // 3.8.g: LDK convention for RouteHop.fee_msat differs for the last hop:
@@ -7129,6 +7332,30 @@ fn parse_lnd_msat(v: Option<&serde_json::Value>) -> LijResult<u64> {
 mod tests {
     use super::*;
     use crate::storage::native_storage::MemoryStorage;
+
+    // v279 (S49): the last hop of an LSP route carries the INVOICE's final CLTV delta — also when the
+    // LSP's route is a single hop (the LSP is the destination's direct peer). The night of the six
+    // refused address invoices: LND answered 0x400f because the sender locked 80 blocks (the LSP's
+    // forwarding delta, the old first-hop rule) where the hold invoice asked 144.
+    #[test]
+    fn lsp_route_last_hop_takes_the_invoice_final_cltv_even_when_it_is_the_only_hop() {
+        let pk = "03201938e37213f38e308c45ec7f3a32b9d45d33203bb850c9a41782389d086b0c";
+        let one_hop = format!(r#"{{"routes":[{{"total_time_lock":968437,"hops":[{{"pub_key":"{}","chan_id":"1052673532083765249","amt_to_forward_msat":"192000","fee_msat":"0","expiry":968357}}]}}]}}"#, pk);
+        let r = parse_lnd_route_response(&one_hop, 144).expect("one-hop route parses");
+        let hops = &r.paths[0].hops;
+        assert_eq!(hops.len(), 1);
+        assert_eq!(hops[0].cltv_expiry_delta, 144, "the only hop is the last hop: the invoice's 144, not total-expiry (80)");
+        assert_eq!(hops[0].fee_msat, 192000, "the last hop's fee_msat is the delivered amount");
+        let pk2 = "027b77441f32d88262be976d8009791bcdb1741d2d9f37dc91c6bc13ab7de812af";
+        let two_hops = format!(r#"{{"routes":[{{"total_time_lock":968517,"hops":[{{"pub_key":"{}","chan_id":"1054420655941222401","amt_to_forward_msat":"192192","fee_msat":"192","expiry":968437}},{{"pub_key":"{}","chan_id":"1052673532083765249","amt_to_forward_msat":"192000","fee_msat":"0","expiry":968357}}]}}]}}"#, pk2, pk);
+        let r2 = parse_lnd_route_response(&two_hops, 144).expect("two-hop route parses");
+        let h2 = &r2.paths[0].hops;
+        assert_eq!(h2.len(), 2);
+        assert_eq!(h2[0].cltv_expiry_delta, 80, "the first hop's delta is total - its expiry");
+        assert_eq!(h2[1].cltv_expiry_delta, 144, "the last hop: the invoice's final delta");
+        assert_eq!(h2[0].fee_msat, 192);
+        assert_eq!(h2[1].fee_msat, 192000);
+    }
 
     #[test]
     fn test_parse_network() {

@@ -186,6 +186,24 @@ impl RootKey {
         out
     }
 
+    /// v280 (S49, DP GO — Push Key): the preimage a Push Key carries is DERIVED like the LNURLp
+    /// pool's (HKDF-SHA256 over the master secret, the index as info) under its OWN salt, so a push
+    /// index and an LNURLp index can never collide and a revealed Push Key says nothing about any
+    /// other key. Derived, never stored (the v229 law): "Copy link" later re-derives it from the
+    /// record's index; a wallet restored from its words can re-derive every push it ever made.
+    pub fn push_preimage(&self, index: u32) -> [u8; 32] {
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+        let hk = Hkdf::<Sha256>::new(
+            Some(b"LiJ-Push-preimage-v1"),
+            &self.master_xprv.private_key.secret_bytes(),
+        );
+        let mut out = [0u8; 32];
+        hk.expand(&index.to_be_bytes(), &mut out)
+            .expect("32 bytes is well within HKDF-SHA256's output limit");
+        out
+    }
+
     /// Derive the legacy static_remotekey receive-chain xpriv at m/525h/0/0/0.
     ///
     /// Used by pre-v0.2.0 channels: children of this xpriv (n=0,1,2,...)
@@ -276,6 +294,21 @@ mod tests {
         let pubkey_restored = restored.portable_pubkey_hex().unwrap();
 
         assert_eq!(pubkey_original, pubkey_restored);
+    }
+
+    // v280 (S49): a Push Key's preimage is its own derivation — stable across restores, distinct
+    // from the LNURLp pool at the same index, and one index never equals another.
+    #[test]
+    fn push_preimage_is_derived_stably_and_apart_from_the_lnurlp_pool() {
+        let mnemonic: Mnemonic = TEST_MNEMONIC.parse().unwrap();
+        let root = RootKey::from_mnemonic(&mnemonic, Network::Bitcoin).unwrap();
+        let again = RootKey::from_mnemonic(&mnemonic, Network::Bitcoin).unwrap();
+        assert_eq!(root.push_preimage(0), again.push_preimage(0), "a restore re-derives the same key");
+        assert_ne!(root.push_preimage(0), root.push_preimage(1), "each index is its own key");
+        assert_ne!(root.push_preimage(7), root.lnurlp_preimage(7), "a push index and an LNURLp index never collide");
+        assert_ne!(root.push_preimage(0), root.encryption_key(), "and neither is the persistence key");
+        let (other, _) = RootKey::generate(Network::Bitcoin).unwrap();
+        assert_ne!(other.push_preimage(0), root.push_preimage(0), "another seed, another key");
     }
 
     #[test]
