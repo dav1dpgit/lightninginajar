@@ -27,11 +27,19 @@ use crate::{
 };
 
 pub const VIEW_KEY: &str = "tier2_view";
+/// v281 (S50, coin control): the user's marks on coins — frozen, note — keyed by outpoint.
+/// Its OWN key beside the view: a sync loads the view, walks the chain across network
+/// I/O and saves it back, so a mark written mid-walk inside the view would be clobbered
+/// (the pending list was split off for the same reason). Encrypted at rest like the view,
+/// packed in the backup blob (node.rs gather_state_blob), wiped by Erase. Never rebuilt:
+/// a rescan, a rollback or a reorg recreates coin RECORDS, never marks (DP 2026-09-28:
+/// "a wipe is a wipe" — but a rescan keeps freezes).
+pub const MARKS_KEY: &str = "tier2_marks";
 /// v263 (S47): the ONE list of on-chain keys encrypted at rest (v256), and the one way to
 /// read them. v256 encrypted the view but left four readers on plain storage (the on-chain
 /// send, the fee bump, the channel-open estimate and the funding build) — each failed with
 /// "tier2 view parse: expected value at line 1 column 1". Every reader goes through this.
-pub const ENCRYPTED_KEYS: &[&str] = &[VIEW_KEY];   // the pending list stays plain: node.rs reads it in four places
+pub const ENCRYPTED_KEYS: &[&str] = &[VIEW_KEY, MARKS_KEY, crate::nwc::NWC_KEY];   // the pending list stays plain: node.rs reads it in four places · v286: the NWC connections (service secrets) are encrypted at rest too
 pub fn encrypted<S: LijStorage>(inner: S, key: [u8; 32]) -> crate::storage::EncryptedKeys<S> {
     crate::storage::EncryptedKeys::new(inner, key, ENCRYPTED_KEYS)
 }   // v220: pub — the blob packs it (D3)
@@ -69,6 +77,204 @@ pub struct OnchainUtxo {
     /// output set (see derive_history) instead of kept as a second list that can drift.
     #[serde(default)]
     pub spent_txid: Option<String>,
+    /// v284 (S50): a silent-payment coin's `t_k` (32 bytes hex) — the scalar that, added to the
+    /// spend key, spends it, and from which its script is rebuilt. Chain 352 only; None elsewhere.
+    /// Recomputed by the scan whenever the coin is found again (a rebuild loses nothing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sp_tweak: Option<String>,
+}
+
+/// v281 (S50, coin control): a user's mark on one coin. Frozen = never picked by a send,
+/// by Max or by a channel open (the user can still choose it by hand once unfrozen).
+/// Note = up to 120 code points, cleaned (controls, zero-width and bidi marks removed,
+/// whitespace collapsed) — the same discipline as the address and Push Key notes.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CoinMark {
+    #[serde(default)]
+    pub frozen: bool,
+    #[serde(default)]
+    pub note: String,
+    /// When the mark last changed (ms since the epoch); display only.
+    #[serde(default)]
+    pub ts_ms: u64,
+}
+
+/// v281: every mark, keyed by outpoint `"<txid>:<vout>"`. See MARKS_KEY for why this is
+/// its own store. An entry that is neither frozen nor noted is dropped on write.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CoinMarks {
+    #[serde(default)]
+    pub marks: std::collections::HashMap<String, CoinMark>,
+    /// v288 (S50, DP: "the wallet has a say"): the wallet-side silent-payment switch. On by default;
+    /// off = the engine runs no silent-payment scan and the page shows no sp1 address. Kept here,
+    /// not in the view: the view is rewritten by a sync in flight and rebuilt on a rescan; the
+    /// user's choice must survive both.
+    #[serde(default = "default_true")]
+    pub sp_enabled: bool,
+}
+
+fn default_true() -> bool { true }
+
+impl Default for CoinMarks {
+    fn default() -> Self { Self { marks: Default::default(), sp_enabled: true } }
+}
+
+/// v281: the cap on a coin note, in code points (the address note's and the Push Key
+/// note's cap — one number across the wallet).
+pub const COIN_NOTE_MAX_CHARS: usize = 120;
+
+/// v281: clean a user-typed note: control characters (C0/C1), zero-width and bidi marks
+/// and the BOM removed, tabs/newlines made spaces, runs of whitespace collapsed, trimmed,
+/// cut at COIN_NOTE_MAX_CHARS code points. (No NFC here — the page normalises before
+/// it hands the text over; the engine has no normalisation table.)
+pub fn clean_note(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len().min(4 * COIN_NOTE_MAX_CHARS));
+    let mut last_space = true;   // trims leading whitespace
+    let mut n = 0usize;
+    for c in raw.chars() {
+        let drop = (c.is_control() && !matches!(c, '\t' | '\n' | '\r'))
+            || matches!(c,
+                '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{2060}' | '\u{FEFF}'   // zero-width space/non-joiner/joiner/word-joiner, BOM
+                | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');   // bidi marks and embeddings
+        if drop {
+            continue;
+        }
+        let is_ws = c.is_whitespace();
+        if is_ws {
+            if last_space {
+                continue;
+            }
+            out.push(' ');
+            last_space = true;
+        } else {
+            out.push(c);
+            last_space = false;
+        }
+        n += 1;
+        if n >= COIN_NOTE_MAX_CHARS {
+            break;
+        }
+    }
+    while out.ends_with(' ') {
+        out.pop();
+    }
+    out
+}
+
+impl CoinMarks {
+    pub fn key(txid: &str, vout: u32) -> String {
+        format!("{}:{vout}", txid.to_ascii_lowercase())
+    }
+    pub fn get(&self, txid: &str, vout: u32) -> Option<&CoinMark> {
+        self.marks.get(&Self::key(txid, vout))
+    }
+    pub fn is_frozen(&self, txid: &str, vout: u32) -> bool {
+        self.get(txid, vout).map(|m| m.frozen).unwrap_or(false)
+    }
+    /// The frozen outpoints as a set — what every coin picker filters against.
+    pub fn frozen_set(&self) -> std::collections::HashSet<(String, u32)> {
+        self.marks
+            .iter()
+            .filter(|(_, m)| m.frozen)
+            .filter_map(|(k, _)| {
+                let (txid, vout) = k.rsplit_once(':')?;
+                Some((txid.to_string(), vout.parse().ok()?))
+            })
+            .collect()
+    }
+    /// Set or clear the freeze on one coin. Returns the mark as stored (None once empty).
+    pub fn set_frozen(&mut self, txid: &str, vout: u32, frozen: bool, now_ms: u64) -> Option<CoinMark> {
+        let k = Self::key(txid, vout);
+        let mut m = self.marks.remove(&k).unwrap_or_default();
+        m.frozen = frozen;
+        m.ts_ms = now_ms;
+        self.put(k, m)
+    }
+    /// Set (or, with an empty string, clear) the note on one coin — cleaned and capped.
+    pub fn set_note(&mut self, txid: &str, vout: u32, note: &str, now_ms: u64) -> Option<CoinMark> {
+        let k = Self::key(txid, vout);
+        let mut m = self.marks.remove(&k).unwrap_or_default();
+        m.note = clean_note(note);
+        m.ts_ms = now_ms;
+        self.put(k, m)
+    }
+    fn put(&mut self, k: String, m: CoinMark) -> Option<CoinMark> {
+        if !m.frozen && m.note.is_empty() {
+            return None;   // nothing to keep
+        }
+        self.marks.insert(k, m.clone());
+        Some(m)
+    }
+    pub fn frozen_count(&self) -> usize {
+        self.marks.values().filter(|m| m.frozen).count()
+    }
+}
+
+/// v281: persist the marks (JSON, encrypted at rest through the ENCRYPTED_KEYS wrapper).
+pub fn save_marks(storage: &dyn LijStorage, marks: &CoinMarks) -> LijResult<()> {
+    let bytes = serde_json::to_vec(marks)
+        .map_err(|e| LijError::Storage(format!("tier2 marks serialize: {e}")))?;
+    storage.set(MARKS_KEY, &bytes)
+}
+
+/// v281: load the marks, or an empty set when none were ever written.
+pub fn load_marks(storage: &dyn LijStorage) -> LijResult<CoinMarks> {
+    match storage.get(MARKS_KEY)? {
+        Some(b) => serde_json::from_slice(&b)
+            .map_err(|e| LijError::Storage(format!("tier2 marks parse: {e}"))),
+        None => Ok(CoinMarks::default()),
+    }
+}
+
+/// v281 (S50, coin control): one row of the coin list as the page shows it — the coin
+/// record plus what the user marked and the kind the ledger knows. `tag` is one of
+/// `received` (chain 0), `change` (chain 1), `channel_return` (a close's payout, from the
+/// node's closing-txid record), `legacy` (chain 525); `silent_payment` joins with chain 352.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CoinRow {
+    pub chain: u32,
+    pub index: u32,
+    pub txid: String,
+    pub vout: u32,
+    pub value_sats: u64,
+    pub height: u32,
+    pub tag: String,
+    pub frozen: bool,
+    pub note: String,
+}
+
+/// v281: the tag for a coin, from the chain and the ledger's records.
+pub fn coin_tag(view: &Tier2View, u: &OnchainUtxo) -> &'static str {
+    if u.chain == CHAIN_LEGACY {
+        "legacy"
+    } else if u.chain == crate::tier2::CHAIN_SP {
+        "silent_payment"
+    } else if view.closing_txids.contains(&u.txid)
+        || matches!(view.kinds.get(&u.txid), Some(TxKind::ChannelClose))
+    {
+        "channel_return"
+    } else if u.chain == CHAIN_CHANGE {
+        "change"
+    } else {
+        "received"
+    }
+}
+
+impl CoinRow {
+    pub fn from_utxo(view: &Tier2View, marks: &CoinMarks, u: &OnchainUtxo) -> CoinRow {
+        let m = marks.get(&u.txid, u.vout);
+        CoinRow {
+            chain: u.chain,
+            index: u.index,
+            txid: u.txid.clone(),
+            vout: u.vout,
+            value_sats: u.value_sats,
+            height: u.height,
+            tag: coin_tag(view, u).to_string(),
+            frozen: m.map(|m| m.frozen).unwrap_or(false),
+            note: m.map(|m| m.note.clone()).unwrap_or_default(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -105,6 +311,11 @@ pub struct OnchainHistoryEntry {
     /// v259: the block's header time (unix seconds); 0 when unknown.
     #[serde(default)]
     pub time: u32,
+    /// v289 (S50, SP receive on the page): the sats this transaction paid to the wallet's
+    /// silent-payment address (chain 352 coins) — 0 for an ordinary row. The face reads it to
+    /// say "silent payment" on the row without matching coins itself.
+    #[serde(default)]
+    pub silent_payment_sats: u64,
 }
 
 /// A transaction we originated (on-chain send, channel funding, sweep) and
@@ -242,6 +453,11 @@ pub struct Tier2View {
     /// clock time without another network read.
     #[serde(default)]
     pub block_times: std::collections::HashMap<u32, u32>,
+    /// v287 (S50, SP receive): the silent-payment scan's state — where it starts, how far it has
+    /// scanned, the mempool cursor, the pending (unconfirmed) silent payments. None until the first
+    /// sync under v287 asks the provider whether it serves a tweak index.
+    #[serde(default)]
+    pub sp: Option<crate::sp_scan::SpScan>,
 }
 
 /// v257: the downward cursor (see Tier2View::down).
@@ -392,6 +608,7 @@ pub fn apply_txs(view: &mut Tier2View, scripts: &WalletScripts, txs: &[Transacti
                 // v257: a spend of this coin may already have been seen above it
                 let pend = view.pending_spends.remove(&format!("{txid}:{vout}"));
                 view.utxos.push(OnchainUtxo {
+                    sp_tweak: None,
                     chain,
                     index,
                     txid: txid.clone(),
@@ -571,6 +788,7 @@ pub(crate) fn unconfirmed_change_utxos(
             continue;
         }
         out.push(OnchainUtxo {
+            sp_tweak: None,
             chain: 1,
             index: p.change_index,
             txid,
@@ -726,6 +944,14 @@ pub fn rollback(view: &mut Tier2View, to_height: u32) {
     view.cursor.scanned_to = to_height;
     view.cursor.last_hash = None;
     view.cursor.last_filter_header = None;
+    // v287: the silent-payment scan rolls back with the walk (its coins above went with the utxos)
+    if let Some(sp) = view.sp.as_mut() {
+        if sp.scanned_to > to_height {
+            sp.scanned_to = to_height;
+            sp.scanned_hash.clear();
+            sp.scanned_filter_header.clear();
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -744,6 +970,36 @@ async fn get_json<T: serde::de::DeserializeOwned>(
     serde_json::from_str(&resp.body).map_err(|e| LijError::Node(format!("tier2 parse {url}: {e}")))
 }
 
+/// v287 (S50, SP receive): fetch one block by height, bind it to the validated canonical hash and check
+/// its transactions commit to the header (merkle root). The one block fetch the m/84 walk and the
+/// silent-payment scan share. Network I/O — run OUTSIDE any wallet lock.
+pub(crate) async fn fetch_block_bound(
+    http: &Arc<dyn EsploraHttp>,
+    base: &str,
+    height: u32,
+    block_hash: &str,
+) -> LijResult<Block> {
+    let resp: BlockResp = get_json(http, &format!("{base}/block/{height}")).await?;
+    let bytes = hex::decode(&resp.block)
+        .map_err(|e| LijError::Node(format!("block hex at {height}: {e}")))?;
+    let block: Block = bitcoin::consensus::deserialize(&bytes)
+        .map_err(|e| LijError::Node(format!("block decode at {height}: {e}")))?;
+    // Bind to the chain we validated: this must be the exact block whose
+    // header passed PoW + linkage in the sync step.
+    let want = BlockHash::from_str(block_hash)
+        .map_err(|e| LijError::Node(format!("matched hash parse at {height}: {e}")))?;
+    if block.block_hash() != want {
+        return Err(LijError::Node(format!(
+            "block {height} hash does not match validated hash"
+        )));
+    }
+    // Transactions must commit to the (PoW-validated) header.
+    if !block.check_merkle_root() {
+        return Err(LijError::Node(format!("block {height} merkle root mismatch")));
+    }
+    Ok(block)
+}
+
 /// Fetch each matched block, bind it to the validated canonical hash, verify
 /// its transactions commit to the header (merkle root), then extract into the
 /// view. Network I/O — run OUTSIDE any wallet lock.
@@ -756,26 +1012,7 @@ pub async fn fetch_and_apply(
     close_txids: &std::collections::HashSet<String>,
 ) -> LijResult<()> {
     for m in matched {
-        let resp: BlockResp = get_json(http, &format!("{base}/block/{}", m.height)).await?;
-        let bytes = hex::decode(&resp.block)
-            .map_err(|e| LijError::Node(format!("block hex at {}: {e}", m.height)))?;
-        let block: Block = bitcoin::consensus::deserialize(&bytes)
-            .map_err(|e| LijError::Node(format!("block decode at {}: {e}", m.height)))?;
-
-        // Bind to the chain we validated: this must be the exact block whose
-        // header passed PoW + linkage in the sync step.
-        let want = BlockHash::from_str(&m.block_hash)
-            .map_err(|e| LijError::Node(format!("matched hash parse at {}: {e}", m.height)))?;
-        if block.block_hash() != want {
-            return Err(LijError::Node(format!(
-                "block {} hash does not match validated hash",
-                m.height
-            )));
-        }
-        // Transactions must commit to the (PoW-validated) header.
-        if !block.check_merkle_root() {
-            return Err(LijError::Node(format!("block {} merkle root mismatch", m.height)));
-        }
+        let block = fetch_block_bound(http, base, m.height, &m.block_hash).await?;   // v287: the shared fetch
 
         view.block_times.insert(m.height, block.header.time);   // v259
         apply_txs(view, scripts, &block.txdata, m.height);
@@ -856,6 +1093,13 @@ pub struct Tier2Summary {
     /// open) before it confirms. Audit-only (the amount added).
     pub unconfirmed_change_sats: u64,
     pub legacy_sats: u64,
+    /// v281 (S50, coin control): the value of frozen coins inside `spendable_sats`
+    /// (unspent, not reserved; unconfirmed change included if marked). The balance
+    /// card shows `spendable_sats` unchanged — a freeze hides nothing; a send, Max and
+    /// a channel open work from `sendable_sats` = spendable − frozen.
+    pub frozen_sats: u64,
+    pub sendable_sats: u64,
+    pub frozen_count: u32,
     pub scanned_to: u32,
     pub tip_height: u32,
     pub caught_up: bool,
@@ -875,7 +1119,8 @@ pub struct Tier2Summary {
     pub down_done: bool,
     /// v257: the last sync call's result (for the face).
     pub last_sync: Option<SyncNote>,
-    pub utxos: Vec<OnchainUtxo>,
+    /// v281: the coin list as rows — record + tag + the user's frozen/note marks.
+    pub utxos: Vec<CoinRow>,
     /// The confirmed unspent coins that ARE reserved by a pending spend (hidden
     /// from `utxos`). Audit-only: lets a reconciliation verify every pending
     /// spend's inputs are real confirmed coins (`utxos ∪ reserved_utxos`).
@@ -883,6 +1128,10 @@ pub struct Tier2Summary {
     pub history: Vec<OnchainHistoryEntry>,
     /// Locally-originated txs not yet confirmed (own-send immediate view).
     pub pending: Vec<PendingTx>,
+    /// v287 (S50, SP receive): the silent-payment scan for the face — the wallet's switch,
+    /// available at this provider, how far it has scanned, the pending (mempool) silent payments.
+    #[serde(default)]
+    pub sp: crate::sp_scan::SpSummary,
 }
 
 impl Tier2Summary {
@@ -896,7 +1145,7 @@ impl Tier2Summary {
 /// reserved by pending txs, the UTXO list hides reserved outputs and includes
 /// the optimistic unconfirmed-change rows (height == 0), history is
 /// newest-first, and pending txs are surfaced for the immediate-view UI.
-pub fn summary(view: &Tier2View, pending: &[PendingTx], tip_height: u32) -> Tier2Summary {
+pub fn summary(view: &Tier2View, pending: &[PendingTx], tip_height: u32, marks: &CoinMarks) -> Tier2Summary {
     let (mut spendable_sats, legacy_sats) = balances(view);
     let confirmed_sats = spendable_sats; // before the pending reserve is subtracted
     let reserved = reserved_outpoints(pending);
@@ -926,18 +1175,28 @@ pub fn summary(view: &Tier2View, pending: &[PendingTx], tip_height: u32) -> Tier
         .map(|u| u.index)
         .max()
         .map_or(0, |m| m + 1);
-    let mut utxos: Vec<OnchainUtxo> = view
+    let mut utxos: Vec<CoinRow> = view
         .utxos
         .iter()
         .filter(|u| u.spent_height.is_none() && !reserved.contains(&(u.txid.clone(), u.vout)))
-        .cloned()
+        .map(|u| CoinRow::from_utxo(view, marks, u))
         .collect();
     // v103: the UTXO list must show the same money the balance counts — append
     // the optimistic unconfirmed-change rows (height == 0 marks them pending in
     // the UI). Recomputed from view + pending every sync, so the list tracks
     // confirmations and reorgs in lockstep with the balance: once the change
     // confirms it enters the view above and drops out of this set, never doubled.
-    utxos.extend(unconfirmed_change);
+    utxos.extend(unconfirmed_change.iter().map(|u| CoinRow::from_utxo(view, marks, u)));
+    // v281 (S50, coin control): frozen = the marked coins among the rows above (legacy
+    // coins are not spendable anyway and stay out of the figure); sendable = what a
+    // send, Max or an open may use. The balance card keeps spendable_sats.
+    let frozen_sats: u64 = utxos
+        .iter()
+        .filter(|r| r.frozen && r.chain != CHAIN_LEGACY)
+        .map(|r| r.value_sats)
+        .sum();
+    let frozen_count = utxos.iter().filter(|r| r.frozen && r.chain != CHAIN_LEGACY).count() as u32;
+    let sendable_sats = spendable_sats.saturating_sub(frozen_sats);
     let history = derive_history(view);   // v255/v256: rows come from the coins; ordered inside
     // v256: the invariants — the double-entry checks from S15, on every summary.
     let mut invariants: Vec<String> = Vec::new();
@@ -963,6 +1222,9 @@ pub fn summary(view: &Tier2View, pending: &[PendingTx], tip_height: u32) -> Tier
         reserved_sats: reserved_value,
         unconfirmed_change_sats,
         legacy_sats,
+        frozen_sats,
+        sendable_sats,
+        frozen_count,
         scanned_to: view.cursor.scanned_to,
         tip_height,
         caught_up: view.down.as_ref().map(|d| d.done).unwrap_or(true) && view.cursor.scanned_to >= tip_height,   // v257: done when the downward walk reached the birthday and the top is at the tip (no down cursor = nothing left below)
@@ -978,6 +1240,7 @@ pub fn summary(view: &Tier2View, pending: &[PendingTx], tip_height: u32) -> Tier
         reserved_utxos,
         history,
         pending: pending.to_vec(),
+        sp: crate::sp_scan::summary(view, marks.sp_enabled),   // v287 · v288 the switch
     }
 }
 
@@ -1114,9 +1377,14 @@ pub fn derive_history(view: &Tier2View) -> Vec<OnchainHistoryEntry> {
     use std::collections::HashMap;
     let mut recv: HashMap<String, (u32, u64)> = HashMap::new();
     let mut spent: HashMap<String, (u32, u64)> = HashMap::new();
+    let mut sp_sats: HashMap<String, u64> = HashMap::new();   // v289: silent-payment sats per txid
     for u in &view.utxos {
         let r = recv.entry(u.txid.clone()).or_insert((u.height, 0));
         r.1 = r.1.saturating_add(u.value_sats);
+        if u.chain == crate::tier2::CHAIN_SP {
+            let e = sp_sats.entry(u.txid.clone()).or_insert(0);
+            *e = e.saturating_add(u.value_sats);
+        }
         if let (Some(sh), Some(st)) = (u.spent_height, u.spent_txid.as_ref()) {
             let s = spent.entry(st.clone()).or_insert((sh, 0));
             s.1 = s.1.saturating_add(u.value_sats);
@@ -1150,7 +1418,8 @@ pub fn derive_history(view: &Tier2View) -> Vec<OnchainHistoryEntry> {
             },
         };
         let time = view.block_times.get(&height).copied().unwrap_or(0);   // v259
-        out.push(OnchainHistoryEntry { txid, height, direction, delta_sats: delta, kind, time });
+        let silent_payment_sats = sp_sats.get(&txid).copied().unwrap_or(0);   // v289
+        out.push(OnchainHistoryEntry { txid, height, direction, delta_sats: delta, kind, time, silent_payment_sats });
     }
     // v256: height newest first, then txid — same height never swaps between refreshes.
     out.sort_by(|a, b| b.height.cmp(&a.height).then_with(|| a.txid.cmp(&b.txid)));
@@ -1424,7 +1693,7 @@ mod tests {
         let mut view = Tier2View::default();
         apply_txs(&mut view, &s, &[tx_paying(our_receive_spk(&s), 33_000)], 900_000);
         view.cursor.scanned_to = 900_000;
-        let sm = summary(&view, &[], 900_000);
+        let sm = summary(&view, &[], 900_000, &CoinMarks::default());
         assert_eq!(sm.spendable_sats, 33_000);
         assert_eq!(sm.legacy_sats, 0);
         assert!(sm.caught_up);
@@ -1444,7 +1713,7 @@ mod tests {
         let recv_txid = recv.txid();
         apply_txs(&mut view, &s, &[recv], 900_000);
         view.cursor.scanned_to = 900_000;
-        assert_eq!(summary(&view, &load_pending(&storage), 900_000).spendable_sats, 33_000);
+        assert_eq!(summary(&view, &load_pending(&storage), 900_000, &CoinMarks::default()).spendable_sats, 33_000);
 
         // Originate a channel-open funding tx spending that output (no change to
         // us); record it pending in its OWN key. Spendable should drop to 0, the
@@ -1473,7 +1742,7 @@ mod tests {
             },
         )
         .unwrap();
-        let sm = summary(&view, &load_pending(&storage), 900_000);
+        let sm = summary(&view, &load_pending(&storage), 900_000, &CoinMarks::default());
         assert_eq!(sm.spendable_sats, 0, "input reserved while pending");
         assert!(sm.utxos.is_empty(), "reserved utxo hidden");
         assert_eq!(sm.pending.len(), 1);
@@ -1484,7 +1753,7 @@ mod tests {
         // pending from its key.
         apply_txs(&mut view, &s, &[funding], 900_005);
         reconcile_pending(&storage, &mut view).unwrap();
-        let sm2 = summary(&view, &load_pending(&storage), 900_005);
+        let sm2 = summary(&view, &load_pending(&storage), 900_005, &CoinMarks::default());
         assert!(sm2.pending.is_empty(), "pending cleared on confirm");
         let row = sm2
             .history
@@ -1529,5 +1798,99 @@ mod tests {
         assert!(view.funding_txids.contains(&funding_txid), "funding record survives the rebuild");
         assert!(view.closing_txids.contains("c0ffee"), "closing record survives the rebuild");
         assert!(view.kinds.is_empty() && view.utxos.is_empty() && view.close_hints.is_empty(), "the walk's own data is gone");
+    }
+
+    // ---- v281 (S50, coin control): marks, rows, frozen figures ----------------------
+
+    #[test]
+    fn clean_note_strips_controls_collapses_space_and_caps() {
+        assert_eq!(clean_note("  hello\t\tworld \u{200B}!\n "), "hello world !");
+        assert_eq!(clean_note("a\u{202E}b\u{0007}c"), "abc");
+        assert_eq!(clean_note(""), "");
+        let long: String = std::iter::repeat('x').take(200).collect();
+        assert_eq!(clean_note(&long).chars().count(), COIN_NOTE_MAX_CHARS);
+        // a multi-byte character counts as one
+        let jp: String = std::iter::repeat('蔵').take(130).collect();
+        assert_eq!(clean_note(&jp).chars().count(), COIN_NOTE_MAX_CHARS);
+    }
+
+    #[test]
+    fn marks_set_get_and_drop_when_empty() {
+        let mut m = CoinMarks::default();
+        assert!(m.set_frozen("AB", 1, true, 5).is_some());
+        assert!(m.is_frozen("ab", 1), "keys are case-insensitive on the txid");
+        assert_eq!(m.frozen_set(), std::collections::HashSet::from([("ab".to_string(), 1u32)]));
+        assert!(m.set_note("ab", 1, "  keep  for  rent ", 6).is_some());
+        assert_eq!(m.get("ab", 1).unwrap().note, "keep for rent");
+        assert!(m.get("ab", 1).unwrap().frozen, "a note keeps the freeze");
+        assert_eq!(m.get("ab", 1).unwrap().ts_ms, 6);
+        assert!(m.set_frozen("ab", 1, false, 7).is_some(), "still noted");
+        assert!(!m.is_frozen("ab", 1));
+        assert!(m.set_note("ab", 1, "", 8).is_none(), "neither frozen nor noted → dropped");
+        assert!(m.marks.is_empty());
+        assert_eq!(m.frozen_count(), 0);
+    }
+
+    #[test]
+    fn marks_persist_and_load_empty_when_absent() {
+        let storage = MemStorage(Mutex::new(HashMap::new()));
+        assert!(load_marks(&storage).unwrap().marks.is_empty());
+        let mut m = CoinMarks::default();
+        m.set_frozen("cd", 0, true, 1);
+        save_marks(&storage, &m).unwrap();
+        let back = load_marks(&storage).unwrap();
+        assert!(back.is_frozen("cd", 0));
+        // the store goes through the encrypted wrapper in the wallet: the key is listed
+        assert!(ENCRYPTED_KEYS.contains(&MARKS_KEY));
+    }
+
+    #[test]
+    fn summary_rows_carry_tag_freeze_note_and_the_frozen_figures() {
+        let s = scripts();
+        let mut view = Tier2View::default();
+        let a = tx_paying(our_receive_spk(&s), 30_000);
+        let b = tx_paying(our_receive_spk(&s), 20_000);
+        let a_txid = a.txid().to_string();
+        let b_txid = b.txid().to_string();
+        apply_txs(&mut view, &s, &[a, b], 900_000);
+        view.cursor.scanned_to = 900_000;
+        let mut marks = CoinMarks::default();
+        marks.set_frozen(&a_txid, 0, true, 1);
+        marks.set_note(&b_txid, 0, "from Bob", 2);
+        let sm = summary(&view, &[], 900_000, &marks);
+        assert_eq!(sm.spendable_sats, 50_000, "the balance card figure does not move");
+        assert_eq!(sm.frozen_sats, 30_000);
+        assert_eq!(sm.frozen_count, 1);
+        assert_eq!(sm.sendable_sats, 20_000);
+        let ra = sm.utxos.iter().find(|r| r.txid == a_txid).unwrap();
+        let rb = sm.utxos.iter().find(|r| r.txid == b_txid).unwrap();
+        assert!(ra.frozen && ra.note.is_empty() && ra.tag == "received");
+        assert!(!rb.frozen && rb.note == "from Bob" && rb.tag == "received");
+        assert!(sm.invariants.is_empty());
+        // a close's payout is tagged by the node's record, whatever chain it landed on
+        view.closing_txids.insert(b_txid.clone());
+        let sm2 = summary(&view, &[], 900_000, &marks);
+        assert_eq!(sm2.utxos.iter().find(|r| r.txid == b_txid).unwrap().tag, "channel_return");
+    }
+
+    #[test]
+    fn a_rebuild_recreates_the_coin_and_the_mark_still_applies() {
+        // The mark lives beside the view, keyed by outpoint: a rebuild (or a rollback,
+        // or a reorg) wipes coin RECORDS; when the walk finds the coin again, the row
+        // is frozen again. DP 2026-09-28: a rescan keeps freezes.
+        let s = scripts();
+        let mut view = Tier2View::default();
+        let a = tx_paying(our_receive_spk(&s), 30_000);
+        let a_txid = a.txid().to_string();
+        apply_txs(&mut view, &s, &[a.clone()], 900_000);
+        let mut marks = CoinMarks::default();
+        marks.set_frozen(&a_txid, 0, true, 1);
+        rebuild_from_birthday(&mut view, 0);
+        assert!(view.utxos.is_empty());
+        assert_eq!(summary(&view, &[], 900_000, &marks).frozen_sats, 0, "no coin, no frozen figure");
+        apply_txs(&mut view, &s, &[a], 900_000);
+        let sm = summary(&view, &[], 900_000, &marks);
+        assert!(sm.utxos[0].frozen);
+        assert_eq!(sm.frozen_sats, 30_000);
     }
 }

@@ -50,6 +50,9 @@ pub const DEFAULT_GAP: u32 = 50;
 pub const CHAIN_RECEIVE: u32 = 0;
 pub const CHAIN_CHANGE: u32 = 1;
 pub const CHAIN_LEGACY: u32 = 525;
+/// v284 (S50): silent-payment coins (BIP-352) — found by the scan, not by an index on a chain; the
+/// coin's own `sp_tweak` (t_k) derives its script and its key. Spendable like chain 0/1.
+pub const CHAIN_SP: u32 = 352;
 
 /// One scriptPubKey we watch, tagged with the (chain, index) needed to derive
 /// its signing key later.
@@ -210,6 +213,23 @@ pub fn block_matches(
     }
     let filter = BlockFilter::new(filter_content);
     let query = scripts.query_bytes();
+    filter
+        .match_any(block_hash, &mut query.iter().copied())
+        .map_err(|e| LijError::Node(format!("bip158 match: {e}")))
+}
+
+/// v287 (silent-payment receive): match a filter against an arbitrary script list — the block's
+/// silent-payment candidates plus the scripts of the coins already found.
+pub fn block_matches_scripts(
+    filter_content: &[u8],
+    block_hash: &BlockHash,
+    scripts: &[bitcoin::ScriptBuf],
+) -> LijResult<bool> {
+    if scripts.is_empty() {
+        return Ok(false);
+    }
+    let filter = BlockFilter::new(filter_content);
+    let query: Vec<&[u8]> = scripts.iter().map(|s| s.as_bytes()).collect();
     filter
         .match_any(block_hash, &mut query.iter().copied())
         .map_err(|e| LijError::Node(format!("bip158 match: {e}")))

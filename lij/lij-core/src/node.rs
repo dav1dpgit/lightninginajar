@@ -2088,13 +2088,18 @@ impl LijNode {
                         temporary_channel_id
                     );
                     let t2_store = crate::tier2_wallet::encrypted(&*self.storage, self.root_key.encryption_key());   // v263: the view is encrypted at rest (v256)
-                    match crate::channel_open::build_funding_tx(
+                    // v282 (S50, coin control): the chosen coins parked by open_channel_to_lsp_with, by this open's nonce
+                    let open_nonce = ((user_channel_id >> 32) & 0xFFFF_FFFF) as u32;
+                    let pins = crate::channel_open::take_pins(open_nonce);
+                    if let Some(p) = pins.as_ref() { log::info!("[Event] FundingGenerationReady: {} chosen coin(s) for this open", p.len()); }
+                    match crate::channel_open::build_funding_tx_with(
                         &*self.root_key,
                         &t2_store,
                         self.network,
                         output_script,
                         channel_value_satoshis,
                         fee_rate_sat_per_kw,
+                        pins.as_deref(),
                     ) {
                         Ok(funding) => {
                             let funding_txid = funding.tx.txid().to_string();
@@ -3728,6 +3733,17 @@ impl LijNode {
         amount_sats: u64,
         fee_rate_sat_per_vb: f64,
     ) -> LijResult<String> {
+        self.open_channel_to_lsp_with(amount_sats, fee_rate_sat_per_vb, None)
+    }
+
+    /// v282 (S50, coin control cut 3): the same open, funded from EXACTLY the chosen coins
+    /// (`pins`); they are parked under this open's nonce until FundingGenerationReady.
+    pub fn open_channel_to_lsp_with(
+        &self,
+        amount_sats: u64,
+        fee_rate_sat_per_vb: f64,
+        pins: Option<Vec<(String, u32)>>,
+    ) -> LijResult<String> {
         use std::sync::atomic::{AtomicU32, Ordering};
         static OPEN_NONCE: AtomicU32 = AtomicU32::new(1);
 
@@ -3766,6 +3782,10 @@ impl LijNode {
         let user_channel_id: u128 = crate::signer::UCID_TERMINUS_PIN_BIT
             | (nonce << 32)
             | (fee_rate_sat_per_kw as u128);
+        if let Some(p) = pins {
+            // v282: the chosen coins wait for the event under this open's nonce
+            crate::channel_open::park_pins(nonce as u32, p);
+        }
 
         let mut config = UserConfig::default();
         config.channel_handshake_config.minimum_depth = 1;
@@ -5970,9 +5990,18 @@ impl LijNode {
             }
         }
         ids.sort();
-        let joined = format!("{}:{}", ids.len(), ids.join(","));
+        // v291: the unspent silent-payment coins are part of the fingerprint — a coin arriving or leaving makes a
+        // push due, so "coins after the last Black start kit push" is at most one sync behind.
+        let mut sp: Vec<String> = {
+            let t2_store = crate::tier2_wallet::encrypted(&*self.storage, self.root_key.encryption_key());
+            crate::tier2_wallet::load_view(&t2_store)
+                .map(|v| v.utxos.iter().filter(|u| u.chain == crate::tier2::CHAIN_SP && u.spent_height.is_none()).map(|u| format!("{}:{}", u.txid, u.vout)).collect())
+                .unwrap_or_default()
+        };
+        sp.sort();
+        let joined = format!("{}:{}|sp{}:{}", ids.len(), ids.join(","), sp.len(), sp.join(","));
         let fp = sha256::Hash::hash(joined.as_bytes());
-        Ok(format!("{{\"fp\":\"{}\",\"channels\":{}}}", hex::encode(fp.to_byte_array()), ids.len()))
+        Ok(format!("{{\"fp\":\"{}\",\"channels\":{},\"silent_payments\":{}}}", hex::encode(fp.to_byte_array()), ids.len(), sp.len()))
     }
 
     /// v275: the whole push, ready to send — the escape kit (v211) plus the LSP it was made under,
@@ -6109,6 +6138,20 @@ impl LijNode {
                 "sweep_hex_high": sweep_high.as_ref().map(|s| s.1.clone()),
             }));
         }
+        // v291 (S50, DP "Go on Black start v291"): the silent-payment leg — one pre-signed sweep per unspent
+        // silent-payment coin, each to its own fresh m/84 receive address just past the kit's destination index,
+        // at the same two rates. Read from the coin ledger (encrypted at rest); an unreadable ledger leaves the
+        // leg empty rather than failing the kit (the channels' half must always export).
+        let (silent_payments, sp_note) = {
+            let t2_store = crate::tier2_wallet::encrypted(&*self.storage, self.root_key.encryption_key());
+            match crate::tier2_wallet::load_view(&t2_store) {
+                Ok(view) => match crate::onchain_send::sp_kit_sweeps(&self.root_key, &view, self.network, dest_index.saturating_add(1), (10, 40)) {
+                    Ok(v) => (v, String::new()),
+                    Err(e) => (Vec::new(), format!("silent-payment sweeps not built: {e}")),
+                },
+                Err(e) => (Vec::new(), format!("coin ledger unreadable: {e}")),
+            }
+        };
         let kit = serde_json::json!({
             "version": 1,
             "sweep_destination_index": dest_index,
@@ -6116,6 +6159,8 @@ impl LijNode {
             "feerate_normal_sat_vb": 10,
             "feerate_high_sat_vb": 40,
             "channels": channels,
+            "silent_payments": silent_payments,   // v291
+            "silent_payments_note": sp_note,
         });
         serde_json::to_string(&kit)
             .map_err(|e| LijError::Node(format!("escape export: serialize: {e}")))
@@ -6474,6 +6519,7 @@ impl LijNode {
         for key in [
             crate::tier2_wallet::VIEW_KEY,
             crate::tier2_wallet::PENDING_KEY,
+            crate::tier2_wallet::MARKS_KEY,   // v281 (S50, coin control): freezes and notes ride the blob too
             crate::persisted_counter::KEY_NEXT_CHANNEL_INDEX,
             crate::persisted_counter::KEY_COUNTER_UPWARD_RATCHET,
             KEY_LNURLP_PREIMAGES,
@@ -6481,6 +6527,7 @@ impl LijNode {
             KEY_PUSH_OUT,            // v280: the pushes made, accepted, and the next index ride too
             KEY_PUSH_NEXT_INDEX,
             KEY_PUSH_IN,
+            crate::nwc::NWC_KEY,     // v286 (S50, NWC): the connections (service secrets, encrypted at rest) and limits ride too
         ] {
             if let Some(v) = self.storage.get(key)? {
                 bundle.insert(key.to_string(), hex::encode(&v));

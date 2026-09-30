@@ -179,6 +179,32 @@ pub async fn yield_now() {
 /// Filters matched between yields (see yield_now).
 pub const YIELD_EVERY: usize = 16;
 
+/// v293 (S51, DP 22:57 "Go with O1" — the Performance readout, iPhone X): the main-thread budget between yields, in
+/// ms. The silent-payment scan used to yield only every 8 blocks, and one 8-block run of elliptic-curve work was
+/// 1–6 s with the screen frozen (every recorded stall sat inside tier2_onchain_sync; the longest 6.4 s). Under a
+/// budget the same work yields whenever this much wall time has passed since the last yield — the screen gets a
+/// turn every ~40 ms, the total scan time is nearly unchanged (each yield is one setTimeout(0), ≤ 4 ms).
+pub const YIELD_BUDGET_MS: f64 = 40.0;
+
+/// Wall time in ms for the budget (Date.now() on wasm32; the system clock natively, where nothing yields anyway).
+pub fn now_ms() -> f64 {
+    #[cfg(target_arch = "wasm32")]
+    { js_sys::Date::now() }
+    #[cfg(not(target_arch = "wasm32"))]
+    { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0) }
+}
+
+/// v293: yield to the browser's task queue only when YIELD_BUDGET_MS have passed since `mark`; `mark` is reset to
+/// now after a yield. Cheap to call often (one clock read). Native builds: nothing to yield to.
+pub async fn yield_if_due(mark: &mut f64) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        if now_ms() - *mark >= YIELD_BUDGET_MS { yield_now().await; *mark = now_ms(); }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    { let _ = mark; }
+}
+
 /// Run the wallet's match set against a batch of filters; return the heights
 /// whose blocks need fetching. Pure.
 pub fn matching_heights(scripts: &WalletScripts, filters: &[FilterItem]) -> LijResult<Vec<u32>> {
@@ -197,7 +223,7 @@ pub fn matching_heights(scripts: &WalletScripts, filters: &[FilterItem]) -> LijR
 
 // ---- async sync step ---------------------------------------------------------
 
-async fn get_json<T: DeserializeOwned>(http: &Arc<dyn EsploraHttp>, url: &str) -> LijResult<T> {
+pub(crate) async fn get_json<T: DeserializeOwned>(http: &Arc<dyn EsploraHttp>, url: &str) -> LijResult<T> {
     let resp = http.get(url).await?;
     if resp.status != 200 {
         return Err(LijError::Node(format!("tier2 GET {url} -> status {}", resp.status)));
@@ -378,7 +404,7 @@ pub async fn sync_step_down(
     })
 }
 
-fn filter_header_internal(hex_str: &str) -> LijResult<[u8; 32]> {
+pub(crate) fn filter_header_internal(hex_str: &str) -> LijResult<[u8; 32]> {
     sha256d::Hash::from_str(hex_str)
         .map(|h| h.to_byte_array())
         .map_err(|e| LijError::Node(format!("filter header parse: {e}")))

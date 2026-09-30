@@ -6,7 +6,12 @@
 // busters unaffected). Offline: exact match → ignore-search match →
 // navigation shell fallback. Cross-origin never intercepted.
 // RITUAL: buster flips must update PRECACHE versions below.
-const CACHE = 'lij-offline-v844';  // v468 RITUAL: bump with EVERY page build — a changed sw.js re-runs install, refreshing the precached shell (the SW sat unchanged since v400, freezing iOS's offline-served index at v400-era)
+// v880 (S51, DP — S6): the page shell (/wallet/, /wallet/index.html, any navigation in scope) is served CACHE-FIRST from
+// the installed build; a new build shows at the next open, through its own worker's install. Reversible: one block.
+// v873 (S51, DP): /pkg/ is served CACHE-FIRST on an exact-version hit (the pair is ?v= keyed) — the network only
+// for a version this cache does not hold; the install copies an exact-version engine file from an earlier
+// build's cache instead of re-fetching it. Everything else stays network-first as described above.
+const CACHE = 'lij-offline-v882';  // v468 RITUAL: bump with EVERY page build — a changed sw.js re-runs install, refreshing the precached shell (the SW sat unchanged since v400, freezing iOS's offline-served index at v400-era)
 // v687 (S45, DP): UPDATES DIAL. The mode lives in a settings cache that
 // survives CACHE bumps, so a freshly installed sw.js can read it in its own
 // install event. Under 'ask' the new build precaches, describes itself (page
@@ -35,8 +40,8 @@ const PRECACHE = [
   '/wallet/index.html',
   '/styles.css?v=328',
   '/wood-hinoki.jpg?v=1',   // v623: hinoki wood-motif plane image \u2014 a future buster flip updates the page token, the tile, and this line together (parity law)   // v579: styles buster flip — precache moves in lockstep (the parity lesson generalized)
-  '/pkg/lij_wasm.js?v=280',   // v567 (S37 ROOT-CAUSE): precache pinned at v214 since S34 while the page moved to v218 (S36 flips v215-218 never updated this list) — with the v472 exact-or-nothing /pkg law, OFFLINE ENGINE LOAD was impossible on every device. The sanity pass now asserts page-buster == precache version, permanently.
-  '/pkg/lij_wasm_bg.wasm?v=280',
+  '/pkg/lij_wasm.js?v=293',   // v567 (S37 ROOT-CAUSE): precache pinned at v214 since S34 while the page moved to v218 (S36 flips v215-218 never updated this list) — with the v472 exact-or-nothing /pkg law, OFFLINE ENGINE LOAD was impossible on every device. The sanity pass now asserts page-buster == precache version, permanently.
+  '/pkg/lij_wasm_bg.wasm?v=293',
   '/fonts/geist-sans-400.woff2',
   '/fonts/geist-sans-500.woff2',
   '/fonts/geist-mono-400.woff2',
@@ -50,12 +55,19 @@ self.addEventListener('install', (e) => {
   e.waitUntil((async () => {
     const c = await caches.open(CACHE);
     const fetched = {};   // v687: keep the bytes to describe this build
-    await Promise.allSettled(PRECACHE.map((u) => fetch(new Request(u, { cache: 'reload' })).then(async (r) => {
-      if (r && r.ok) {
-        try { fetched[u] = await r.clone().arrayBuffer(); } catch (e) {}
-        return c.put(u, r);
+    await Promise.allSettled(PRECACHE.map(async (u) => {
+      // v873 (S51, DP): the engine pair is exact-version keyed — an earlier build's cache holding this exact URL
+      // has the right bytes; copy them instead of downloading 8.4 MB again for a page-only build
+      if (u.indexOf('/pkg/') === 0) {
+        try { const prev = await caches.match(u); if (prev && prev.ok) { try { fetched[u] = await prev.clone().arrayBuffer(); } catch (e) {} await c.put(u, prev); return; } } catch (e) {}
       }
-    }).catch(() => {})));
+      return fetch(new Request(u, { cache: 'reload' })).then(async (r) => {
+        if (r && r.ok) {
+          try { fetched[u] = await r.clone().arrayBuffer(); } catch (e) {}
+          return c.put(u, r);
+        }
+      }).catch(() => {});
+    }));
     try {
       const pageBuf = fetched['/wallet/index.html'] || fetched['/wallet/'];
       const pageTxt = pageBuf ? new TextDecoder().decode(pageBuf) : '';
@@ -110,7 +122,10 @@ self.addEventListener('push', (e) => {
       foreground = cs.some((c) => c.visibilityState === 'visible');
     } catch (err) {}
     let body, title = 'Payment waiting';
-    if (data.t === 'wake') {
+    if (data.t === 'nwc') {   // v855 (S50, NWC): a Nostr app's request waits at the provider — content-free; the wallet fetches it on open
+      title = 'NWC request waiting';
+      body = foreground ? 'A Nostr app is asking your open wallet to pay.' : 'Open the LiJ app to see it.';
+    } else if (data.t === 'wake') {
       if (foreground) {
         title = 'Payment arriving';
         body = 'A payment is arriving in your open wallet now.';
@@ -190,6 +205,24 @@ self.addEventListener('fetch', (e) => {
     // unwrap, mis-read as a bad passphrase — DP field case). Exact or nothing:
     // an absent exact pair fails fast into the page's honest loading guard.
     const isPkg = url.pathname.indexOf('/pkg/') === 0;
+    if (isPkg) {
+      // v873 (S51, DP): exact-version keyed (?v=) — a hit is the right bytes by construction; serve it and never
+      // re-download the engine per open. A miss (a version this cache lacks) takes the network path below.
+      const hit = await c.match(req);
+      if (hit) return hit;
+    }
+    // v880 (S51, DP 22:57 — S6, "be ready to reverse it"): THE PAGE SHELL IS CACHE-FIRST. The page was fetched from the
+    // network first on every open (a 4 s race, the cache only on timeout), so between the launch screen and the first
+    // paint nothing of ours was on screen — iOS shows its own empty view there — and 1.9 MB came down per open. An
+    // installed build's page is served from its cache at once; a new build lands through its own worker's install
+    // (sw.js is checked at every online open) and shows at the next open, as the Updates row says. No cache yet (a
+    // first-ever open) → the network below, as before. Ask-me keeps its pin above. REVERSE: delete this block.
+    if (req.mode === 'navigate' || url.pathname === '/wallet/' || url.pathname === '/wallet/index.html') {
+      const shell = (await c.match(req, { ignoreSearch: true }))
+        || (await c.match('/wallet/index.html', { ignoreSearch: true }))
+        || (await c.match('/wallet/', { ignoreSearch: true }));
+      if (shell) return shell;
+    }
     let fallback = (await c.match(req)) || (isPkg ? null : (await c.match(req, { ignoreSearch: true })));
     if (!fallback && req.mode === 'navigate') {
       fallback = (await c.match('/wallet/index.html', { ignoreSearch: true }))

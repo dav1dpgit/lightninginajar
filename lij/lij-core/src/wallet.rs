@@ -399,6 +399,16 @@ impl LijWallet {
         self.node.open_channel_to_lsp(amount_sats, fee_rate_sat_per_vb)
     }
 
+    /// v282 (S50, coin control): the open funded from the chosen coins.
+    pub fn open_channel_to_lsp_with(
+        &self,
+        amount_sats: u64,
+        fee_rate_sat_per_vb: f64,
+        pins: Option<Vec<(String, u32)>>,
+    ) -> crate::error::LijResult<String> {
+        self.node.open_channel_to_lsp_with(amount_sats, fee_rate_sat_per_vb, pins)
+    }
+
     /// Access the underlying LijNode. Used by lij-wasm to invoke PeerManager
     /// methods directly (read_event, timer_tick_occurred, process_events).
     pub fn node(&self) -> &crate::node::LijNode {

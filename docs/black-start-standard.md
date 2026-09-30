@@ -62,6 +62,34 @@ highest it has seen; a relay keeps the newest event. Size cap 64 KB (a kit is a 
 A wallet with no channels seals and pushes an EMPTY kit (`channels: []`) so a later /recover can
 tell "nothing to close" from "nothing found".
 
+### 2.1 The silent-payment leg (engine v291, 2026-09-28; DP's ruling of the same day)
+
+Coins received at the wallet's silent-payment address (BIP-352, chain 352 on the coin ledger) are
+not reachable from the 12 words in an ordinary BIP-84 wallet. So the kit carries, for every
+UNSPENT silent-payment coin, one pre-signed transaction that moves that coin ALONE (never
+combined) to a fresh m/84 receive address of the wallet's own — index `sweep_destination_index
++ 1 + i` for the i-th coin, so every coin lands on its own address — at the same two rates:
+
+```
+"silent_payments": [ { "txid", "vout", "value_sats", "height",
+                       "destination": "bc1q…", "destination_index": n,
+                       "sweep_txid_normal", "sweep_hex_normal", "sweep_fee_normal",
+                       "sweep_txid_high",   "sweep_hex_high",   "sweep_fee_high" } ],
+"silent_payments_note": ""      // set when the coin ledger could not be read; the leg is then empty
+```
+
+A coin too small to pay a rate (value ≤ fee + dust) has `null` at that rate. The sweeps are
+Schnorr-signed on the taproot key path by the wallet's one signer, signal RBF (the high variant
+replaces the normal one), and are valid the moment they are broadcast — no delay, unlike a
+channel's collect. ≈ 350 bytes per coin; the 64 KB cap holds ~120 coins beside a few channels
+(the holder's cap rises in a later adapter release).
+
+The kit's fingerprint (what makes a push due, §6) includes the set of unspent silent-payment
+outpoints: a coin arriving or leaving is a fresh push. The Black start switch off still means only
+"not sent to holders" — the kit always carries the leg. On /recover the coins are listed under the
+channels with Sweep this coin (normal / high) and Sweep all, which broadcasts them one at a time,
+20 seconds apart, each watched to confirmation.
+
 ## 3. Holders — the adapter API
 
 Every LIJOX adapter is a holder. Manifest / getinfo capability: `"kit_holder": { "v": 1, "max_bytes": 65536 }`.
@@ -110,6 +138,8 @@ Pushed by the wallet on the existing backup tick (the same moment the cloud copy
 a kit must be as fresh as the blob), debounced 10 s so a burst of payments is one push; and once at
 unlock when the last push is older than 24 h or the holder set changed. Failures are retried on
 the next tick; the Dials group shows the last push, the holder count reached and the relay count.
+From v291 the fingerprint that decides "changed" covers the channels' latest commitments AND the
+unspent silent-payment coins (§2.1).
 
 ## 7. /recover — one file, no install
 

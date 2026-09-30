@@ -4,7 +4,11 @@ on:
   push:
     branches: [main]
     paths:
-      - 'lij/**'
+      # S51 (DP 2026-09-29 "close that odd flip"): 'lij/**' REMOVED. It was here from before lij-engine-build existed
+      # (S27), when this was the one job that built engine + page. With both triggered by an engine push, this job
+      # rebuilt the new engine into pkg/ and published it under the page that still expected the old one — a ~7-minute
+      # window of "engine mismatch" on every engine push — until the engine workflow's flip commit dispatched this job
+      # again. Now an engine push runs lij-engine-build alone; its flip commit (lij-pwa/** only) dispatches this job.
       - 'lij-pwa/**'
       - '.github/workflows/lij-build.yml'
   workflow_dispatch:
@@ -58,8 +62,22 @@ jobs:
           (cargo clean -p lij-wasm && wasm-pack build --release --target web --out-dir ../../lij-pwa/frontend/pkg lij-wasm) 2>&1 | tee "$GITHUB_WORKSPACE/build.log" || code=$?
           echo "code=$code" >> "$GITHUB_OUTPUT"
 
-      - name: zip frontend (mirrors Codespace command)
+      - name: guard — the page must expect the engine this commit builds (S51 — never publish a mismatched pair)
+        id: guard
         if: steps.build.outputs.code == '0'
+        run: |
+          ENG=$(grep -oE '"phase11-v[0-9]+"' lij/lij-wasm/src/lib.rs | head -1 | tr -d '"')
+          EXP=$(grep -oE "LIJ_WASM_EXPECTED = 'phase11-v[0-9]+'" lij-pwa/frontend/wallet/index.html | grep -oE 'phase11-v[0-9]+' | head -1)
+          echo "engine built: $ENG | page expects: $EXP"
+          if [ -n "$ENG" ] && [ "$ENG" = "$EXP" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::pre-flip engine commit — built as a compile check only; lij-engine-build's flip commit will dispatch the publish"
+          fi
+
+      - name: zip frontend (mirrors Codespace command)
+        if: steps.build.outputs.code == '0' && steps.guard.outputs.publish == 'true'
         run: |
           PAGE=$(grep -oP "LIJ_FRONTEND_VERSION = 'phase11-v\K[0-9]+" lij-pwa/frontend/wallet/index.html)
           echo "ZIPNAME=lij-v${PAGE}.zip" >> "$GITHUB_ENV"
@@ -68,7 +86,7 @@ jobs:
           zip -rq "$GITHUB_WORKSPACE/lij-v${PAGE}.zip" .
 
       - name: publish deploy branch (Cloudflare Pages source)
-        if: steps.build.outputs.code == '0' && github.repository == 'dav1dpgit/lightning-in-a-jar'
+        if: steps.build.outputs.code == '0' && steps.guard.outputs.publish == 'true' && github.repository == 'dav1dpgit/lightning-in-a-jar'
         run: |
           mkdir -p /tmp/site
           cp -r lij-pwa/frontend/. /tmp/site/
@@ -111,7 +129,7 @@ jobs:
           git push --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" build-artifacts
 
       - name: releases row (docs/releases.md in this repository only)
-        if: steps.build.outputs.code == '0' && github.repository == 'dav1dpgit/lightning-in-a-jar'
+        if: steps.build.outputs.code == '0' && steps.guard.outputs.publish == 'true' && github.repository == 'dav1dpgit/lightning-in-a-jar'
         run: |
           set -e
           ENG=$(grep -oP '"phase11-v\K[0-9]+' lij/lij-wasm/src/lib.rs | head -1)

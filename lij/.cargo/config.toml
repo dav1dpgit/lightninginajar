@@ -6,3 +6,20 @@ replace-with = "vendored-sources"
 
 [source.vendored-sources]
 directory = "vendor"
+
+# v292 (S51, DP 16:43 "Go, run the gate and the cut"): THE 64-BIT MULTIPLY PATH FOR THE WASM BUILD.
+# clang defines __SIZEOF_INT128__ for wasm32, so libsecp256k1 (vendor/secp256k1-sys, left pristine)
+# picked its 128-bit multiply path (5x52 field, 4x64 scalar) — and WebAssembly has no 128-bit
+# multiply, so every 64x64->128 product became a call into compiler_builtins' __multi3.
+# USE_FORCE_WIDEMUL_INT64 selects the 10x26 field / 8x32 scalar, whose 32x32->64 products are one
+# native i64.mul each: the path every 32-bit machine runs, tested in libsecp256k1's own CI.
+# Wasm-only: the cc crate reads CFLAGS_<target> (underscored form), so native builds and the native
+# tests are untouched; the flag reaches every C file cc compiles for wasm32 and means nothing to any
+# of them but libsecp256k1. Gate 2026-09-29 (scratchpad widemul/bench2.c): the library built int128
+# and int64 at -Oz and -O3 to wasm, and int128 and int64 natively — six builds, one identical output
+# (494,756 bytes over 600 rounds of pubkey create / tweak add + mul / combine / negate / seckey tweaks /
+# ecdh / xonly + taproot tweak / schnorr sign + verify / ecdsa sign + verify + recover, plus BIP-340
+# test vector 0 as a known answer); the whole mix ran 2.2x faster (2,149 -> 957 ms in Node 22).
+# See docs/reproducible-build.md, "The multiply path".
+[env]
+CFLAGS_wasm32_unknown_unknown = "-DUSE_FORCE_WIDEMUL_INT64"

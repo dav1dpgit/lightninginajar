@@ -96,7 +96,20 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v280".to_string()  // v280 (S49, DP GO 2026-09-25 00:53 — PUSH KEY, step A, the engine): push module (the link fragment v1.<amount>.<expiry>.<lsp16>.<key b64url>, the pair check, the two records); RootKey::push_preimage (HKDF, own salt — derived, never stored); push_prepare (the pair at the next index, the record, the fragment), push_lock (pay the provider's hold invoice for the hash on the internal self-hop and RETURN once the HTLC is out — no 30-s wait; the record turns locked with its payment_id), push_mark (void), push_out_json (LDK's word folded in: taken / returned), push_out_preimage (Copy link re-derives), push_accept (a link's key against its hash, the hash registered inbound for the window, the key into the LNURLp pool so the one claim path claims the delivery), push_in_json; PaymentSent/PaymentFailed latch a push's fate; the three keys ride in the state blob. DP rulings: 72 h, recipient gets the exact amount (the sender's lock carries the delivery fee), void by node-key signature (adapter step).
+    "phase11-v293".to_string()  // v293 (S51, DP 22:57 "Go with O1" — THE SCAN YIELDS BY TIME): the silent-payment scan hands the screen back whenever 40 ms of work has passed (tier2_sync::YIELD_BUDGET_MS, checked before every block and between groups of 32 tweaks) instead of every 8 blocks; same work, same order, same results — the iPhone X readout showed every stall (longest 6.4 s) inside tier2_onchain_sync's scan runs. Test: candidate_scripts_in_groups_equal_the_whole.
+    // "phase11-v292".to_string()  // v292 (S51, DP 16:43 "Go, run the gate and the cut" — THE 64-BIT MULTIPLY PATH): no Rust change; lij/.cargo/config.toml now hands the wasm32 C build USE_FORCE_WIDEMUL_INT64, so libsecp256k1 (pristine in vendor/) uses its 10x26 field / 8x32 scalar with native i64 products instead of the 5x52 / 4x64 path whose 128-bit products WebAssembly has to emulate through __multi3. Same results (gated: six builds, one identical output over every operation the wallet uses + BIP-340 vector 0); every curve operation ~2x faster in the browser — the silent-payment scan, the address walk's derivations, signing, ECDH, the kit. Reversible by deleting the [env] line.
+    // "phase11-v291".to_string()  // v291 (S50, DP 23:04 "Go on Black start v291 engine" — THE BLACK START KIT'S SILENT-PAYMENT SWEEPS): for every unspent silent-payment coin the kit carries ONE pre-signed transaction moving that coin alone (never combined — DP) to a fresh m/84 receive address of the wallet's own (one address per coin: the kit's destination index + 1 + i, on the chain any BIP-84 wallet derives from the 12 words), at the kit's two rates (10 and 40 sat/vB; a coin too small for a rate gets nothing at that rate), signed by the one signer every spend shares (Schnorr on the taproot key-path), RBF-signalled so the high variant can replace the normal one, valid the moment it is broadcast; the kit's `silent_payments` list (+ a note when the ledger could not be read — the channels' half always exports); the push fingerprint includes the unspent silent-payment outpoints, so a coin arriving or leaving makes a push due (`silent_payments` count on the fingerprint). Test: two coins → two sweeps to consecutive fresh addresses, the small one normal-rate only, the Schnorr signature verifies, the high variant a replacement, spent and m/84 coins excluded. 281 green.
+    // "phase11-v290".to_string()  // v290 (S50, DP's Nostur field test 21:52 — "NWC request from Nostur refused: this wallet speaks NIP-44 v2 only"): NIP-04 beside NIP-44. Nostur (and most NWC apps today) encrypt requests with the older scheme — AES-256-CBC under the raw ECDH x, base64 with "?iv=" — which v286 refused. Now the content's shape decides (a "?iv=" payload is NIP-04; a tag that names another scheme is refused as UNSUPPORTED_ENCRYPTION naming both), the request is decrypted either way, `Opened.encryption` says which, and the reply goes back in kind (a NIP-04 reply carries no encryption tag, per NIP-47); the info event lists "nip44_v2 nip04". AES-CBC rides the vendored `aes` (aes-gcm's) — no new crate; gated by the NIST SP 800-38A CBC-AES256 vector, a round trip, a wrong-key refusal, and an end-to-end NIP-04 request/reply. The wasm nwc_reply takes `encryption`. Also carries v289 (the row marker), which CI never shipped — its build's flip collided with v288's. 280 green.
+    // "phase11-v289".to_string()  // v289 (S50, the SP receive page cut's one engine need): a derived ONCHAIN RECENT row carries `silent_payment_sats` — the sats that transaction paid to the wallet's sp1 address (its chain-352 coins), 0 on an ordinary row — so the face says "silent payment" on the row itself, spent or not, without matching coins. Test: the scan's found coin derives a row with 184,000 of 184,000. 279 green.
+    // "phase11-v288".to_string()  // v288 (S50, DP 2026-09-28 21:10 on v287's words — "the wallet has a say", and "is it sweeping or scanning"): (1) the wallet-side SILENT-PAYMENT SWITCH — CoinMarks::sp_enabled (on by default; kept in the marks store, its own encrypted key, so a sync in flight cannot clobber it and a rescan keeps it), sp_set_enabled(bool) on the wasm surface, the sync still asks the provider what it offers but scans nothing while off, the summary's sp block carries `enabled`; (2) the words — the box builds the INDEX, the wallet's engine on the phone runs the SCAN (it reads hints and filters and checks; it never moves a coin — "sweep" stays the Black start kit's word): sp_scan::scan / scan_batch, SpScan.scanned_to / scanned_hash / scanned_filter_header (serde aliases read v287's swept_* names), the summary's `scanned_to`, every log line and note. 279 green.
+    // "phase11-v287".to_string()  // v287 (S50, DP 2026-09-28 "When will receive silent payments be operational?" — SILENT PAYMENTS: RECEIVE, the walk; DP's five decisions 17:22): lij-core::sp_scan — the provider is asked once per sync whether it serves a tweak index (/sp/info, spcommit-v1; 404 = none, the wallet does nothing; "SP is an option for LSPs"); the sweep runs UPWARD from its start to the walk's top: the box's per-block tweaks × the wallet's scan key give the taproot scripts each could have paid, tested — with the scripts of the SP coins already held, so their spends are seen — against the same BIP158 filters the m/84 walk reads; a matching block is fetched hash-bound and merkle-checked, its coins land as chain 352 with their t_k, spends of known coins are marked by outpoint; every batch's headers are PoW-checked and linked to the previous batch and, at the top, to the walk's known block hash and filter header (one continuous chain); every served block's commitment is recomputed from its tweaks and a mismatch refuses the box (decision 2: one box = single_source); the start (decision 1): a fresh view sweeps from the later of the index start and the birthday, a wallet walked before v287 from today's top; the mempool leg once the sweep stands at the top (unconfirmed silent payments pending, dropped when they leave the pool, replaced by the coin when their block lands); a reorg rollback rolls the sweep back with the walk; 100 blocks per sync call (200 once the walk is done), the view saved after every batch so a closed app resumes; the summary carries `sp` (available, index_start, indexed_to, from, swept_to, top, done, waiting_for_index, single_source, pending, pending_sats, coins, note). No down-walk re-check is needed in this shape (decision 3's cost is nil; decision 4's is the sweep itself). Tests: a real silent payment mined into a PoW-valid block found through the filter, its spend seen in the next block, the mempool leg, a tampered commitment refused, a provider without the index, the rollback. 279 green. Page cut next (the sp1 address on Receive, the Privacy row, the bar's wording).
+    // "phase11-v286".to_string()  // v286 (S50, DP 17:50 "start on NWC … separate and isolated work" — NWC CUT N1, THE ENGINE; nothing on the page yet): lij-core::nwc — NIP-44 v2 (ChaCha20 written out per RFC 8439 and gated by its vectors — no new crate; HMAC-SHA256 under HKDF; the padding; base64) gated by the official NIP-44 vectors (35 conversation keys, 32 message-key sets, 24 padded lengths, 10 encrypt/decrypt cases, 3 long messages, 24 must-fail cases); Nostr events (NIP-01 id, BIP-340 sign/verify); the connections — one per Nostr app, the service secret kept (lij_nwc, encrypted at rest with the coin ledger and riding the state blob so a restore on the same LSP keeps them), the client's public key only, the connection string handed out once; DP's limits (5,000 sats per payment, 20,000 per rolling day across every connection, 90-day expiry, 10-min request age; 10 connections) and the paid list; the duplicate check (same payee within 10 min, strongest with the amount); open_request (kind, author, `p`, signature, ±10-min skew, expiration tag, NIP-44 only → decrypt → pay_invoice checked against the invoice's network, expiry and amount and the limits — every refusal with its NIP-47 code; get_info passed through), the replies (23195), the info event (13194: pay_invoice, nip44_v2) and NIP-42 AUTH (22242). Wasm: nwc_list / nwc_add / nwc_end / nwc_forget / nwc_set_limits / nwc_open / nwc_reply / nwc_info_event / nwc_auth_event / nwc_record_paid. 273 tests green.
+    // "phase11-v285".to_string()  // v285 (S50, DP 2026-09-28 17:22 "5. This cut" — CHANNEL OPENS FROM SILENT-PAYMENT COINS): a chain-352 coin with its t_k is a funding candidate like an m/84 coin (spendable_utxos / build_funding_tx_with / Max / the estimate / chosen coins); the funding transaction signs through the one signer every spend shares (onchain_send::sign_inputs — Schnorr on the taproot key-path sighash for the SP coin, BIP143 ECDSA for m/84; channel_open's own P2WPKH loop retired); the fee counts each input at its real size (58 vB taproot, 68 P2WPKH) in the estimate, the Max and the transaction; the AUTOMATIC pick tries the silent-payment coins alone first by DP's rule (his SP design ruling: "SP coins are prioritized as inputs to self-funded channel opens") and falls back to the rule over every coin when they cannot cover; chosen coins are exactly the chosen set as before. Tests: an open that takes the 50k SP coin over the larger 60k m/84 coin and whose Schnorr signature verifies; the fallback to the m/84 coin; a chosen mixed pair signed both ways; Max at real sizes. 266 green. No page change.
+    // "phase11-v284".to_string()  // v284 (S50, SILENT PAYMENTS — RECEIVE, the engine groundwork; held until DP's decisions): the wallet's own SP keys (SpKeys: scan m/352'/{coin}'/0'/1'/0, spend /0'/0 — Cake's and Sparrow's paths; sp_address(); the change label; the receiver arithmetic — candidate scripts for a block's tweaks, find_in_block for k = 0, 1, 2 …, script_for / spend_secret from a stored t_k); chain 352 (CHAIN_SP) coins on the ledger carry their t_k (OnchainUtxo.sp_tweak) and the summary tags them silent_payment; a chain-352 coin SPENDS: gathered like any other, counted at its real 58-vB taproot size in every quote and the send itself, its key b_spend + t_k (negated for an odd P_k), signed Schnorr on the taproot key-path sighash (SIGHASH_DEFAULT, Prevouts::All) by the one signer every path now shares (a plain send, all-out, chosen coins, and the RBF bump); a spend FROM an SP coin to an SP address counts it as a taproot input in the BIP-352 sender arithmetic. Tests: the mixed-input signing (Schnorr + ECDSA both verified), the gather with a tweak, the sizes. No page change; the receive walk (tweaks → filter → block), the two-box commitment check and the down-walk rule come after the talk.
+    // "phase11-v283".to_string()  // v283 (S50, coin control, cut 3b — the dust warning's numbers): onchain_quote also answers what the send WOULD spend for an amount (the chosen set, or the automatic pick) and the change it would leave — tiny_change when that change is a coin (≥ the 294-sat dust floor) worth less than max(1,000 sats, five times one input's cost at this rate); the page warns before the confirm (DP 2026-09-28: "dust as an output should have a warning before proceeding").
+    // "phase11-v282".to_string()  // v282 (S50, coin control, cut 3 — CHOSEN COINS): a send from exactly the coins the user chose (send_onchain_with: an amount with change, or all in one output; a frozen, unknown or short set is refused in plain words, nothing spent); the picker's quote (onchain_quote: chosen / needed / covered / short, and "Fill the rest for me" by DP's rule over the coins not chosen); a channel open from exactly the chosen coins (open_lsp_channel_with parks them under the open's nonce; FundingGenerationReady takes them by that nonce → build_funding_tx_with) and its estimate (lsp_channel_open_estimate_with). DP 2026-09-28: chosen = exact; the top-up is the user's tap, never silent.
+    // "phase11-v281".to_string()  // v281 (S50, DP GO 2026-09-28 15:29 — COIN CONTROL, cut 1, the engine): the marks store (tier2_marks — frozen + note per coin, keyed by outpoint, its own encrypted key beside the view so a walk in flight cannot clobber it; packed in the backup blob; never rebuilt — a rescan keeps freezes, Erase wipes them); coin_mark(json); summary rows are CoinRow (tag received/change/channel_return/legacy + frozen + note) with frozen_sats / sendable_sats / frozen_count beside the unchanged spendable_sats; DP's pick rule in coin_select (the smallest single coin that covers amount + fee, else largest first) for plain sends AND self-funded opens, frozen coins never candidates; onchain_max (the exact one-output Max from the builder's own arithmetic; frozen figures) and send_onchain_all (everything sendable, one output, no change) — the page's Max moves onto them in cut 2.
+    // "phase11-v280".to_string()  // v280 (S49, DP GO 2026-09-25 00:53 — PUSH KEY, step A, the engine): push module (the link fragment v1.<amount>.<expiry>.<lsp16>.<key b64url>, the pair check, the two records); RootKey::push_preimage (HKDF, own salt — derived, never stored); push_prepare (the pair at the next index, the record, the fragment), push_lock (pay the provider's hold invoice for the hash on the internal self-hop and RETURN once the HTLC is out — no 30-s wait; the record turns locked with its payment_id), push_mark (void), push_out_json (LDK's word folded in: taken / returned), push_out_preimage (Copy link re-derives), push_accept (a link's key against its hash, the hash registered inbound for the window, the key into the LNURLp pool so the one claim path claims the delivery), push_in_json; PaymentSent/PaymentFailed latch a push's fate; the three keys ride in the state blob. DP rulings: 72 h, recipient gets the exact amount (the sender's lock carries the delivery fee), void by node-key signature (adapter step).
     // "phase11-v279".to_string()  // v279 (S49, 2026-09-23 22:54 — the six refused address invoices, 0x400f from the UM890): the LSP route's LAST hop always carries the invoice's final CLTV delta — the one-hop case (the LSP is the destination's direct peer, e.g. an LSP-2 wallet paying an @address held at LSP-1) used to take the first-hop rule and lock the LSP's forwarding delta (80) where the hold invoice asked 144. parse_lnd_route_response; a native test.
     // "phase11-v278".to_string()  // v278 (S48, DP 2026-09-23 00:20 — the 724-sat gap): the owned-at-close backfill reads "we funded" from the scanner's history too and redoes v277 backfills once (owned_backfill_ver); the event's figure is never redone. v277 (S48, DP 2026-09-22 23:37): the cancelled-open sweep's honest proof (history + a definitive quorum 404 + a persisted two-hour floor); ClosedChannelRecord.our_owned_msat_at_close from Event::ChannelClosed (+ the watcher's backfill from the closing tx); IndependentClient::tx_known. Was: v276 (S48, Black Start): black_start_fingerprint_json — SHA-256 of the sorted latest holder commitment txids (a read-only monitor accessor, no signing) so the page pushes a kit only when a channel's state moved
     // "phase11-v275".to_string()  // v275 (S48, DP GO 2026-09-22 18:15, BLACK START BS1): black_start module — the kit key (HKDF of the master key), the NIP-06 identity, the sealed envelope (AES-256-GCM, AAD-bound to the npub), the ECDSA holder body, the BIP-340 NIP-78 relay event; black_start_identity_json + black_start_bundle_json exports (read-only, from escape_export)
@@ -896,6 +909,58 @@ impl LijWalletHandle {
                 }
             };
 
+            // v287 (S50, SILENT PAYMENTS — RECEIVE): the silent-payment SCAN rides the same call, after
+            // the walk. The provider is asked once per call whether it serves a tweak index (/sp/info;
+            // 404 = no silent-payment receive here, nothing else happens); then up to 100 blocks (200
+            // once the walk is done) are scanned upward from the scan's start towards the walk's top —
+            // the box's tweaks × the scan key against the block filters the walk already reads; a
+            // matching block is fetched (hash-bound, merkle-checked) and its coins land on the
+            // ledger as chain 352 with their t_k. When the scan stands at the top the mempool leg
+            // runs (unconfirmed payments → "received · pending"). Never fatal: a failure is noted
+            // where the face reads it (sp.note) and the next call tries again.
+            // v288 (DP: "the wallet has a say"): the wallet's own switch (marks.sp_enabled) — off = the
+            // provider is still asked (so the face can say what it offers) but nothing is scanned.
+            if walk_error.is_none() {
+                let t1 = js_sys::Date::now();
+                let sp_on = lij_core::tier2_wallet::load_marks(storage.as_ref()).map(|m| m.sp_enabled).unwrap_or(true);
+                match lij_core::sp_scan::refresh_info(&http, base, &mut view).await {
+                    Ok(()) => {
+                        let available = view.sp.as_ref().map(|s| s.available).unwrap_or(false);
+                        if available && sp_on {
+                            let walk_done = view.down.as_ref().map(|d| d.done).unwrap_or(false);
+                            let max_batches = if walk_done { 2 } else { 1 };
+                            match lij_core::sp_scan::scan(&http, base, &root_key, &mut view, storage.as_ref(), 100, max_batches).await {
+                                Ok((b, n)) => {
+                                    if b > 0 { log::info!("[sp] {n} · {} ms", (js_sys::Date::now() - t1) as u64); }
+                                    let at_top = view.sp.as_ref().map(|s| s.scanned_to >= view.cursor.scanned_to.min(s.indexed_to)).unwrap_or(false);
+                                    if at_top {
+                                        match lij_core::sp_scan::mempool(&http, base, &root_key, &mut view, storage.as_ref(), now_ms).await {
+                                            Ok(found) => { if found > 0 { log::info!("[sp] {found} silent payment(s) pending in the mempool"); } }
+                                            Err(e) => {
+                                                let msg = format!("silent payments: mempool: {}", e.to_string().trim_start_matches("Network error: "));
+                                                log::warn!("[sp] {msg}");
+                                                if let Some(sp) = view.sp.as_mut() { sp.last_note = msg; }
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    let msg = format!("silent payments: scan paused: {}", e.to_string().trim_start_matches("Network error: "));
+                                    log::warn!("[sp] {msg} · {} ms", (js_sys::Date::now() - t1) as u64);
+                                    if let Some(sp) = view.sp.as_mut() { sp.last_note = msg; }
+                                    let _ = lij_core::tier2_wallet::save_view(storage.as_ref(), &view);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let msg = format!("silent payments: {}", e.to_string().trim_start_matches("Network error: "));
+                        log::warn!("[sp] {msg}");
+                        if let Some(sp) = view.sp.as_mut() { sp.last_note = msg; }
+                    }
+                }
+            }
+
             // v257: the widen rule — a coin within NET_WIDEN_MARGIN of the net's far edge on any
             // branch means blocks already read may hold coins past it: widen and rebuild.
             let walk_done = view.down.as_ref().map(|d| d.done).unwrap_or(false);
@@ -994,7 +1059,8 @@ impl LijWalletHandle {
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
             }
 
-            let json = lij_core::tier2_wallet::summary(&view, &pending, tip.height)
+            let marks = lij_core::tier2_wallet::load_marks(storage.as_ref()).unwrap_or_default();   // v281: freezes and notes onto the rows
+            let json = lij_core::tier2_wallet::summary(&view, &pending, tip.height, &marks)
                 .to_json()
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
             let json = json.replacen(
@@ -1066,12 +1132,14 @@ impl LijWalletHandle {
             // source as channel funding and the displayed balance), not a live
             // scan. Load the view + pending once: they pick the next change index
             // (rotation) AND supply the spendable set to build_and_send.
-            let (view, pending) = {
+            let (view, pending, marks) = {
                 let storage = t2_storage(&root_key);   // v263: the view is encrypted at rest (v256) — plain storage could not parse it
                 let view = lij_core::tier2_wallet::load_view(storage.as_ref())
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
                 let pending = lij_core::tier2_wallet::load_pending(storage.as_ref());
-                (view, pending)
+                let marks = lij_core::tier2_wallet::load_marks(storage.as_ref())
+                    .map_err(|e| JsValue::from_str(&e.to_string()))?;   // v281: a freeze the send must honour
+                (view, pending, marks)
             };
             let change_index = lij_core::tier2_wallet::next_change_index(&view, &pending);
             let result = lij_core::onchain_send::build_and_send(
@@ -1084,6 +1152,7 @@ impl LijWalletHandle {
                 change_index,
                 &view,
                 &pending,
+                &marks,
             )
             .await
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -1126,6 +1195,464 @@ impl LijWalletHandle {
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
             Ok(JsValue::from_str(&json))
         })
+    }
+
+    /// v281 (S50, coin control — Max): send everything sendable to `dest` in one output
+    /// (every unfrozen, unreserved coin; amount = total − the one-output fee; no change).
+    /// The page's Max calls this instead of guessing an amount for send_onchain.
+    #[wasm_bindgen]
+    pub fn send_onchain_all(&self, dest: &str, fee_rate_sat_per_kw: u32) -> js_sys::Promise {
+        let inner = self.inner.clone();
+        let dest = dest.to_string();
+        future_to_promise(async move {
+            let (root_key, independent, network) = {
+                let wallet = inner
+                    .lock()
+                    .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                wallet.onchain_handles()
+            };
+            let (view, pending, marks) = {
+                let storage = t2_storage(&root_key);
+                let view = lij_core::tier2_wallet::load_view(storage.as_ref())
+                    .map_err(|e| JsValue::from_str(&e.to_string()))?;
+                let pending = lij_core::tier2_wallet::load_pending(storage.as_ref());
+                let marks = lij_core::tier2_wallet::load_marks(storage.as_ref())
+                    .map_err(|e| JsValue::from_str(&e.to_string()))?;
+                (view, pending, marks)
+            };
+            let change_index = lij_core::tier2_wallet::next_change_index(&view, &pending);
+            let result = lij_core::onchain_send::build_and_send_all(
+                &root_key,
+                independent,
+                network,
+                &dest,
+                fee_rate_sat_per_kw,
+                change_index,
+                &view,
+                &pending,
+                &marks,
+            )
+            .await
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            // The same immediate-view record as send_onchain: reserve the inputs now.
+            {
+                let storage: Arc<dyn lij_core::storage::LijStorage> = t2_storage(&root_key);
+                let delta = -((result.amount_sats as i64) + (result.fee_sats as i64));
+                if let Err(e) = lij_core::tier2_wallet::record_pending(
+                    storage.as_ref(),
+                    lij_core::tier2_wallet::PendingTx {
+                        txid: result.txid.clone(),
+                        spent_outpoints: result.spent_outpoints.clone(),
+                        delta_sats: delta,
+                        direction: lij_core::tier2_wallet::TxDirection::Sent,
+                        kind: lij_core::tier2_wallet::TxKind::Onchain,
+                        created_at_ms: lij_core::tier2_wallet::now_ms(),
+                        change_outpoint: None,
+                        change_value_sats: 0,
+                        change_index: result.change_index,
+                        broadcast_seen: false,
+                        raw_tx_hex: None,
+                        dest_addr: Some(dest.clone()),
+                        dest_sats: Some(result.amount_sats),
+                        fee_sats: Some(result.fee_sats),
+                        fee_rate_sat_per_kw: Some(fee_rate_sat_per_kw),
+                    },
+                ) {
+                    log::error!("record pending on-chain send-all failed: {e}");
+                }
+            }
+            let json = result
+                .to_json()
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            Ok(JsValue::from_str(&json))
+        })
+    }
+
+    /// v282 (S50, coin control cut 3 — chosen coins): a send from EXACTLY the coins the user
+    /// chose. `req` is JSON {"dest", "fee_rate_sat_per_kw", "inputs": [{"txid","vout"}, …],
+    /// and either "amount_sats" (change to m/84) or "all": true (everything in those coins,
+    /// one output)}. A frozen or unknown coin, or coins that do not cover amount + fee, is an
+    /// error in plain words — nothing is spent. Returns SendResult JSON like send_onchain.
+    #[wasm_bindgen]
+    pub fn send_onchain_with(&self, req: &str) -> js_sys::Promise {
+        let inner = self.inner.clone();
+        let req = req.to_string();
+        future_to_promise(async move {
+            #[derive(serde::Deserialize)]
+            struct Pin { txid: String, vout: u32 }
+            #[derive(serde::Deserialize)]
+            struct Req { dest: String, fee_rate_sat_per_kw: u32, #[serde(default)] amount_sats: Option<f64>, #[serde(default)] all: bool, #[serde(default)] inputs: Vec<Pin> }
+            let r: Req = serde_json::from_str(&req).map_err(|e| JsValue::from_str(&format!("send_onchain_with: bad request: {e}")))?;
+            let pins: Vec<(String, u32)> = r.inputs.iter().map(|p| (p.txid.to_ascii_lowercase(), p.vout)).collect();
+            if pins.is_empty() {
+                return Err(JsValue::from_str("send_onchain_with: no coins chosen"));
+            }
+            let (root_key, independent, network) = {
+                let wallet = inner
+                    .lock()
+                    .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                wallet.onchain_handles()
+            };
+            let (view, pending, marks) = {
+                let storage = t2_storage(&root_key);
+                let view = lij_core::tier2_wallet::load_view(storage.as_ref())
+                    .map_err(|e| JsValue::from_str(&e.to_string()))?;
+                let pending = lij_core::tier2_wallet::load_pending(storage.as_ref());
+                let marks = lij_core::tier2_wallet::load_marks(storage.as_ref())
+                    .map_err(|e| JsValue::from_str(&e.to_string()))?;
+                (view, pending, marks)
+            };
+            let change_index = lij_core::tier2_wallet::next_change_index(&view, &pending);
+            let result = if r.all {
+                lij_core::onchain_send::build_and_send_all_pinned(&root_key, independent, network, &r.dest, r.fee_rate_sat_per_kw, change_index, &view, &pending, &marks, &pins).await
+            } else {
+                let amount = match r.amount_sats { Some(a) if a.is_finite() && a >= 1.0 => a as u64, _ => return Err(JsValue::from_str("amount must be a positive whole number of sats")) };
+                lij_core::onchain_send::build_and_send_pinned(&root_key, independent, network, &r.dest, amount, r.fee_rate_sat_per_kw, change_index, &view, &pending, &marks, Some(&pins)).await
+            }
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            {
+                let storage: Arc<dyn lij_core::storage::LijStorage> = t2_storage(&root_key);
+                let delta = -((result.amount_sats as i64) + (result.fee_sats as i64));
+                if let Err(e) = lij_core::tier2_wallet::record_pending(
+                    storage.as_ref(),
+                    lij_core::tier2_wallet::PendingTx {
+                        txid: result.txid.clone(),
+                        spent_outpoints: result.spent_outpoints.clone(),
+                        delta_sats: delta,
+                        direction: lij_core::tier2_wallet::TxDirection::Sent,
+                        kind: lij_core::tier2_wallet::TxKind::Onchain,
+                        created_at_ms: lij_core::tier2_wallet::now_ms(),
+                        change_outpoint: result.change_outpoint.clone(),
+                        change_value_sats: result.change_sats,
+                        change_index: result.change_index,
+                        broadcast_seen: false,
+                        raw_tx_hex: None,
+                        dest_addr: Some(r.dest.clone()),
+                        dest_sats: Some(result.amount_sats),
+                        fee_sats: Some(result.fee_sats),
+                        fee_rate_sat_per_kw: Some(r.fee_rate_sat_per_kw),
+                    },
+                ) {
+                    log::error!("record pending on-chain chosen-coin send failed: {e}");
+                }
+            }
+            let json = result
+                .to_json()
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            Ok(JsValue::from_str(&json))
+        })
+    }
+
+    /// v282 (S50, coin control cut 3): the picker's quote. `req` is JSON {"dest", "fee_rate_sat_per_kw",
+    /// "inputs"?: [{"txid","vout"}], "amount_sats"?, "fill"?: bool} → CoinQuote JSON (chosen, chosen_sats,
+    /// max_sats, need_sats, covered, short_sats, fill [...], fill_covers, sendable_sats, frozen_sats,
+    /// problem). Storage only, no network.
+    #[wasm_bindgen]
+    pub fn onchain_quote(&self, req: &str) -> Result<String, JsValue> {
+        #[derive(serde::Deserialize)]
+        struct Pin { txid: String, vout: u32 }
+        #[derive(serde::Deserialize)]
+        struct Req { #[serde(default)] dest: String, fee_rate_sat_per_kw: u32, #[serde(default)] inputs: Option<Vec<Pin>>, #[serde(default)] amount_sats: Option<f64>, #[serde(default)] fill: bool }
+        let r: Req = serde_json::from_str(req).map_err(|e| JsValue::from_str(&format!("onchain_quote: bad request: {e}")))?;
+        let pins: Option<Vec<(String, u32)>> = r.inputs.map(|v| v.into_iter().map(|p| (p.txid.to_ascii_lowercase(), p.vout)).collect());
+        let amount = r.amount_sats.filter(|a| a.is_finite() && *a >= 1.0).map(|a| a as u64);
+        let (root_key, _independent, network) = {
+            let wallet = self
+                .inner
+                .lock()
+                .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+            wallet.onchain_handles()
+        };
+        let storage = t2_storage(&root_key);
+        let view = lij_core::tier2_wallet::load_view(storage.as_ref())
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let pending = lij_core::tier2_wallet::load_pending(storage.as_ref());
+        let marks = lij_core::tier2_wallet::load_marks(storage.as_ref())
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        lij_core::onchain_send::coin_quote(&r.dest, network, r.fee_rate_sat_per_kw, &view, &pending, &marks, pins.as_deref(), amount, r.fill)
+            .to_json()
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// v281 (S50, coin control): the exact Max at this fee rate — what a one-output send
+    /// of every sendable coin delivers, from the builder's own candidate set and fee
+    /// arithmetic (MaxQuote JSON: max_sats, fee_sats, inputs, total_sats, frozen_sats,
+    /// frozen_count, sat_per_vb). `dest` may be empty while the user is still typing.
+    /// Storage only, no network.
+    #[wasm_bindgen]
+    pub fn onchain_max(&self, dest: &str, fee_rate_sat_per_kw: u32) -> Result<String, JsValue> {
+        let (root_key, _independent, network) = {
+            let wallet = self
+                .inner
+                .lock()
+                .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+            wallet.onchain_handles()
+        };
+        let storage = t2_storage(&root_key);
+        let view = lij_core::tier2_wallet::load_view(storage.as_ref())
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let pending = lij_core::tier2_wallet::load_pending(storage.as_ref());
+        let marks = lij_core::tier2_wallet::load_marks(storage.as_ref())
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        lij_core::onchain_send::max_sendable(dest, network, fee_rate_sat_per_kw, &view, &pending, &marks)
+            .to_json()
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// v281 (S50, coin control): mark one coin. `req` is JSON {"txid","vout", "frozen"?:
+    /// bool, "note"?: string} — a field left out is left alone; a note is cleaned and
+    /// capped at 120 code points in the engine. Answers the coin's mark as stored (JSON
+    /// {"txid","vout","frozen","note","ts_ms"}) plus "frozen_count". Written to the
+    /// marks store (its own encrypted key — a sync in flight cannot clobber it).
+    #[wasm_bindgen]
+    pub fn coin_mark(&self, req: &str) -> Result<String, JsValue> {
+        #[derive(serde::Deserialize)]
+        struct Req { txid: String, vout: u32, frozen: Option<bool>, note: Option<String> }
+        let r: Req = serde_json::from_str(req).map_err(|e| JsValue::from_str(&format!("coin_mark: bad request: {e}")))?;
+        if r.txid.len() != 64 || !r.txid.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(JsValue::from_str("coin_mark: txid must be 64 hex characters"));
+        }
+        let (root_key, _independent, _network) = {
+            let wallet = self
+                .inner
+                .lock()
+                .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+            wallet.onchain_handles()
+        };
+        let storage = t2_storage(&root_key);
+        let mut marks = lij_core::tier2_wallet::load_marks(storage.as_ref())
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let now = lij_core::tier2_wallet::now_ms();
+        if let Some(f) = r.frozen {
+            marks.set_frozen(&r.txid, r.vout, f, now);
+        }
+        if let Some(n) = r.note.as_deref() {
+            marks.set_note(&r.txid, r.vout, n, now);
+        }
+        lij_core::tier2_wallet::save_marks(storage.as_ref(), &marks)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let m = marks.get(&r.txid, r.vout).cloned().unwrap_or_default();
+        log::info!("[coin] mark {}:{} frozen={} note={}ch", &r.txid[..12], r.vout, m.frozen, m.note.chars().count());
+        let out = serde_json::json!({
+            "txid": r.txid.to_ascii_lowercase(),
+            "vout": r.vout,
+            "frozen": m.frozen,
+            "note": m.note,
+            "ts_ms": m.ts_ms,
+            "frozen_count": marks.frozen_count(),
+        });
+        Ok(out.to_string())
+    }
+
+    /// v284 (S50, silent payments — receive, the engine groundwork): the wallet's own
+    /// silent-payment address (BIP-352, keys m/352'/{coin}'/0'/1'/0 scan and /0'/0 spend —
+    /// Cake's and Sparrow's paths, so the 12 words restore the coins anywhere). Derived on
+    /// the spot from the words, never stored. Answers JSON {"address","scan_pub","spend_pub"}.
+    /// Not surfaced on the page until the receive walk ships (DP: nothing pushed before the
+    /// remaining decisions are talked through).
+    #[wasm_bindgen]
+    pub fn sp_address(&self) -> Result<String, JsValue> {
+        let (root_key, _independent, _network) = {
+            let wallet = self
+                .inner
+                .lock()
+                .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+            wallet.onchain_handles()
+        };
+        let keys = lij_core::silent_payment::SpKeys::from_root(&root_key)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let out = serde_json::json!({
+            "address": keys.address(),
+            "scan_pub": hex::encode(keys.scan_pub.serialize()),
+            "spend_pub": hex::encode(keys.spend_pub.serialize()),
+        });
+        Ok(out.to_string())
+    }
+
+    /// v288 (S50, DP 21:10 "the wallet has a say"): the wallet-side silent-payment switch. Lives in
+    /// the marks store (its own encrypted key — a sync in flight cannot clobber it; a rescan keeps
+    /// it). Off = the engine runs no silent-payment scan and the page shows no sp1 address; on = the
+    /// scan resumes where it stopped at the next sync. Answers JSON {"enabled"}.
+    #[wasm_bindgen]
+    pub fn sp_set_enabled(&self, enabled: bool) -> Result<String, JsValue> {
+        let (root_key, _independent, _network) = {
+            let wallet = self
+                .inner
+                .lock()
+                .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+            wallet.onchain_handles()
+        };
+        let storage = t2_storage(&root_key);
+        let mut marks = lij_core::tier2_wallet::load_marks(storage.as_ref())
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        marks.sp_enabled = enabled;
+        lij_core::tier2_wallet::save_marks(storage.as_ref(), &marks)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        log::info!("[sp] the silent-payment switch is now {}", if enabled { "on" } else { "off" });
+        Ok(serde_json::json!({ "enabled": enabled }).to_string())
+    }
+
+    // ── v286 (S50, NWC cut N1): the engine's NWC surface. The page owns the relay websocket
+    // and the UI; every key, every decrypt and every signature stays here. The store lives
+    // under the ledger's encryption at rest and rides the state blob. ──
+
+    /// The connections and limits, for Dials → NWC. JSON {"conns":[{id,name,service_pk,
+    /// client_pk,relay,created_ms,expires_ms,last_used_ms,ended}], "limits":{…},
+    /// "paid_today_sats", "live"}. Secrets never appear.
+    #[wasm_bindgen]
+    pub fn nwc_list(&self) -> Result<String, JsValue> {
+        let (root_key, _i, _n) = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?.onchain_handles();
+        let storage = t2_storage(&root_key);
+        let mut s = lij_core::nwc::load(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let now = lij_core::tier2_wallet::now_ms();
+        if s.expire(now) > 0 { let _ = lij_core::nwc::save(storage.as_ref(), &s); }
+        let conns: Vec<serde_json::Value> = s.conns.iter().map(|c| serde_json::json!({
+            "id": c.id, "name": c.name, "service_pk": c.service_pk, "client_pk": c.client_pk, "relay": c.relay,
+            "created_ms": c.created_ms, "expires_ms": c.expires_ms, "last_used_ms": c.last_used_ms, "ended": c.ended,
+        })).collect();
+        Ok(serde_json::json!({
+            "conns": conns,
+            "limits": s.limits(),
+            "paid_today_sats": (s.paid_today_msat(now) + 999) / 1000,
+            "live": s.live(now).count(),
+        }).to_string())
+    }
+
+    /// A new connection for one app: `req` = JSON {"name","relay"}. Answers {id,name,
+    /// service_pk,client_pk,uri,info_event} — the uri carries the client secret and is shown
+    /// once; the info event (13194) is what the page publishes to the relay.
+    #[wasm_bindgen]
+    pub fn nwc_add(&self, req: &str) -> Result<String, JsValue> {
+        #[derive(serde::Deserialize)]
+        struct Req { name: String, relay: String }
+        let r: Req = serde_json::from_str(req).map_err(|e| JsValue::from_str(&format!("nwc_add: bad request: {e}")))?;
+        let (root_key, _i, _n) = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?.onchain_handles();
+        let storage = t2_storage(&root_key);
+        let mut s = lij_core::nwc::load(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let now = lij_core::tier2_wallet::now_ms();
+        s.expire(now);
+        let added = s.add(&r.name, &r.relay, now).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        lij_core::nwc::save(storage.as_ref(), &s).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let c = s.get(added.id).ok_or_else(|| JsValue::from_str("nwc_add: lost"))?;
+        let info = lij_core::nwc::info_event(c, now / 1000).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        log::info!("[nwc] connection {} added ({})", added.id, added.name);
+        Ok(serde_json::json!({
+            "id": added.id, "name": added.name, "service_pk": added.service_pk, "client_pk": added.client_pk,
+            "uri": added.uri, "info_event": info,
+        }).to_string())
+    }
+
+    /// End a connection: `reason` = "revoked" (the user), "switched" (an LSP switch — pass id 0
+    /// to end every live one). The secret is dropped at once.
+    #[wasm_bindgen]
+    pub fn nwc_end(&self, id: u32, reason: &str) -> Result<String, JsValue> {
+        let (root_key, _i, _n) = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?.onchain_handles();
+        let storage = t2_storage(&root_key);
+        let mut s = lij_core::nwc::load(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let n = if id == 0 { s.end_all(reason) } else { s.end(id, reason).map_err(|e| JsValue::from_str(&e.to_string()))?; 1 };
+        lij_core::nwc::save(storage.as_ref(), &s).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        log::info!("[nwc] {n} connection(s) ended: {reason}");
+        Ok(serde_json::json!({ "ended": n }).to_string())
+    }
+
+    /// Drop an ended connection's row from the list.
+    #[wasm_bindgen]
+    pub fn nwc_forget(&self, id: u32) -> Result<(), JsValue> {
+        let (root_key, _i, _n) = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?.onchain_handles();
+        let storage = t2_storage(&root_key);
+        let mut s = lij_core::nwc::load(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        s.forget(id);
+        lij_core::nwc::save(storage.as_ref(), &s).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// The Dials: JSON {"per_payment_sats","per_day_sats","connection_days","request_ttl_secs"}.
+    #[wasm_bindgen]
+    pub fn nwc_set_limits(&self, req: &str) -> Result<String, JsValue> {
+        let l: lij_core::nwc::Limits = serde_json::from_str(req).map_err(|e| JsValue::from_str(&format!("nwc_set_limits: bad request: {e}")))?;
+        let (root_key, _i, _n) = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?.onchain_handles();
+        let storage = t2_storage(&root_key);
+        let mut s = lij_core::nwc::load(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        s.set_limits(l).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        lij_core::nwc::save(storage.as_ref(), &s).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        serde_json::to_string(&s.limits()).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Open a request event (kind 23194) fetched from the relay. The connection is found by
+    /// the event's `p` tag. Answers the `Opened` record (the request's method, invoice, amount,
+    /// payee, and either `refusal` {code,message} or nothing — then the page fills Send), or
+    /// an error when the event is not ours / malformed / too old (the page drops it).
+    #[wasm_bindgen]
+    pub fn nwc_open(&self, event_json: &str) -> Result<String, JsValue> {
+        let ev: lij_core::nwc::Event = serde_json::from_str(event_json).map_err(|e| JsValue::from_str(&format!("nwc_open: not an event: {e}")))?;
+        let (root_key, _i, network) = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?.onchain_handles();
+        let storage = t2_storage(&root_key);
+        let s = lij_core::nwc::load(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let now = lij_core::tier2_wallet::now_ms();
+        let p = ev.tags.iter().find(|t| t.len() >= 2 && t[0] == "p").map(|t| t[1].clone()).unwrap_or_default();
+        let c = s.by_service_pk(&p, now).ok_or_else(|| JsValue::from_str("nwc_open: no live connection for this request"))?;
+        let opened = lij_core::nwc::open_request(&s, c, &ev, network, now / 1000).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        serde_json::to_string(&opened).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// A reply (kind 23195) for the page to publish: `req` = JSON {"conn_id","request_id",
+    /// "result_type", "result": {…} | null, "error": {"code","message"} | null, "encryption"?}.
+    /// v290: `encryption` is the opened request's ("nip44_v2" | "nip04") — the reply goes back in kind.
+    #[wasm_bindgen]
+    pub fn nwc_reply(&self, req: &str) -> Result<String, JsValue> {
+        #[derive(serde::Deserialize)]
+        struct Req { conn_id: u32, request_id: String, result_type: String, result: Option<serde_json::Value>, error: Option<serde_json::Value>, #[serde(default)] encryption: Option<String> }
+        let r: Req = serde_json::from_str(req).map_err(|e| JsValue::from_str(&format!("nwc_reply: bad request: {e}")))?;
+        let (root_key, _i, _n) = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?.onchain_handles();
+        let storage = t2_storage(&root_key);
+        let s = lij_core::nwc::load(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let c = s.get(r.conn_id).ok_or_else(|| JsValue::from_str("nwc_reply: no such connection"))?;
+        let content = match (r.error, r.result) {
+            (Some(e), _) => lij_core::nwc::error_json(&r.result_type, e.get("code").and_then(|v| v.as_str()).unwrap_or("OTHER"), e.get("message").and_then(|v| v.as_str()).unwrap_or("")),
+            (None, Some(v)) => lij_core::nwc::result_json(&r.result_type, v),
+            (None, None) => return Err(JsValue::from_str("nwc_reply: neither result nor error")),
+        };
+        let enc = r.encryption.as_deref().unwrap_or(lij_core::nwc::ENCRYPTION);
+        let ev = lij_core::nwc::reply_event(c, &r.request_id, &content, lij_core::tier2_wallet::now_ms() / 1000, enc).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        serde_json::to_string(&ev).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// The info event (13194) for a connection, re-signed now (the page republishes it when
+    /// the relay lost it).
+    #[wasm_bindgen]
+    pub fn nwc_info_event(&self, id: u32) -> Result<String, JsValue> {
+        let (root_key, _i, _n) = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?.onchain_handles();
+        let storage = t2_storage(&root_key);
+        let s = lij_core::nwc::load(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let c = s.get(id).ok_or_else(|| JsValue::from_str("nwc_info_event: no such connection"))?;
+        let ev = lij_core::nwc::info_event(c, lij_core::tier2_wallet::now_ms() / 1000).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        serde_json::to_string(&ev).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// The NIP-42 AUTH event (22242) answering the relay's challenge as connection `id`.
+    #[wasm_bindgen]
+    pub fn nwc_auth_event(&self, id: u32, relay: &str, challenge: &str) -> Result<String, JsValue> {
+        let (root_key, _i, _n) = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?.onchain_handles();
+        let storage = t2_storage(&root_key);
+        let s = lij_core::nwc::load(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let c = s.get(id).ok_or_else(|| JsValue::from_str("nwc_auth_event: no such connection"))?;
+        let ev = lij_core::nwc::auth_event(c, relay, challenge, lij_core::tier2_wallet::now_ms() / 1000).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        serde_json::to_string(&ev).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Record an NWC payment once its preimage is in hand: `req` = JSON {"conn_id","msat",
+    /// "payee","payment_hash"}. Feeds the daily total and the duplicate check.
+    #[wasm_bindgen]
+    pub fn nwc_record_paid(&self, req: &str) -> Result<String, JsValue> {
+        #[derive(serde::Deserialize)]
+        struct Req { conn_id: u32, msat: u64, payee: String, payment_hash: String }
+        let r: Req = serde_json::from_str(req).map_err(|e| JsValue::from_str(&format!("nwc_record_paid: bad request: {e}")))?;
+        let (root_key, _i, _n) = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?.onchain_handles();
+        let storage = t2_storage(&root_key);
+        let mut s = lij_core::nwc::load(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let now = lij_core::tier2_wallet::now_ms();
+        s.record_paid(r.conn_id, r.msat, &r.payee, &r.payment_hash, now);
+        lij_core::nwc::save(storage.as_ref(), &s).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(serde_json::json!({ "paid_today_sats": (s.paid_today_msat(now) + 999) / 1000 }).to_string())
     }
 
     /// v166 (#29-4b): raw pending list for the bump UI (storage-only).
@@ -3395,6 +3922,74 @@ impl LijWalletHandle {
                 .open_channel_to_lsp(amount_sats, fee_rate_sat_per_vb)
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
             Ok(JsValue::from_str(&status))
+        })
+    }
+
+    /// v282 (S50, coin control cut 3): the same open, funded from EXACTLY the chosen coins.
+    /// `req` is JSON {"amount_sats", "fee_rate_sat_per_vb", "inputs": [{"txid","vout"}, …]}.
+    /// The coins wait under the open's nonce for LDK's funding event (seconds); a frozen,
+    /// unknown or short set fails the open there, in plain words, and nothing is spent.
+    #[wasm_bindgen]
+    pub fn open_lsp_channel_with(&self, req: &str) -> js_sys::Promise {
+        let inner = self.inner.clone();
+        let req = req.to_string();
+        future_to_promise(async move {
+            #[derive(serde::Deserialize)]
+            struct Pin { txid: String, vout: u32 }
+            #[derive(serde::Deserialize)]
+            struct Req { amount_sats: f64, fee_rate_sat_per_vb: f64, #[serde(default)] inputs: Vec<Pin> }
+            let r: Req = serde_json::from_str(&req).map_err(|e| JsValue::from_str(&format!("open_lsp_channel_with: bad request: {e}")))?;
+            let pins: Vec<(String, u32)> = r.inputs.iter().map(|p| (p.txid.to_ascii_lowercase(), p.vout)).collect();
+            if pins.is_empty() {
+                return Err(JsValue::from_str("open_lsp_channel_with: no coins chosen"));
+            }
+            if !(r.amount_sats.is_finite() && r.amount_sats >= 1.0) {
+                return Err(JsValue::from_str("channel size must be a positive whole number of sats"));
+            }
+            let wallet = inner
+                .lock()
+                .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+            let status = wallet
+                .open_channel_to_lsp_with(r.amount_sats as u64, r.fee_rate_sat_per_vb, Some(pins))
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            Ok(JsValue::from_str(&status))
+        })
+    }
+
+    /// v282: the + Add channel estimate for the CHOSEN coins — `req` JSON {"fee_rate_sat_per_vb",
+    /// "inputs"?: [{"txid","vout"}]}; max_channel_sats is what exactly those coins can open.
+    /// A frozen or unknown choice answers {"problem": "…"} with max_channel_sats 0.
+    #[wasm_bindgen]
+    pub fn lsp_channel_open_estimate_with(&self, req: &str) -> js_sys::Promise {
+        #[derive(serde::Deserialize)]
+        struct Pin { txid: String, vout: u32 }
+        #[derive(serde::Deserialize)]
+        struct Req { fee_rate_sat_per_vb: f64, #[serde(default)] inputs: Option<Vec<Pin>> }
+        let r: Req = match serde_json::from_str(req) { Ok(r) => r, Err(e) => return js_sys::Promise::reject(&JsValue::from_str(&format!("lsp_channel_open_estimate_with: bad request: {e}"))) };
+        let pins: Option<Vec<(String, u32)>> = r.inputs.map(|v| v.into_iter().map(|p| (p.txid.to_ascii_lowercase(), p.vout)).collect());
+        let root_key = match self.inner.try_lock() {
+            Ok(w) => w.onchain_handles().0,
+            Err(_) => return js_sys::Promise::reject(&JsValue::from_str("WALLET_BUSY")),
+        };
+        future_to_promise(async move {
+            let storage = t2_storage(&root_key);
+            let fee_rate_sat_per_kw = ((r.fee_rate_sat_per_vb * 250.0).round() as u32).max(250);
+            let spendable = lij_core::channel_open::spendable_total(storage.as_ref())
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let (max, problem) = match lij_core::channel_open::max_channel_value_with(storage.as_ref(), fee_rate_sat_per_kw, pins.as_deref()) {
+                Ok(m) => (m, None),
+                Err(e) if pins.is_some() => (0u64, Some(e.to_string())),
+                Err(e) => return Err(JsValue::from_str(&e.to_string())),
+            };
+            let result = serde_json::json!({
+                "spendable_sats": spendable,
+                "max_channel_sats": max,
+                "anchor_reserve_sats": lij_core::channel_open::ANCHOR_FEE_RESERVE_SATS,
+                "min_channel_sats": lij_core::channel_open::LDK_MIN_CHANNEL_SATS,
+                "chosen": pins.as_ref().map(|p| p.len()).unwrap_or(0),
+                "problem": problem,
+            });
+            Ok(JsValue::from_str(&result.to_string()))
         })
     }
 

@@ -298,6 +298,35 @@ export class LijWalletHandle {
         }
     }
     /**
+     * v281 (S50, coin control): mark one coin. `req` is JSON {"txid","vout", "frozen"?:
+     * bool, "note"?: string} — a field left out is left alone; a note is cleaned and
+     * capped at 120 code points in the engine. Answers the coin's mark as stored (JSON
+     * {"txid","vout","frozen","note","ts_ms"}) plus "frozen_count". Written to the
+     * marks store (its own encrypted key — a sync in flight cannot clobber it).
+     * @param {string} req
+     * @returns {string}
+     */
+    coin_mark(req) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(req, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_coin_mark(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * Connect to a Lightning peer over WebSocket.
      * @param {string} pubkey_hex
      * @param {string} wss_url
@@ -889,6 +918,19 @@ export class LijWalletHandle {
         return ret;
     }
     /**
+     * v282: the + Add channel estimate for the CHOSEN coins — `req` JSON {"fee_rate_sat_per_vb",
+     * "inputs"?: [{"txid","vout"}]}; max_channel_sats is what exactly those coins can open.
+     * A frozen or unknown choice answers {"problem": "…"} with max_channel_sats 0.
+     * @param {string} req
+     * @returns {Promise<any>}
+     */
+    lsp_channel_open_estimate_with(req) {
+        const ptr0 = passStringToWasm0(req, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_lsp_channel_open_estimate_with(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+    /**
      * Dev tool: manually mark a funding transaction as confirmed at a
      * given height. Synthesizes block headers and notifies LDK's chain
      * listeners — pre-Neutrino workaround for the stuck-channel case.
@@ -1060,11 +1102,316 @@ export class LijWalletHandle {
         wasm.lijwallethandle_note_foreground(this.__wbg_ptr);
     }
     /**
+     * A new connection for one app: `req` = JSON {"name","relay"}. Answers {id,name,
+     * service_pk,client_pk,uri,info_event} — the uri carries the client secret and is shown
+     * once; the info event (13194) is what the page publishes to the relay.
+     * @param {string} req
+     * @returns {string}
+     */
+    nwc_add(req) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(req, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_nwc_add(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * The NIP-42 AUTH event (22242) answering the relay's challenge as connection `id`.
+     * @param {number} id
+     * @param {string} relay
+     * @param {string} challenge
+     * @returns {string}
+     */
+    nwc_auth_event(id, relay, challenge) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(relay, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(challenge, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_nwc_auth_event(this.__wbg_ptr, id, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * End a connection: `reason` = "revoked" (the user), "switched" (an LSP switch — pass id 0
+     * to end every live one). The secret is dropped at once.
+     * @param {number} id
+     * @param {string} reason
+     * @returns {string}
+     */
+    nwc_end(id, reason) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(reason, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_nwc_end(this.__wbg_ptr, id, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Drop an ended connection's row from the list.
+     * @param {number} id
+     */
+    nwc_forget(id) {
+        const ret = wasm.lijwallethandle_nwc_forget(this.__wbg_ptr, id);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * The info event (13194) for a connection, re-signed now (the page republishes it when
+     * the relay lost it).
+     * @param {number} id
+     * @returns {string}
+     */
+    nwc_info_event(id) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_nwc_info_event(this.__wbg_ptr, id);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * The connections and limits, for Dials → NWC. JSON {"conns":[{id,name,service_pk,
+     * client_pk,relay,created_ms,expires_ms,last_used_ms,ended}], "limits":{…},
+     * "paid_today_sats", "live"}. Secrets never appear.
+     * @returns {string}
+     */
+    nwc_list() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_nwc_list(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Open a request event (kind 23194) fetched from the relay. The connection is found by
+     * the event's `p` tag. Answers the `Opened` record (the request's method, invoice, amount,
+     * payee, and either `refusal` {code,message} or nothing — then the page fills Send), or
+     * an error when the event is not ours / malformed / too old (the page drops it).
+     * @param {string} event_json
+     * @returns {string}
+     */
+    nwc_open(event_json) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(event_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_nwc_open(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Record an NWC payment once its preimage is in hand: `req` = JSON {"conn_id","msat",
+     * "payee","payment_hash"}. Feeds the daily total and the duplicate check.
+     * @param {string} req
+     * @returns {string}
+     */
+    nwc_record_paid(req) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(req, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_nwc_record_paid(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * A reply (kind 23195) for the page to publish: `req` = JSON {"conn_id","request_id",
+     * "result_type", "result": {…} | null, "error": {"code","message"} | null, "encryption"?}.
+     * v290: `encryption` is the opened request's ("nip44_v2" | "nip04") — the reply goes back in kind.
+     * @param {string} req
+     * @returns {string}
+     */
+    nwc_reply(req) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(req, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_nwc_reply(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * The Dials: JSON {"per_payment_sats","per_day_sats","connection_days","request_ttl_secs"}.
+     * @param {string} req
+     * @returns {string}
+     */
+    nwc_set_limits(req) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(req, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_nwc_set_limits(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * @returns {Promise<any>}
      */
     onchain_history() {
         const ret = wasm.lijwallethandle_onchain_history(this.__wbg_ptr);
         return ret;
+    }
+    /**
+     * v281 (S50, coin control): the exact Max at this fee rate — what a one-output send
+     * of every sendable coin delivers, from the builder's own candidate set and fee
+     * arithmetic (MaxQuote JSON: max_sats, fee_sats, inputs, total_sats, frozen_sats,
+     * frozen_count, sat_per_vb). `dest` may be empty while the user is still typing.
+     * Storage only, no network.
+     * @param {string} dest
+     * @param {number} fee_rate_sat_per_kw
+     * @returns {string}
+     */
+    onchain_max(dest, fee_rate_sat_per_kw) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(dest, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_onchain_max(this.__wbg_ptr, ptr0, len0, fee_rate_sat_per_kw);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * v282 (S50, coin control cut 3): the picker's quote. `req` is JSON {"dest", "fee_rate_sat_per_kw",
+     * "inputs"?: [{"txid","vout"}], "amount_sats"?, "fill"?: bool} → CoinQuote JSON (chosen, chosen_sats,
+     * max_sats, need_sats, covered, short_sats, fill [...], fill_covers, sendable_sats, frozen_sats,
+     * problem). Storage only, no network.
+     * @param {string} req
+     * @returns {string}
+     */
+    onchain_quote(req) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(req, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_onchain_quote(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
     }
     /**
      * Read-only on-chain wallet summary (D, increment 1): scans the BIP84
@@ -1134,6 +1481,20 @@ export class LijWalletHandle {
      */
     open_lsp_channel(amount_sats, fee_rate_sat_per_vb) {
         const ret = wasm.lijwallethandle_open_lsp_channel(this.__wbg_ptr, amount_sats, fee_rate_sat_per_vb);
+        return ret;
+    }
+    /**
+     * v282 (S50, coin control cut 3): the same open, funded from EXACTLY the chosen coins.
+     * `req` is JSON {"amount_sats", "fee_rate_sat_per_vb", "inputs": [{"txid","vout"}, …]}.
+     * The coins wait under the open's nonce for LDK's funding event (seconds); a frozen,
+     * unknown or short set fails the open there, in plain words, and nothing is spent.
+     * @param {string} req
+     * @returns {Promise<any>}
+     */
+    open_lsp_channel_with(req) {
+        const ptr0 = passStringToWasm0(req, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_open_lsp_channel_with(this.__wbg_ptr, ptr0, len0);
         return ret;
     }
     /**
@@ -1514,6 +1875,35 @@ export class LijWalletHandle {
         return ret;
     }
     /**
+     * v281 (S50, coin control — Max): send everything sendable to `dest` in one output
+     * (every unfrozen, unreserved coin; amount = total − the one-output fee; no change).
+     * The page's Max calls this instead of guessing an amount for send_onchain.
+     * @param {string} dest
+     * @param {number} fee_rate_sat_per_kw
+     * @returns {Promise<any>}
+     */
+    send_onchain_all(dest, fee_rate_sat_per_kw) {
+        const ptr0 = passStringToWasm0(dest, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_send_onchain_all(this.__wbg_ptr, ptr0, len0, fee_rate_sat_per_kw);
+        return ret;
+    }
+    /**
+     * v282 (S50, coin control cut 3 — chosen coins): a send from EXACTLY the coins the user
+     * chose. `req` is JSON {"dest", "fee_rate_sat_per_kw", "inputs": [{"txid","vout"}, …],
+     * and either "amount_sats" (change to m/84) or "all": true (everything in those coins,
+     * one output)}. A frozen or unknown coin, or coins that do not cover amount + fee, is an
+     * error in plain words — nothing is spent. Returns SendResult JSON like send_onchain.
+     * @param {string} req
+     * @returns {Promise<any>}
+     */
+    send_onchain_with(req) {
+        const ptr0 = passStringToWasm0(req, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_send_onchain_with(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+    /**
      * @param {string} bolt11
      * @returns {Promise<any>}
      */
@@ -1659,6 +2049,59 @@ export class LijWalletHandle {
             return getStringFromWasm0(ptr2, len2);
         } finally {
             wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * v284 (S50, silent payments — receive, the engine groundwork): the wallet's own
+     * silent-payment address (BIP-352, keys m/352'/{coin}'/0'/1'/0 scan and /0'/0 spend —
+     * Cake's and Sparrow's paths, so the 12 words restore the coins anywhere). Derived on
+     * the spot from the words, never stored. Answers JSON {"address","scan_pub","spend_pub"}.
+     * Not surfaced on the page until the receive walk ships (DP: nothing pushed before the
+     * remaining decisions are talked through).
+     * @returns {string}
+     */
+    sp_address() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_sp_address(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * v288 (S50, DP 21:10 "the wallet has a say"): the wallet-side silent-payment switch. Lives in
+     * the marks store (its own encrypted key — a sync in flight cannot clobber it; a rescan keeps
+     * it). Off = the engine runs no silent-payment scan and the page shows no sp1 address; on = the
+     * scan resumes where it stopped at the next sync. Answers JSON {"enabled"}.
+     * @param {boolean} enabled
+     * @returns {string}
+     */
+    sp_set_enabled(enabled) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_sp_set_enabled(this.__wbg_ptr, enabled);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
         }
     }
     /**
@@ -2683,7 +3126,7 @@ function __wbg_get_imports() {
             console.warn(arg0, arg1, arg2, arg3);
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1716, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1781, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed);
             return ret;
         },
@@ -2694,16 +3137,16 @@ function __wbg_get_imports() {
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("ErrorEvent")], shim_idx: 7, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_122);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_141);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 7, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_123);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_142);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 1422, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 1481, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f);
             return ret;
         },
@@ -2741,12 +3184,12 @@ function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_122(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_122(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_141(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_141(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_123(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_123(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_142(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_142(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed(arg0, arg1, arg2) {

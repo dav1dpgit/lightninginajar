@@ -99,6 +99,14 @@ export class LijWalletHandle {
      */
     close_values_json(): string;
     /**
+     * v281 (S50, coin control): mark one coin. `req` is JSON {"txid","vout", "frozen"?:
+     * bool, "note"?: string} — a field left out is left alone; a note is cleaned and
+     * capped at 120 code points in the engine. Answers the coin's mark as stored (JSON
+     * {"txid","vout","frozen","note","ts_ms"}) plus "frozen_count". Written to the
+     * marks store (its own encrypted key — a sync in flight cannot clobber it).
+     */
+    coin_mark(req: string): string;
+    /**
      * Connect to a Lightning peer over WebSocket.
      */
     connect_to_peer(pubkey_hex: string, wss_url: string): Promise<any>;
@@ -267,6 +275,12 @@ export class LijWalletHandle {
      */
     lsp_channel_open_estimate(fee_rate_sat_per_vb: number): Promise<any>;
     /**
+     * v282: the + Add channel estimate for the CHOSEN coins — `req` JSON {"fee_rate_sat_per_vb",
+     * "inputs"?: [{"txid","vout"}]}; max_channel_sats is what exactly those coins can open.
+     * A frozen or unknown choice answers {"problem": "…"} with max_channel_sats 0.
+     */
+    lsp_channel_open_estimate_with(req: string): Promise<any>;
+    /**
      * Dev tool: manually mark a funding transaction as confirmed at a
      * given height. Synthesizes block headers and notifies LDK's chain
      * listeners — pre-Neutrino workaround for the stuck-channel case.
@@ -326,7 +340,74 @@ export class LijWalletHandle {
      * is busy (a walk is likely already in flight). See node::note_foreground.
      */
     note_foreground(): void;
+    /**
+     * A new connection for one app: `req` = JSON {"name","relay"}. Answers {id,name,
+     * service_pk,client_pk,uri,info_event} — the uri carries the client secret and is shown
+     * once; the info event (13194) is what the page publishes to the relay.
+     */
+    nwc_add(req: string): string;
+    /**
+     * The NIP-42 AUTH event (22242) answering the relay's challenge as connection `id`.
+     */
+    nwc_auth_event(id: number, relay: string, challenge: string): string;
+    /**
+     * End a connection: `reason` = "revoked" (the user), "switched" (an LSP switch — pass id 0
+     * to end every live one). The secret is dropped at once.
+     */
+    nwc_end(id: number, reason: string): string;
+    /**
+     * Drop an ended connection's row from the list.
+     */
+    nwc_forget(id: number): void;
+    /**
+     * The info event (13194) for a connection, re-signed now (the page republishes it when
+     * the relay lost it).
+     */
+    nwc_info_event(id: number): string;
+    /**
+     * The connections and limits, for Dials → NWC. JSON {"conns":[{id,name,service_pk,
+     * client_pk,relay,created_ms,expires_ms,last_used_ms,ended}], "limits":{…},
+     * "paid_today_sats", "live"}. Secrets never appear.
+     */
+    nwc_list(): string;
+    /**
+     * Open a request event (kind 23194) fetched from the relay. The connection is found by
+     * the event's `p` tag. Answers the `Opened` record (the request's method, invoice, amount,
+     * payee, and either `refusal` {code,message} or nothing — then the page fills Send), or
+     * an error when the event is not ours / malformed / too old (the page drops it).
+     */
+    nwc_open(event_json: string): string;
+    /**
+     * Record an NWC payment once its preimage is in hand: `req` = JSON {"conn_id","msat",
+     * "payee","payment_hash"}. Feeds the daily total and the duplicate check.
+     */
+    nwc_record_paid(req: string): string;
+    /**
+     * A reply (kind 23195) for the page to publish: `req` = JSON {"conn_id","request_id",
+     * "result_type", "result": {…} | null, "error": {"code","message"} | null, "encryption"?}.
+     * v290: `encryption` is the opened request's ("nip44_v2" | "nip04") — the reply goes back in kind.
+     */
+    nwc_reply(req: string): string;
+    /**
+     * The Dials: JSON {"per_payment_sats","per_day_sats","connection_days","request_ttl_secs"}.
+     */
+    nwc_set_limits(req: string): string;
     onchain_history(): Promise<any>;
+    /**
+     * v281 (S50, coin control): the exact Max at this fee rate — what a one-output send
+     * of every sendable coin delivers, from the builder's own candidate set and fee
+     * arithmetic (MaxQuote JSON: max_sats, fee_sats, inputs, total_sats, frozen_sats,
+     * frozen_count, sat_per_vb). `dest` may be empty while the user is still typing.
+     * Storage only, no network.
+     */
+    onchain_max(dest: string, fee_rate_sat_per_kw: number): string;
+    /**
+     * v282 (S50, coin control cut 3): the picker's quote. `req` is JSON {"dest", "fee_rate_sat_per_kw",
+     * "inputs"?: [{"txid","vout"}], "amount_sats"?, "fill"?: bool} → CoinQuote JSON (chosen, chosen_sats,
+     * max_sats, need_sats, covered, short_sats, fill [...], fill_covers, sendable_sats, frozen_sats,
+     * problem). Storage only, no network.
+     */
+    onchain_quote(req: string): string;
     /**
      * Read-only on-chain wallet summary (D, increment 1): scans the BIP84
      * spendable chain + legacy m/525 residue and returns balance, UTXOs, and a
@@ -364,6 +445,13 @@ export class LijWalletHandle {
      * wallet from its Tier-2 UTXOs and broadcast by LDK — not the adapter.
      */
     open_lsp_channel(amount_sats: bigint, fee_rate_sat_per_vb: number): Promise<any>;
+    /**
+     * v282 (S50, coin control cut 3): the same open, funded from EXACTLY the chosen coins.
+     * `req` is JSON {"amount_sats", "fee_rate_sat_per_vb", "inputs": [{"txid","vout"}, …]}.
+     * The coins wait under the open's nonce for LDK's funding event (seconds); a frozen,
+     * unknown or short set fails the open there, in plain words, and nothing is spent.
+     */
+    open_lsp_channel_with(req: string): Promise<any>;
     outstanding_close_attempts(): string;
     peek_channel_index(): number;
     /**
@@ -472,6 +560,20 @@ export class LijWalletHandle {
      * broadcast with the lock released (network I/O). Returns SendResult JSON.
      */
     send_onchain(dest: string, amount_sats: number, fee_rate_sat_per_kw: number): Promise<any>;
+    /**
+     * v281 (S50, coin control — Max): send everything sendable to `dest` in one output
+     * (every unfrozen, unreserved coin; amount = total − the one-output fee; no change).
+     * The page's Max calls this instead of guessing an amount for send_onchain.
+     */
+    send_onchain_all(dest: string, fee_rate_sat_per_kw: number): Promise<any>;
+    /**
+     * v282 (S50, coin control cut 3 — chosen coins): a send from EXACTLY the coins the user
+     * chose. `req` is JSON {"dest", "fee_rate_sat_per_kw", "inputs": [{"txid","vout"}, …],
+     * and either "amount_sats" (change to m/84) or "all": true (everything in those coins,
+     * one output)}. A frozen or unknown coin, or coins that do not cover amount + fee, is an
+     * error in plain words — nothing is spent. Returns SendResult JSON like send_onchain.
+     */
+    send_onchain_with(req: string): Promise<any>;
     send_payment(bolt11: string): Promise<any>;
     /**
      * Phase 10b — Send via LSP-provided route (Routing as a Service).
@@ -534,6 +636,22 @@ export class LijWalletHandle {
      * Serves the LIJOX delegate slip/void digests. Sync, no I/O.
      */
     sign_message(msg: string): string;
+    /**
+     * v284 (S50, silent payments — receive, the engine groundwork): the wallet's own
+     * silent-payment address (BIP-352, keys m/352'/{coin}'/0'/1'/0 scan and /0'/0 spend —
+     * Cake's and Sparrow's paths, so the 12 words restore the coins anywhere). Derived on
+     * the spot from the words, never stored. Answers JSON {"address","scan_pub","spend_pub"}.
+     * Not surfaced on the page until the receive walk ships (DP: nothing pushed before the
+     * remaining decisions are talked through).
+     */
+    sp_address(): string;
+    /**
+     * v288 (S50, DP 21:10 "the wallet has a say"): the wallet-side silent-payment switch. Lives in
+     * the marks store (its own encrypted key — a sync in flight cannot clobber it; a rescan keeps
+     * it). Off = the engine runs no silent-payment scan and the page shows no sp1 address; on = the
+     * scan resumes where it stopped at the next sync. Answers JSON {"enabled"}.
+     */
+    sp_set_enabled(enabled: boolean): string;
     /**
      * TEMP diagnostic: dump the SpendableOutputs event log — every descriptor
      * (incl. v128-excluded StaticOutputs) seen at the event handler, with
@@ -779,6 +897,7 @@ export interface InitOutput {
     readonly lijwallethandle_close_channel: (a: number, b: number, c: number) => [number, number];
     readonly lijwallethandle_close_event_log: (a: number) => [number, number];
     readonly lijwallethandle_close_values_json: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_coin_mark: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_connect_to_peer: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly lijwallethandle_coop_cpfp: (a: number, b: number, c: number, d: number) => any;
     readonly lijwallethandle_create: (a: number, b: number) => any;
@@ -810,6 +929,7 @@ export interface InitOutput {
     readonly lijwallethandle_list_recent_payments_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_lnurlp_prepare_hashes: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_lsp_channel_open_estimate: (a: number, b: number) => any;
+    readonly lijwallethandle_lsp_channel_open_estimate_with: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_mark_funding_confirmed: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly lijwallethandle_maturing_balances_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_maturing_outputs: (a: number) => [number, number, number, number];
@@ -819,11 +939,24 @@ export interface InitOutput {
     readonly lijwallethandle_node_pubkey: (a: number) => [number, number, number, number];
     readonly lijwallethandle_note_background: (a: number) => void;
     readonly lijwallethandle_note_foreground: (a: number) => void;
+    readonly lijwallethandle_nwc_add: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_nwc_auth_event: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+    readonly lijwallethandle_nwc_end: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly lijwallethandle_nwc_forget: (a: number, b: number) => [number, number];
+    readonly lijwallethandle_nwc_info_event: (a: number, b: number) => [number, number, number, number];
+    readonly lijwallethandle_nwc_list: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_nwc_open: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_nwc_record_paid: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_nwc_reply: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_nwc_set_limits: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_onchain_history: (a: number) => any;
+    readonly lijwallethandle_onchain_max: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly lijwallethandle_onchain_quote: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_onchain_summary: (a: number) => any;
     readonly lijwallethandle_open_channel: (a: number, b: bigint) => any;
     readonly lijwallethandle_open_failures_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_open_lsp_channel: (a: number, b: bigint, c: number) => any;
+    readonly lijwallethandle_open_lsp_channel_with: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_outstanding_close_attempts: (a: number) => [number, number, number, number];
     readonly lijwallethandle_peek_channel_index: (a: number) => [number, number, number];
     readonly lijwallethandle_pending_onchain_audit_json: (a: number) => any;
@@ -844,12 +977,16 @@ export interface InitOutput {
     readonly lijwallethandle_reserve_onchain_index: (a: number, b: number) => [number, number];
     readonly lijwallethandle_restore: (a: number, b: number, c: number, d: number) => any;
     readonly lijwallethandle_send_onchain: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly lijwallethandle_send_onchain_all: (a: number, b: number, c: number, d: number) => any;
+    readonly lijwallethandle_send_onchain_with: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_send_payment: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_send_payment_via_lsp_route: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
     readonly lijwallethandle_send_payment_with_retries: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: any, j: number, k: bigint, l: number, m: bigint) => any;
     readonly lijwallethandle_sent_parts_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_set_quorum_endpoints: (a: number, b: number, c: number) => [number, number];
     readonly lijwallethandle_sign_message: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_sp_address: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_sp_set_enabled: (a: number, b: number) => [number, number, number, number];
     readonly lijwallethandle_spendable_outputs_log: (a: number) => [number, number];
     readonly lijwallethandle_sweeper_broadcast_diag: (a: number, b: number) => [number, number, number, number];
     readonly lijwallethandle_sweeper_spend_attempt_diag: (a: number, b: number) => [number, number, number, number];
@@ -883,8 +1020,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_122: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_123: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_141: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_142: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
