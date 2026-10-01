@@ -679,8 +679,14 @@ export class LijWalletHandle {
      * Persists across sessions and resumes from the saved cursor. `birthday`
      * is the wallet's creation height, used only when no cursor exists yet.
      * Returns Tier2Summary JSON.
+     * v296 (S52, DP 23:09 "#1: Go"): `filter_base` = the block-filter server the walk reads (the page passes its
+     * own provider's when the LIJOX directory lists one); `sp_base` = the server whose silent-payment index the
+     * scan reads (none = the walk's server). Either missing or not a plain https address = the project's server
+     * (tier2_sync::DEFAULT_FILTER_BASE). Servers are interchangeable: filters and headers are the chain's own
+     * (PoW-checked, linked to the walk's record), blocks are hash-bound — a change of server mid-walk is safe.
+     * The summary names the two servers used (`filter_server`, `sp_server`).
      */
-    tier2_onchain_sync(birthday: number): Promise<any>;
+    tier2_onchain_sync(birthday: number, filter_base?: string | null, sp_base?: string | null): Promise<any>;
     /**
      * v105 dev/recovery tool: roll the Tier-2 scan cursor back so the next
      * background sync re-walks blocks from `from_height` (inclusive) to tip.
@@ -694,15 +700,39 @@ export class LijWalletHandle {
      */
     tier2_rescan_from(from_height: number): string;
     /**
-     * v261 (DP: the on-chain drill-down): everything the panel shows for one transaction,
-     * read from the independent sources at tap time — fee (sats, sat/vB), the inputs and
-     * outputs with which are ours, the counterparty address, the output type, mempool or
-     * block (with the header time), and the block time recorded into the ledger so the
-     * face's row gains its clock. Answers JSON:
+     * v261 (DP: the on-chain drill-down): everything the panel shows for one transaction — fee (sats,
+     * sat/vB), the inputs and outputs with which are ours, the counterparty address, the output type, mempool
+     * or block (with the header time). Answers JSON:
      * {"txid","fee_sats","vsize","sat_vb","confirmed","height","time","our_in","our_out",
-     *  "address","address_type","outputs":[{"address","value","ours","type"}]}
+     *  "address","address_type","outputs":[{"address","value","ours","type"}],"source","sp_address"}
+     * v298 (S52, DP 22:48 "build the drill-down from the block the wallet already downloaded" + 23:43 "Go on #2 and
+     * #3"): the details come from the wallet's own data — NO explorer is asked (until v298 every tap sent the txid
+     * to four public explorers). In order: the transaction kept whole (the walk and the scan keep every own
+     * transaction from its block; a send is kept at broadcast); else, for a ledger row from before v298, its block
+     * read once more from the wallet's block-filter server (`filter_base`: the page's lijFilterBases().walk; the
+     * header's work checked, the block bound to it, the transaction authentic by its txid; every own transaction in
+     * that block kept); else a pending transaction's own bytes, or a pending send's record (destination, fee). A
+     * transaction the ledger does not hold is looked up nowhere. `source` says which; `fee_sats` is 0 when an input
+     * is someone else's (its value is not the wallet's to know). `sp_address` (#3): the sp1 address a send from
+     * this phone was typed to — the chain shows only the taproot output it made.
      */
-    tx_details(txid: string): Promise<any>;
+    tx_details(txid: string, filter_base?: string | null): Promise<any>;
+    /**
+     * v300: "delete old data" — the kept transactions from blocks below `height` go (their rows read their block again
+     * when tapped); coins, balance and history are not touched. Answers how many went.
+     */
+    tx_keep_drop_before(height: number): number;
+    /**
+     * v300: "expand the size" — the ceiling, one of the offered steps (1,000 / 2,000 / 4,000); a lower one trims the
+     * oldest at once. Answers the new status.
+     */
+    tx_keep_set_cap(cap: number): string;
+    /**
+     * v300 (S52, DP 00:25 "if a wallet approaches 1000 transactions, some notification to the user should happen that
+     * lets them either delete old data or expand the size"): the kept transactions' state for the page —
+     * {"count","cap","near","bytes","oldest_height","steps"}; `near` = 90 % of the ceiling.
+     */
+    tx_keep_status(): string;
     /**
      * Chunk 1 (receive watcher): query a single watched address for incoming
      * outputs — INCLUDING 0-conf mempool ones — via the independent Esplora
@@ -991,9 +1021,12 @@ export interface InitOutput {
     readonly lijwallethandle_sweeper_broadcast_diag: (a: number, b: number) => [number, number, number, number];
     readonly lijwallethandle_sweeper_spend_attempt_diag: (a: number, b: number) => [number, number, number, number];
     readonly lijwallethandle_switch_lsp: (a: number, b: number, c: number) => any;
-    readonly lijwallethandle_tier2_onchain_sync: (a: number, b: number) => any;
+    readonly lijwallethandle_tier2_onchain_sync: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
     readonly lijwallethandle_tier2_rescan_from: (a: number, b: number) => [number, number, number, number];
-    readonly lijwallethandle_tx_details: (a: number, b: number, c: number) => any;
+    readonly lijwallethandle_tx_details: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly lijwallethandle_tx_keep_drop_before: (a: number, b: number) => [number, number, number];
+    readonly lijwallethandle_tx_keep_set_cap: (a: number, b: number) => [number, number, number, number];
+    readonly lijwallethandle_tx_keep_status: (a: number) => [number, number, number, number];
     readonly lijwallethandle_watch_address_inbound: (a: number, b: number, c: number) => any;
     readonly lsps2_buy_promise: (a: number, b: number, c: number, d: number, e: bigint, f: number, g: number) => any;
     readonly lsps2_get_info: (a: number, b: number, c: number, d: number) => any;
@@ -1020,8 +1053,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_141: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_142: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_144: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_145: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

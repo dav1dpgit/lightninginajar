@@ -221,12 +221,15 @@ pub async fn refresh_info(http: &Arc<dyn EsploraHttp>, base: &str, view: &mut Ti
     if info.format != "spcommit-v1" {
         return Err(LijError::Node(format!("silent-payment index: unknown format {}", info.format)));
     }
-    let first = !sp.available;
     sp.available = true;
     sp.index_start = info.start_height;
     sp.indexed_to = info.indexed_to.unwrap_or(0);
     sp.single_source = true;
-    if first || sp.from == 0 {
+    // v297 (S52): the scan opens ONCE (from == 0 = never opened). Until v297 it also re-opened whenever the server had
+    // answered 404 in between — a box whose index was away for a while, or (v296) a wallet that read another
+    // provider's server — and a re-open of a walked view starts at the walk's top: every block between where the scan
+    // stood and that top was never read, and a silent payment in them never found. An opened scan resumes where it was.
+    if sp.from == 0 {
         // a fresh view (restore / rescan / first ever walk) scans from the later of the index start and the
         // birthday; a view already walked before this build starts at its current top — no LiJ wallet showed
         // an sp1 address before v287 (DP's decision 1)
@@ -313,8 +316,13 @@ async fn scan_batch(
         }
         by_height.insert(b.height, (b.hash.clone(), b.tweaks.clone()));
     }
-    let own = coin_scripts(&secp, keys, view);
-    let mut matched: Vec<(u32, String, Vec<PublicKey>)> = Vec::new();
+    // v297 (S52): block by block, in order — a matching block is fetched and applied before the next filter is
+    // tested, and a coin found in it joins the scripts tested from the next block on. Until v297 every filter of the
+    // batch was tested first, against the coins held at the batch's start: a coin found in a batch and spent later in
+    // the SAME batch (a catch-up — a restore, a rescan, a resumed scan: up to 100 blocks at a time) never had its
+    // spend read, and the balance kept a coin that was gone. Same fetches, same order.
+    let mut own = coin_scripts(&secp, keys, view);
+    let mut n = 0usize;
     // v293 (S51, DP — O1): the screen's turn is a TIME budget (tier2_sync::YIELD_BUDGET_MS), checked before every
     // block and between groups of tweaks — not "every 8 blocks", which on an iPhone X was 1–6 s of frozen screen
     // per run (three elliptic-curve operations per tweak, hundreds of tweaks per block). Same work, same order.
@@ -340,13 +348,9 @@ async fn scan_batch(
         if query.is_empty() { continue; }
         let bytes = hex::decode(&f.filter).map_err(|e| LijError::Node(format!("filter hex at {}: {e}", f.height)))?;
         let bh = BlockHash::from_str(&f.hash).map_err(|e| LijError::Node(format!("block hash at {}: {e}", f.height)))?;
-        if crate::tier2::block_matches_scripts(&bytes, &bh, &query)? {
-            matched.push((f.height, f.hash.clone(), tweaks));
-        }
-    }
-    let n = matched.len();
-    for (height, hash, tweaks) in matched {
-        let block: Block = fetch_block_bound(http, base, height, &hash).await?;   // hash-bound, merkle-checked
+        if !crate::tier2::block_matches_scripts(&bytes, &bh, &query)? { continue; }
+        let height = f.height;
+        let block: Block = fetch_block_bound(http, base, height, &f.hash).await?;   // hash-bound, merkle-checked
         view.block_times.insert(height, block.header.time);
         // spends of every known coin (m/84 and silent-payment alike) are marked by outpoint; the m/84
         // outputs themselves are the walk's business, so the script net is empty here
@@ -354,14 +358,17 @@ async fn scan_batch(
         apply_txs(view, &scripts, &block.txdata, height);
         let found = keys.find_in_block(&secp, &tweaks, &block.txdata, true);
         let mut new = 0;
-        for f in &found {
-            if add_coin(view, f, height) { new += 1; }
-            let txid = f.txid.to_string();
-            if let Some(sp) = view.sp.as_mut() { sp.pending.retain(|p| !(p.txid == txid && p.vout == f.vout)); }
+        for c in &found {
+            if add_coin(view, c, height) { new += 1; own.push(c.script.clone()); }   // v297: tested from the next block on
+            let txid = c.txid.to_string();
+            if let Some(sp) = view.sp.as_mut() { sp.pending.retain(|p| !(p.txid == txid && p.vout == c.vout)); }
         }
         if new > 0 {
+            apply_txs(view, &scripts, &block.txdata, height);   // v297: a coin paid and spent inside this one block
             log::info!("[sp] {new} silent payment(s) found in block {height}");
         }
+        crate::tier2_wallet::capture_own_txs(view, &block.txdata, height);   // v298: kept whole for the drill-down
+        n += 1;
     }
     if let Some(s) = view.sp.as_mut() {
         s.scanned_hash = top_hash.to_string();
@@ -787,6 +794,132 @@ mod tests {
         view.cursor.birthday = 200;
         refresh_info(&http2, "http://box", &mut view).await.unwrap();
         assert_eq!(view.sp.as_ref().unwrap().from, 500, "decision 1: an existing wallet's scan starts at today's top");
+    }
+
+    /// v297: the walk's anchors at `i` (0 = block 101, 1 = block 102) in the test world.
+    fn walk_at(view: &mut Tier2View, blocks: &[Served], i: usize) {
+        view.cursor.scanned_to = blocks[i].height;
+        view.cursor.last_hash = Some(blocks[i].block.block_hash().to_string());
+        view.cursor.last_filter_header = Some(bitcoin::hashes::sha256d::Hash::from_byte_array(blocks[i].fh).to_string());
+    }
+
+    #[tokio::test]
+    async fn v297_a_scan_paused_by_a_server_without_the_index_resumes_where_it_was() {
+        let (http, blocks, _, _) = build_world(false);
+        let http: Arc<dyn EsploraHttp> = http;
+        let storage = crate::storage::native_storage::MemoryStorage::new();
+        let mut view = Tier2View::default();
+        view.cursor.birthday = 90;
+        view.cursor.scanned_to = 100;   // the walk stands at 100 when the scan opens (a walked view, not fresh)
+        refresh_info(&http, "http://box", &mut view).await.unwrap();
+        assert_eq!((view.sp.as_ref().unwrap().from, view.sp.as_ref().unwrap().scanned_to), (101, 100));
+        // a server without the index answers for a while (404) — the walk reads 101 (the payment) and 102 (its spend)
+        let none: Arc<dyn EsploraHttp> = Arc::new(MapHttp::new());
+        refresh_info(&none, "http://box", &mut view).await.unwrap();
+        assert!(!view.sp.as_ref().unwrap().available);
+        walk_at(&mut view, &blocks, 1);
+        // the index is back: the scan resumes at 101. Before v297 it re-opened at the walk's top (from 102, scanned to
+        // 101) and the payment in block 101 was never read.
+        refresh_info(&http, "http://box", &mut view).await.unwrap();
+        let sp = view.sp.clone().unwrap();
+        assert_eq!((sp.available, sp.from, sp.scanned_to), (true, 101, 100), "an opened scan resumes where it stood");
+        scan(&http, "http://box", &root(), &mut view, &storage, 100, 0).await.unwrap();
+        assert_eq!(view.utxos.len(), 1, "the payment in block 101 is found");
+        assert_eq!((view.utxos[0].value_sats, view.utxos[0].spent_height), (184_000, Some(102)));
+    }
+
+    #[tokio::test]
+    async fn v297_a_ledger_rebuild_reads_the_silent_payments_again() {
+        let (http, blocks, _, _) = build_world(false);
+        let http: Arc<dyn EsploraHttp> = http;
+        let storage = crate::storage::native_storage::MemoryStorage::new();
+        let mut view = Tier2View::default();
+        view.cursor.birthday = 90;
+        walk_at(&mut view, &blocks, 0);
+        view.cursor.scanned_to = 0;   // fresh: the scan starts at the later of the index start and the birthday
+        refresh_info(&http, "http://box", &mut view).await.unwrap();
+        walk_at(&mut view, &blocks, 0);
+        scan(&http, "http://box", &root(), &mut view, &storage, 100, 0).await.unwrap();
+        assert_eq!((view.utxos.len(), view.sp.as_ref().unwrap().scanned_to), (1, 101));
+        // a ledger rebuild (a new ledger schema, or the net widened) clears every coin — the silent-payment coins too
+        crate::tier2_wallet::rebuild_from_birthday(&mut view, 1);
+        assert!(view.utxos.is_empty());
+        let sp = view.sp.clone().unwrap();
+        assert_eq!((sp.from, sp.scanned_to, sp.scanned_hash.is_empty()), (101, 100, true),
+            "the scan starts again from its own start (before v297 it stayed at 101 and the coin was never read again)");
+        // the walk reads its way back to 101; the scan follows and finds the coin again
+        walk_at(&mut view, &blocks, 0);
+        refresh_info(&http, "http://box", &mut view).await.unwrap();
+        scan(&http, "http://box", &root(), &mut view, &storage, 100, 0).await.unwrap();
+        assert_eq!(view.utxos.len(), 1, "the silent-payment coin is back on the ledger");
+        assert_eq!((view.utxos[0].chain, view.utxos[0].value_sats, view.utxos[0].spent_height), (CHAIN_SP, 184_000, None));
+    }
+
+    #[tokio::test]
+    async fn v297_a_coin_paid_and_spent_inside_one_batch_is_seen_spent() {
+        // a restore: the walk is at 102; the scan reads 101 (the payment) and 102 (its spend) in ONE batch
+        let (http, blocks, _, _) = build_world(false);
+        let http: Arc<dyn EsploraHttp> = http;
+        let storage = crate::storage::native_storage::MemoryStorage::new();
+        let mut view = Tier2View::default();
+        view.cursor.birthday = 90;
+        refresh_info(&http, "http://box", &mut view).await.unwrap();   // fresh: from 101
+        walk_at(&mut view, &blocks, 1);
+        let (batches, _) = scan(&http, "http://box", &root(), &mut view, &storage, 100, 0).await.unwrap();
+        assert_eq!(batches, 1);
+        assert_eq!(view.utxos.len(), 1);
+        assert_eq!(view.utxos[0].spent_height, Some(102), "the spend in the same batch is read (before v297 the coin stayed unspent)");
+        assert_eq!(summary(&view, true).coins, 0, "no coin left on the balance");
+    }
+
+    #[tokio::test]
+    async fn v298_the_drill_down_reads_the_wallets_own_data() {
+        // a restore: the walk is at 102; the scan reads the payment (101) and its spend (102) — both kept whole
+        let (http, blocks, paid, _) = build_world(false);
+        let http: Arc<dyn EsploraHttp> = http;
+        let storage = crate::storage::native_storage::MemoryStorage::new();
+        let mut view = Tier2View::default();
+        view.cursor.birthday = 90;
+        refresh_info(&http, "http://box", &mut view).await.unwrap();
+        walk_at(&mut view, &blocks, 1);
+        scan(&http, "http://box", &root(), &mut view, &storage, 100, 0).await.unwrap();
+        let pay = blocks[0].block.txdata[1].clone();
+        let spend = blocks[1].block.txdata[1].clone();
+        let (pay_id, spend_id) = (pay.compute_txid().to_string(), spend.compute_txid().to_string());
+        let kept = crate::tx_store::load(&storage);
+        assert_eq!(kept.txs.len(), 2, "the payment and its spend are kept, nothing else: {:?}", kept.txs.keys().collect::<Vec<_>>());
+        assert_eq!((kept.txs[&pay_id].height, kept.txs[&spend_id].height), (101, 102));
+        assert!(!kept.txs.contains_key(&blocks[0].block.txdata[0].compute_txid().to_string()), "the coinbase is not ours");
+        // the drill-down for the payment: built from the kept bytes and the ledger, no outside source
+        let parents = |id: &str| crate::tx_store::load(&storage).tx(id);
+        let none = |_: &str| false;
+        let k = crate::tx_store::get(&storage, &pay_id).unwrap();
+        assert_eq!(k.weight, pay.weight().to_wu(), "v300: kept without signatures, the full weight beside it");
+        let (etx, fee_known) = crate::tier2_wallet::drill_tx(&view, &[], &parents, &k.tx, Network::Bitcoin, crate::tier2_wallet::ledger_height_of(&view, &pay_id), Some(k.weight));
+        assert_eq!(etx.weight, pay.weight().to_wu());
+        let own = crate::tier2_wallet::tx_ownership(&view, &etx, &none);
+        assert!(!fee_known, "the sender's input is not the wallet's to know: no fee for a receive");
+        assert_eq!((own.our_in, own.our_out, own.is_send, own.pick), (0, 184_000, false, Some(1)));
+        let addr = bitcoin::Address::from_script(&paid, Network::Bitcoin).unwrap().to_string();
+        assert_eq!(etx.vouts[1].address.as_deref(), Some(addr.as_str()), "the address of record is the taproot output the payment made");
+        assert_eq!((etx.vouts[1].script_type.as_str(), etx.block_height, etx.block_time), ("v1_p2tr", Some(101), Some(1_700_000_000)));
+        // the spend: the input is the wallet's coin (the ledger's value, the kept parent's script) — the fee is exact
+        let k = crate::tx_store::get(&storage, &spend_id).unwrap();
+        let (etx, fee_known) = crate::tier2_wallet::drill_tx(&view, &[], &parents, &k.tx, Network::Bitcoin, crate::tier2_wallet::ledger_height_of(&view, &spend_id), Some(k.weight));
+        let own = crate::tier2_wallet::tx_ownership(&view, &etx, &none);
+        assert!(fee_known);
+        assert_eq!((etx.fee, own.our_in, own.is_send, own.pick, etx.vins[0].script_type.as_str()), (1_000, 184_000, true, Some(0), "v1_p2tr"));
+        assert_eq!(etx.block_height, Some(102));
+        // a row from before v298 (nothing kept): its block is read once more from the filter server, the
+        // transaction checked by its txid, every own transaction in that block kept
+        let s2 = crate::storage::native_storage::MemoryStorage::new();
+        crate::tier2_wallet::save_view(&s2, &{ let mut v = view.clone(); v.fresh_txs.clear(); v }).unwrap();
+        assert!(crate::tx_store::load(&s2).txs.is_empty());
+        let r = crate::tier2_wallet::reread_own_tx(&http, "http://box", &s2, &pay_id, 101).await.unwrap();
+        assert_eq!(r.map(|(t, h)| (t.compute_txid().to_string(), h)), Some((pay_id.clone(), 101)));
+        assert!(crate::tx_store::get(&s2, &pay_id).is_some(), "kept after the one re-read");
+        // a block that does not hold it (a reorg moved it): nothing made up
+        assert!(crate::tier2_wallet::reread_own_tx(&http, "http://box", &s2, &spend_id, 101).await.unwrap().is_none());
     }
 
     #[test]

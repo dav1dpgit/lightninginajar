@@ -46,6 +46,35 @@ pub const BATCHES_PER_CALL: u32 = 5;
 /// stays for the independent sources' quick height checks.
 pub const WALK_TIMEOUT_SECS: u64 = 60;
 
+/// v296 (S52, DP 23:09 "#1: Go" — each LIJOX provider may run its own block-filter server): the server the walk
+/// and the silent-payment scan read is now passed in on every sync call (the page picks its own provider's when
+/// the directory lists one). This is the project's server — used when none is passed, or the one passed is not a
+/// plain https address. Until v296 it was the only server any wallet could read (a constant in lij-wasm).
+pub const DEFAULT_FILTER_BASE: &str = "https://filters.lightning-mod.com";
+
+/// v296: a filter-server address as the engine will use it — trimmed, trailing '/' removed; https only; a host
+/// (letters, digits, '.', '-'; an optional :port) and at most a path of URL-safe characters; 200 characters at
+/// most. Anything else answers None, and the caller uses DEFAULT_FILTER_BASE. The same rule as the LIJOX
+/// directory's check on a provider's `filter_url` (lij-worker 0.8.0).
+pub fn clean_filter_base(s: &str) -> Option<String> {
+    let t = s.trim().trim_end_matches('/');
+    if t.is_empty() || t.len() > 200 { return None; }
+    let rest = t.strip_prefix("https://")?;
+    let (hostport, path) = match rest.find('/') { Some(i) => (&rest[..i], &rest[i..]), None => (rest, "") };
+    let (host, port) = match hostport.split_once(':') { Some((h, p)) => (h, Some(p)), None => (hostport, None) };
+    let host_ok = !host.is_empty()
+        && host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        && host.chars().next().map(|c| c.is_ascii_alphanumeric()).unwrap_or(false);
+    let port_ok = port.map(|p| !p.is_empty() && p.len() <= 5 && p.chars().all(|c| c.is_ascii_digit())).unwrap_or(true);
+    let path_ok = path.chars().all(|c| c.is_ascii_alphanumeric() || "._~/-".contains(c));
+    if host_ok && port_ok && path_ok { Some(t.to_string()) } else { None }
+}
+
+/// v296: the server to read — the one passed in when it is a clean https address, else the default.
+pub fn filter_base_or_default(s: Option<&str>) -> String {
+    s.and_then(clean_filter_base).unwrap_or_else(|| DEFAULT_FILTER_BASE.to_string())
+}
+
 // ---- endpoint response types -------------------------------------------------
 
 #[derive(Clone, Debug, Deserialize)]
@@ -418,6 +447,21 @@ pub async fn fetch_tip(http: &Arc<dyn EsploraHttp>, base: &str) -> LijResult<Tip
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filter_base_is_passed_in_or_the_default() {
+        // v296: the provider's server is used as given (trailing '/' dropped); a path and a port are allowed
+        assert_eq!(filter_base_or_default(Some("https://filters.example.org/")), "https://filters.example.org");
+        assert_eq!(filter_base_or_default(Some(" https://box.example.org:8443/lij/filters ")), "https://box.example.org:8443/lij/filters");
+        // nothing passed, or anything that is not a plain https address → the project's server
+        assert_eq!(filter_base_or_default(None), DEFAULT_FILTER_BASE);
+        for bad in ["", "http://filters.example.org", "https://", "https://-x.org", "https://a b.org", "https://user@x.org",
+                    "https://x.org?q=1", "https://x.org/#f", "https://x.org:port", "https://x.org:123456", "javascript:alert(1)",
+                    "https://x.org/\"onload"] {
+            assert_eq!(filter_base_or_default(Some(bad)), DEFAULT_FILTER_BASE, "{bad:?} must fall back to the default");
+        }
+        assert_eq!(filter_base_or_default(Some(&format!("https://{}.org", "a".repeat(200)))), DEFAULT_FILTER_BASE);
+    }
 
     // Real consecutive mainnet headers (952420 -> 952421) from the live endpoint.
     const H420: &str = "00a00b209f4a0f1b248cce023cc90865da03bdef202f0e297fa200000000000000000000f6c94861b4226bfa8cef4d4720191b0fa5b0d62ee1c2bbe0bd439effb41653e6d92b226a8f06021717abe047";

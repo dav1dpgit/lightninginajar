@@ -50,6 +50,10 @@ pub struct SendResult {
     pub change_outpoint: Option<(String, u32)>,
     /// Change-chain index this send's change went to (rotates per use).
     pub change_index: u32,
+    /// v298 (S52, DP #2): the broadcast transaction's raw bytes, hex — kept in the tx store for the drill-down;
+    /// never sent to the page.
+    #[serde(skip)]
+    pub raw_hex: String,
 }
 
 impl SendResult {
@@ -975,6 +979,7 @@ async fn build_and_send_inner(
             .collect(),
         change_outpoint,
         change_index,
+        raw_hex: hex::encode(&raw),   // v298
     })
 }
 
@@ -1164,6 +1169,7 @@ pub async fn build_and_send_bump(
         spent_outpoints: prev.spent_outpoints.clone(),
         change_outpoint,
         change_index: prev.change_index,
+        raw_hex: hex::encode(&raw),   // v298
     })
 }
 

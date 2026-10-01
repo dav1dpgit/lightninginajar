@@ -42,6 +42,7 @@ pub mod onchain_send;
 pub mod coin_select;   // v281 (S50, coin control): DP's one pick rule — smallest single coin that covers, else largest first
 pub mod silent_payment;
 pub mod sp_scan;   // v287 (S50, SP receive): the upward sweep over the box's tweak index + the mempool leg
+pub mod tx_store;   // v298 (S52, DP #2): the wallet's own transactions, kept whole — the drill-down reads them, no explorer asked
 pub mod nwc;   // v286 (S50, NWC cut N1): NIP-44 v2, Nostr events, the connections and limits — the pure half
 pub mod channel_open;
 pub mod tier2;

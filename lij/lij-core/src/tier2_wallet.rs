@@ -39,7 +39,7 @@ pub const MARKS_KEY: &str = "tier2_marks";
 /// read them. v256 encrypted the view but left four readers on plain storage (the on-chain
 /// send, the fee bump, the channel-open estimate and the funding build) — each failed with
 /// "tier2 view parse: expected value at line 1 column 1". Every reader goes through this.
-pub const ENCRYPTED_KEYS: &[&str] = &[VIEW_KEY, MARKS_KEY, crate::nwc::NWC_KEY];   // the pending list stays plain: node.rs reads it in four places · v286: the NWC connections (service secrets) are encrypted at rest too
+pub const ENCRYPTED_KEYS: &[&str] = &[VIEW_KEY, MARKS_KEY, crate::nwc::NWC_KEY, crate::tx_store::TX_STORE_KEY];   // v298: the wallet's own transactions too   // the pending list stays plain: node.rs reads it in four places · v286: the NWC connections (service secrets) are encrypted at rest too
 pub fn encrypted<S: LijStorage>(inner: S, key: [u8; 32]) -> crate::storage::EncryptedKeys<S> {
     crate::storage::EncryptedKeys::new(inner, key, ENCRYPTED_KEYS)
 }   // v220: pub — the blob packs it (D3)
@@ -111,12 +111,22 @@ pub struct CoinMarks {
     /// user's choice must survive both.
     #[serde(default = "default_true")]
     pub sp_enabled: bool,
+    /// v298 (S52, DP 23:43 "Go on #3"): the sp1 address a send from this wallet was typed to, by txid. The chain
+    /// shows only the one-time taproot output the sp1 address made; the sp1 itself exists only on the phone that
+    /// sent it. Kept here (the marks ride the backup blob), not in the pending list that is dropped at confirmation.
+    #[serde(default)]
+    pub sp_sends: std::collections::BTreeMap<String, String>,
+    /// v300 (S52, DP 00:25 "if a wallet approaches 1000 transactions, some notification … delete old data or expand
+    /// the size"): the user's ceiling for the kept transactions (0 = the default, tx_store::TX_STORE_CAP; the larger
+    /// steps are tx_store::CAP_STEPS). Here so it rides the backup and survives a rescan.
+    #[serde(default)]
+    pub tx_keep_cap: u32,
 }
 
 fn default_true() -> bool { true }
 
 impl Default for CoinMarks {
-    fn default() -> Self { Self { marks: Default::default(), sp_enabled: true } }
+    fn default() -> Self { Self { marks: Default::default(), sp_enabled: true, sp_sends: Default::default(), tx_keep_cap: 0 } }
 }
 
 /// v281: the cap on a coin note, in code points (the address note's and the Push Key
@@ -458,6 +468,149 @@ pub struct Tier2View {
     /// sync under v287 asks the provider whether it serves a tweak index.
     #[serde(default)]
     pub sp: Option<crate::sp_scan::SpScan>,
+    /// v298 (S52, DP #2): this call's newly met own transactions (txid, height, raw hex), never persisted with the
+    /// view — save_view hands them to the tx store (crate::tx_store), so every place that saves the view keeps them.
+    #[serde(skip)]
+    pub fresh_txs: Vec<(String, u32, String)>,
+}
+
+/// v298 (S52, DP #2): the wallet's own transactions in a block it has just applied — those that created a coin of
+/// ours, spent one, or are a spend the newest-first walk met before its coin — noted for the tx store.
+pub fn capture_own_txs(view: &mut Tier2View, txs: &[Transaction], height: u32) {
+    let mut own: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for u in &view.utxos {
+        own.insert(u.txid.clone());
+        if let Some(t) = u.spent_txid.as_ref() { own.insert(t.clone()); }
+    }
+    for (t, _) in view.pending_spends.values() { own.insert(t.clone()); }
+    if own.is_empty() { return; }
+    for tx in txs {
+        let id = tx.compute_txid().to_string();
+        if own.contains(&id) && !view.fresh_txs.iter().any(|(t, h, _)| *t == id && *h == height) {
+            view.fresh_txs.push((id, height, hex::encode(bitcoin::consensus::serialize(tx))));
+        }
+    }
+}
+
+/// v298: the block height the ledger records for a transaction of the wallet's own (the block that created one of
+/// its coins, or spent one); None when the ledger does not hold it.
+pub fn ledger_height_of(view: &Tier2View, txid: &str) -> Option<u32> {
+    for u in &view.utxos {
+        if u.txid == txid && u.height > 0 { return Some(u.height); }
+        if u.spent_txid.as_deref() == Some(txid) { if let Some(h) = u.spent_height { if h > 0 { return Some(h); } } }
+    }
+    view.pending_spends.values().find(|(t, h)| t == txid && *h > 0).map(|(_, h)| *h)
+}
+
+/// v298: Esplora's name for an output script's kind (what the drill-down's "type" row has always shown).
+pub fn script_kind(spk: &bitcoin::Script) -> &'static str {
+    if spk.is_p2pkh() { "p2pkh" }
+    else if spk.is_p2sh() { "p2sh" }
+    else if spk.is_p2wpkh() { "v0_p2wpkh" }
+    else if spk.is_p2wsh() { "v0_p2wsh" }
+    else if spk.is_p2tr() { "v1_p2tr" }
+    else if spk.is_op_return() { "op_return" }
+    else if spk.is_p2pk() { "p2pk" }
+    else { "unknown" }
+}
+
+/// v298 (S52, DP #2): the drill-down's transaction built from the wallet's own data — the raw transaction (kept
+/// whole, or re-read from its block) and the ledger. An input's spent output is known when the ledger holds that
+/// coin (its value) or its parent transaction is kept (value and script); an input of someone else's is not, and
+/// then the fee is not known (`fee_known` false: a receive's fee, a send with another party's inputs). Nothing
+/// is asked of anyone.
+pub fn drill_tx(
+    view: &Tier2View,
+    pending: &[PendingTx],
+    parents: &dyn Fn(&str) -> Option<Transaction>,
+    tx: &Transaction,
+    network: bitcoin::Network,
+    height: Option<u32>,
+    weight: Option<u64>,   // v300: a kept transaction has no signatures; its full weight is kept beside it
+) -> (crate::independent::EsploraTx, bool) {
+    use crate::independent::{EsploraTx, EsploraTxPrevout, EsploraTxVout};
+    let mut fee_known = true;
+    let mut in_total: u64 = 0;
+    let mut vins = Vec::with_capacity(tx.input.len());
+    for i in &tx.input {
+        let pt = i.previous_output.txid.to_string();
+        let pv = i.previous_output.vout;
+        let mut p = EsploraTxPrevout { prev_txid: pt.clone(), prev_vout: pv, ..Default::default() };
+        let mut known = false;
+        if let Some(u) = view.utxos.iter().find(|u| u.txid == pt && u.vout == pv) {
+            p.value = u.value_sats; known = true;
+        } else if let Some(q) = pending.iter().find(|q| q.change_outpoint.as_ref() == Some(&(pt.clone(), pv))) {
+            p.value = q.change_value_sats; known = true;   // a pending send's change, spent before it confirmed
+        }
+        if let Some(parent) = parents(&pt) {
+            if let Some(o) = parent.output.get(pv as usize) {
+                p.value = o.value.to_sat();
+                p.scriptpubkey = hex::encode(o.script_pubkey.as_bytes());
+                p.script_type = script_kind(&o.script_pubkey).to_string();
+                p.address = bitcoin::Address::from_script(&o.script_pubkey, network).ok().map(|a| a.to_string());
+                known = true;
+            }
+        }
+        if known { in_total = in_total.saturating_add(p.value); } else { fee_known = false; }
+        vins.push(p);
+    }
+    let mut out_total: u64 = 0;
+    let vouts: Vec<EsploraTxVout> = tx.output.iter().map(|o| {
+        out_total = out_total.saturating_add(o.value.to_sat());
+        EsploraTxVout {
+            scriptpubkey: hex::encode(o.script_pubkey.as_bytes()),
+            value: o.value.to_sat(),
+            script_type: script_kind(&o.script_pubkey).to_string(),
+            address: bitcoin::Address::from_script(&o.script_pubkey, network).ok().map(|a| a.to_string()),
+        }
+    }).collect();
+    if tx.input.is_empty() || in_total < out_total { fee_known = false; }
+    let fee = if fee_known { in_total - out_total } else { 0 };
+    let h = height.filter(|h| *h > 0);
+    let t = EsploraTx {
+        txid: tx.compute_txid().to_string(),
+        vouts,
+        vins,
+        fee,
+        weight: weight.unwrap_or_else(|| tx.weight().to_wu()),
+        confirmed: h.is_some(),
+        block_height: h,
+        block_time: h.and_then(|h| view.block_times.get(&h).map(|t| *t as u64)),
+    };
+    (t, fee_known)
+}
+
+/// v298 (S52, DP #2 — "is that always possible?"): a row of the ledger from before v298 has no kept transaction;
+/// its block is read once more from the wallet's block-filter server (the block the walk or the scan once read).
+/// The header's proof of work is checked and the block bound to it; the asked transaction is authentic by its
+/// txid. Every own transaction in the block is kept (to the tx store), so the block is read at most once.
+/// Returns the asked transaction, or None when the block does not hold it (a reorg moved it).
+pub async fn reread_own_tx(
+    http: &Arc<dyn EsploraHttp>,
+    base: &str,
+    storage: &dyn LijStorage,
+    txid: &str,
+    height: u32,
+) -> LijResult<Option<(Transaction, u32)>> {
+    let hdrs: crate::tier2_sync::HeadersResp = get_json(http, &format!("{base}/headers?start={height}&count=1")).await?;
+    let hdr = hdrs.headers.first().ok_or_else(|| LijError::Node(format!("block-filter server: no header at {height}")))?;
+    if hdr.height != height { return Err(LijError::Node(format!("block-filter server: header {} asked {height}", hdr.height))); }
+    crate::tier2_sync::validate_headers(&hdrs.headers, None)?;
+    let block = fetch_block_bound(http, base, height, &hdr.hash).await?;
+    // load-modify-save with no await in between: a sync in flight is never overwritten with an older view
+    let mut view = load_view(storage)?;
+    let had_time = view.block_times.contains_key(&height);
+    view.block_times.insert(height, block.header.time);
+    capture_own_txs(&mut view, &block.txdata, height);
+    let found = block.txdata.iter().find(|t| t.compute_txid().to_string() == txid).cloned();
+    if let Some(t) = found.as_ref() {
+        if !view.fresh_txs.iter().any(|(x, _, _)| x == txid) {
+            view.fresh_txs.push((txid.to_string(), height, hex::encode(bitcoin::consensus::serialize(t))));
+        }
+    }
+    if !had_time { save_view(storage, &view)?; }   // the row gains its clock; save_view keeps the transactions too
+    else if !view.fresh_txs.is_empty() { crate::tx_store::put(storage, &view.fresh_txs)?; }
+    Ok(found.map(|t| (t, height)))
 }
 
 /// v257: the downward cursor (see Tier2View::down).
@@ -529,6 +682,16 @@ pub fn rebuild_from_birthday(view: &mut Tier2View, now_ms: u64) {
     view.schema = VIEW_SCHEMA;
     if view.net_width < NET_WIDTH { view.net_width = NET_WIDTH; }
     view.last_tail_verify_ms = now_ms;
+    // v297 (S52): the silent-payment scan starts again from its own start. The rebuild clears every coin above —
+    // the silent-payment coins with the rest — and until v297 the scan kept its place, so they were never read
+    // again: after a ledger-schema rebuild or a widened net the balance lost every silent-payment coin. The start
+    // (`from`) stands; the scan re-reads from it up to wherever the walk has reached.
+    if let Some(sp) = view.sp.as_mut() {
+        if sp.from > 0 { sp.scanned_to = sp.from - 1; }
+        sp.scanned_hash.clear();
+        sp.scanned_filter_header.clear();
+        sp.waiting_for_index = false;
+    }
 }
 
 /// v251: the head-first cursor (see Tier2View::head).
@@ -1017,6 +1180,7 @@ pub async fn fetch_and_apply(
         view.block_times.insert(m.height, block.header.time);   // v259
         apply_txs(view, scripts, &block.txdata, m.height);
         tag_channel_closes(view, &block.txdata, close_txids);
+        capture_own_txs(view, &block.txdata, m.height);   // v298: the wallet's own transactions, kept whole
     }
     Ok(())
 }
@@ -1059,7 +1223,13 @@ pub async fn fetch_confirmed_txs(
 pub fn save_view(storage: &dyn LijStorage, view: &Tier2View) -> LijResult<()> {
     let bytes = serde_json::to_vec(view)
         .map_err(|e| LijError::Storage(format!("tier2 view serialize: {e}")))?;
-    storage.set(VIEW_KEY, &bytes)
+    storage.set(VIEW_KEY, &bytes)?;
+    // v298: the own transactions met since the view was loaded go to the tx store (only new ones are written);
+    // a failure here never fails the ledger's save — the drill-down re-reads the block instead
+    if !view.fresh_txs.is_empty() {
+        if let Err(e) = crate::tx_store::put(storage, &view.fresh_txs) { log::warn!("[tier2] v298 tx store: {e}"); }
+    }
+    Ok(())
 }
 
 /// Load the persisted view, or a fresh default if none exists.
@@ -1571,6 +1741,32 @@ mod tests {
                 .parse().unwrap();
         let root = crate::key::RootKey::from_mnemonic(&mnemonic, Network::Bitcoin).unwrap();
         WalletScripts::build(&root, Network::Bitcoin, DEFAULT_GAP).unwrap()
+    }
+
+    #[test]
+    fn v298_capture_keeps_only_the_wallets_own_transactions() {
+        let s = scripts();
+        let spk = our_receive_spk(&s);
+        let recv = tx_paying(spk.clone(), 50_000);
+        let other = tx_paying(ScriptBuf::new_op_return(&[1]), 7);
+        let mut view = Tier2View::default();
+        apply_txs(&mut view, &s, &[recv.clone(), other.clone()], 900);
+        capture_own_txs(&mut view, &[recv.clone(), other.clone()], 900);
+        assert_eq!(view.fresh_txs.iter().map(|(t, h, _)| (t.clone(), *h)).collect::<Vec<_>>(), vec![(recv.compute_txid().to_string(), 900)]);
+        capture_own_txs(&mut view, &[recv.clone()], 900);
+        assert_eq!(view.fresh_txs.len(), 1, "noted once");
+        // a spend the newest-first walk met before its coin counts too
+        view.pending_spends.insert(format!("{}:0", "ab".repeat(32)), (other.compute_txid().to_string(), 950));
+        capture_own_txs(&mut view, &[other.clone()], 950);
+        assert_eq!(view.fresh_txs.len(), 2);
+        // save_view hands them to the tx store; the view itself never carries them
+        let st = crate::storage::native_storage::MemoryStorage::new();
+        save_view(&st, &view).unwrap();
+        assert_eq!(crate::tx_store::load(&st).txs.len(), 2);
+        assert!(load_view(&st).unwrap().fresh_txs.is_empty());
+        assert_eq!(ledger_height_of(&view, &recv.compute_txid().to_string()), Some(900));
+        assert_eq!(ledger_height_of(&view, &other.compute_txid().to_string()), Some(950));
+        assert!(ENCRYPTED_KEYS.contains(&crate::tx_store::TX_STORE_KEY), "kept encrypted at rest");
     }
 
     fn our_receive_spk(s: &WalletScripts) -> ScriptBuf {

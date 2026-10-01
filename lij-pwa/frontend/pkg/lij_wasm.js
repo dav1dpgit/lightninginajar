@@ -2190,11 +2190,23 @@ export class LijWalletHandle {
      * Persists across sessions and resumes from the saved cursor. `birthday`
      * is the wallet's creation height, used only when no cursor exists yet.
      * Returns Tier2Summary JSON.
+     * v296 (S52, DP 23:09 "#1: Go"): `filter_base` = the block-filter server the walk reads (the page passes its
+     * own provider's when the LIJOX directory lists one); `sp_base` = the server whose silent-payment index the
+     * scan reads (none = the walk's server). Either missing or not a plain https address = the project's server
+     * (tier2_sync::DEFAULT_FILTER_BASE). Servers are interchangeable: filters and headers are the chain's own
+     * (PoW-checked, linked to the walk's record), blocks are hash-bound — a change of server mid-walk is safe.
+     * The summary names the two servers used (`filter_server`, `sp_server`).
      * @param {number} birthday
+     * @param {string | null} [filter_base]
+     * @param {string | null} [sp_base]
      * @returns {Promise<any>}
      */
-    tier2_onchain_sync(birthday) {
-        const ret = wasm.lijwallethandle_tier2_onchain_sync(this.__wbg_ptr, birthday);
+    tier2_onchain_sync(birthday, filter_base, sp_base) {
+        var ptr0 = isLikeNone(filter_base) ? 0 : passStringToWasm0(filter_base, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len0 = WASM_VECTOR_LEN;
+        var ptr1 = isLikeNone(sp_base) ? 0 : passStringToWasm0(sp_base, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_tier2_onchain_sync(this.__wbg_ptr, birthday, ptr0, len0, ptr1, len1);
         return ret;
     }
     /**
@@ -2229,21 +2241,93 @@ export class LijWalletHandle {
         }
     }
     /**
-     * v261 (DP: the on-chain drill-down): everything the panel shows for one transaction,
-     * read from the independent sources at tap time — fee (sats, sat/vB), the inputs and
-     * outputs with which are ours, the counterparty address, the output type, mempool or
-     * block (with the header time), and the block time recorded into the ledger so the
-     * face's row gains its clock. Answers JSON:
+     * v261 (DP: the on-chain drill-down): everything the panel shows for one transaction — fee (sats,
+     * sat/vB), the inputs and outputs with which are ours, the counterparty address, the output type, mempool
+     * or block (with the header time). Answers JSON:
      * {"txid","fee_sats","vsize","sat_vb","confirmed","height","time","our_in","our_out",
-     *  "address","address_type","outputs":[{"address","value","ours","type"}]}
+     *  "address","address_type","outputs":[{"address","value","ours","type"}],"source","sp_address"}
+     * v298 (S52, DP 22:48 "build the drill-down from the block the wallet already downloaded" + 23:43 "Go on #2 and
+     * #3"): the details come from the wallet's own data — NO explorer is asked (until v298 every tap sent the txid
+     * to four public explorers). In order: the transaction kept whole (the walk and the scan keep every own
+     * transaction from its block; a send is kept at broadcast); else, for a ledger row from before v298, its block
+     * read once more from the wallet's block-filter server (`filter_base`: the page's lijFilterBases().walk; the
+     * header's work checked, the block bound to it, the transaction authentic by its txid; every own transaction in
+     * that block kept); else a pending transaction's own bytes, or a pending send's record (destination, fee). A
+     * transaction the ledger does not hold is looked up nowhere. `source` says which; `fee_sats` is 0 when an input
+     * is someone else's (its value is not the wallet's to know). `sp_address` (#3): the sp1 address a send from
+     * this phone was typed to — the chain shows only the taproot output it made.
      * @param {string} txid
+     * @param {string | null} [filter_base]
      * @returns {Promise<any>}
      */
-    tx_details(txid) {
+    tx_details(txid, filter_base) {
         const ptr0 = passStringToWasm0(txid, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.lijwallethandle_tx_details(this.__wbg_ptr, ptr0, len0);
+        var ptr1 = isLikeNone(filter_base) ? 0 : passStringToWasm0(filter_base, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_tx_details(this.__wbg_ptr, ptr0, len0, ptr1, len1);
         return ret;
+    }
+    /**
+     * v300: "delete old data" — the kept transactions from blocks below `height` go (their rows read their block again
+     * when tapped); coins, balance and history are not touched. Answers how many went.
+     * @param {number} height
+     * @returns {number}
+     */
+    tx_keep_drop_before(height) {
+        const ret = wasm.lijwallethandle_tx_keep_drop_before(this.__wbg_ptr, height);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * v300: "expand the size" — the ceiling, one of the offered steps (1,000 / 2,000 / 4,000); a lower one trims the
+     * oldest at once. Answers the new status.
+     * @param {number} cap
+     * @returns {string}
+     */
+    tx_keep_set_cap(cap) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_tx_keep_set_cap(this.__wbg_ptr, cap);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * v300 (S52, DP 00:25 "if a wallet approaches 1000 transactions, some notification to the user should happen that
+     * lets them either delete old data or expand the size"): the kept transactions' state for the page —
+     * {"count","cap","near","bytes","oldest_height","steps"}; `near` = 90 % of the ceiling.
+     * @returns {string}
+     */
+    tx_keep_status() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_tx_keep_status(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
     }
     /**
      * Chunk 1 (receive watcher): query a single watched address for incoming
@@ -3126,7 +3210,7 @@ function __wbg_get_imports() {
             console.warn(arg0, arg1, arg2, arg3);
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1783, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1793, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed);
             return ret;
         },
@@ -3137,16 +3221,16 @@ function __wbg_get_imports() {
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("ErrorEvent")], shim_idx: 7, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_141);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_144);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 7, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_142);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_145);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 1483, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 1493, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f);
             return ret;
         },
@@ -3184,12 +3268,12 @@ function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_141(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_141(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_144(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_144(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_142(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_142(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_145(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_145(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed(arg0, arg1, arg2) {

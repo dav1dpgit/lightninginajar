@@ -96,7 +96,12 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v295".to_string()  // v295 (S52, DP 22:21 "All yes for 1-4" — the CHAIN tile stayed blocks behind after the iPhone woke): the provider's chain stream is asked again (1) on every (re)connect, never throttled, and a request that cannot be sent yet is kept (v249 dropped it under the 60-tick throttle); (2) when the app is in front again (note_foreground → a lock-free flag the tick takes) or after a 2-minute tick gap; (3) a check with no chain message within 5 s on a connection that still looks up drops the connection at once (at most once a minute) — the monitor reconnects and the reconnect re-subscribes — instead of waiting 10-20 s for LDK's keep-alive to notice; (4) the independent tip above the stream's for a minute → a check. node.rs background_tick (the stream block), StreamWatch, stream_behind_due; tests stream_watch_tests.
+    "phase11-v300".to_string()  // v300 (S52, DP 00:23 "not a hard cap, unless it is super high and never will be hit unless there is something malicious" + 00:25 "if a wallet approaches 1000 transactions, some notification … delete old data or expand the size"): the kept transactions are stored COMPACTLY — the transaction without its signatures (the witness; the txid does not cover it, the check holds) plus its full weight (the fee rate stays exact), binary (LTX2), ~0.12 KB for an ordinary transaction (v298/v299: ~0.6 KB as hex in JSON; their store is read and rewritten). v299's 96 KB budget is gone: the ceiling is 1,000 transactions by default (~125 KB, ~0.5 MB of the browser's 5 MB on Safari) — a normal wallet never reaches it, spam could — with 256 KB per 1,000 as the size backstop and 16 KB per transaction. The user's ceiling (CoinMarks.tx_keep_cap; steps 1,000 / 2,000 / 4,000; rides the backup) and the page's notice at 90 %: tx_keep_status (count, cap, near, bytes, oldest_height, steps), tx_keep_set_cap, tx_keep_drop_before (the ledger untouched). drill_tx takes the kept weight. Tests: kept_compactly_checked_by_txid_weight_exact_heights_filled, v300_a_normal_wallet_never_reaches_the_ceiling_spam_does, v300_the_wallet_is_told_near_the_ceiling_and_can_expand_or_drop_old, v300_the_v298_json_store_is_read_and_kept_compactly. 296 green.
+    // "phase11-v299".to_string()  // v299 (S52, DP 2026-10-01 00:21 "make sure the additional block data kept doesn't fill up the memory space"): the kept-transaction store (tier2_txs) is held to TX_STORE_BUDGET_BYTES = 96 KB of JSON (~190 K characters in localStorage — hex of the encrypted bytes — about 160 ordinary transactions); v298 capped only the count (5,000 ≈ 3 MB of JSON ≈ 6 M characters, past the 5 MB a site gets on Safari, beside the channel state). A transaction larger than TX_MAX_HEX (4 KB) is not kept; past the budget the lowest heights go first, never the entries being added; a write that fails deletes the store outright. Whatever is dropped reads its block again when tapped. Tests v299_the_store_never_grows_past_its_budget, v299_a_write_that_fails_removes_the_store. 294 green.
+    // "phase11-v298".to_string()  // v298 (S52, DP 23:43 "Go on #2 and #3" — THE DRILL-DOWN FROM THE WALLET'S OWN DATA; THE sp1 OF A SEND): lij_core::tx_store — every own transaction (it creates a coin of ours, spends one, or is a spend the newest-first walk met first) is kept whole from the block the walk or the scan already downloads (capture_own_txs in fetch_and_apply and scan_batch; Tier2View.fresh_txs, never persisted with the view — save_view hands them to the store under tier2_txs, encrypted at rest; 5,000 kept, lowest heights dropped first); a send is kept at broadcast (SendResult.raw_hex, never sent to the page; the bump too). tx_details(txid, filter_base) asks NO explorer (until v298 every tap sent the txid to four): the kept transaction (checked against its txid), else for a ledger row from before v298 its block read once more from the wallet's block-filter server (reread_own_tx: the header's work checked, the block bound to it, every own transaction in it kept), else a pending transaction's bytes or a pending send's record; a transaction the ledger does not hold is looked up nowhere. drill_tx builds the details from the bytes and the ledger (an input's value from the ledger coin or the kept parent; someone else's input → no fee). #3: CoinMarks.sp_sends (txid → the sp1 a send was typed to; the marks ride the backup blob) → tx_details.sp_address. Tests: kept_whole_checked_by_txid_heights_filled_capped, v298_capture_keeps_only_the_wallets_own_transactions, v298_the_drill_down_reads_the_wallets_own_data. 292 green.
+    // "phase11-v297".to_string()  // v297 (S52, found while wiring v296 — THREE REPAIRS TO THE SILENT-PAYMENT SCAN, each shown failing on the v296 bytes): (1) the scan opens ONCE (sp.from == 0): a server that answered 404 for a while (an index away, or another provider's server) re-opened a walked view's scan at the walk's top, so every block between where it stood and that top was never read; (2) a ledger rebuild (a new schema, a widened net) cleared every coin, the silent-payment coins too, and the scan kept its place, so they were never read again — rebuild_from_birthday now sends the scan back to its own start; (3) scan_batch tested every filter of a batch against the coins held at the batch's start: a coin paid and spent inside one batch of a catch-up (restore, rescan, resume) kept showing as unspent — now block by block, in order, a coin found joins the scripts from the next block on (and a coin paid and spent inside one block is read). Tests v297_a_scan_paused_by_a_server_without_the_index_resumes_where_it_was, v297_a_ledger_rebuild_reads_the_silent_payments_again, v297_a_coin_paid_and_spent_inside_one_batch_is_seen_spent. 289 green.
+    // "phase11-v296".to_string()  // v296 (S52, DP 23:09 "#1: Go. Now, here" — EACH LIJOX PROVIDER MAY RUN ITS OWN BLOCK-FILTER SERVER): tier2_onchain_sync(birthday, filter_base, sp_base) — the walk reads the server the page passes (its own provider's when the directory lists one), the silent-payment scan reads sp_base (none = the walk's); a missing or unclean address = the project's server (tier2_sync::DEFAULT_FILTER_BASE, clean_filter_base: https, a host and an optional :port and path, 200 characters at most); until v296 one constant served every wallet. The summary names the servers read (filter_server, sp_server); the tape notes a change once; "block-filter server unreachable" names the host. Test filter_base_is_passed_in_or_the_default.
+    // "phase11-v295".to_string()  // v295 (S52, DP 22:21 "All yes for 1-4" — the CHAIN tile stayed blocks behind after the iPhone woke): the provider's chain stream is asked again (1) on every (re)connect, never throttled, and a request that cannot be sent yet is kept (v249 dropped it under the 60-tick throttle); (2) when the app is in front again (note_foreground → a lock-free flag the tick takes) or after a 2-minute tick gap; (3) a check with no chain message within 5 s on a connection that still looks up drops the connection at once (at most once a minute) — the monitor reconnects and the reconnect re-subscribes — instead of waiting 10-20 s for LDK's keep-alive to notice; (4) the independent tip above the stream's for a minute → a check. node.rs background_tick (the stream block), StreamWatch, stream_behind_due; tests stream_watch_tests.
     // "phase11-v294".to_string()  // v294 (S52, DP 21:49 — "a silent-payment receive's ADDRESS in the drill-down says reading… and never fills"): tx_details counted as ours only the scripts of the m/84 net, so a silent-payment coin (m/352, a one-time taproot output) was nobody's — its receive had no address of record, and a send FROM it read as a receive with our change as the address. Now ours = the net's scripts OR an outpoint the wallet's own ledger holds as a coin (spent or not, the scan's unconfirmed ones too); inputs carry the outpoint they spend (Esplora's vin txid/vout). lij_core::tier2_wallet::tx_ownership; test drill_down_ownership_knows_silent_payment_coins.
     // "phase11-v293".to_string()  // v293 (S51, DP 22:57 "Go with O1" — THE SCAN YIELDS BY TIME): the silent-payment scan hands the screen back whenever 40 ms of work has passed (tier2_sync::YIELD_BUDGET_MS, checked before every block and between groups of 32 tweaks) instead of every 8 blocks; same work, same order, same results — the iPhone X readout showed every stall (longest 6.4 s) inside tier2_onchain_sync's scan runs. Test: candidate_scripts_in_groups_equal_the_whole.
     // "phase11-v292".to_string()  // v292 (S51, DP 16:43 "Go, run the gate and the cut" — THE 64-BIT MULTIPLY PATH): no Rust change; lij/.cargo/config.toml now hands the wasm32 C build USE_FORCE_WIDEMUL_INT64, so libsecp256k1 (pristine in vendor/) uses its 10x26 field / 8x32 scalar with native i64 products instead of the 5x52 / 4x64 path whose 128-bit products WebAssembly has to emulate through __multi3. Same results (gated: six builds, one identical output over every operation the wallet uses + BIP-340 vector 0); every curve operation ~2x faster in the browser — the silent-payment scan, the address walk's derivations, signing, ECDH, the kit. Reversible by deleting the [env] line.
@@ -187,6 +192,42 @@ pub static BACKUP_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 /// at rest under the wallet's persistence key — the same key the channel blobs use.
 fn t2_storage(root_key: &lij_core::key::RootKey) -> Arc<dyn lij_core::storage::LijStorage> {
     Arc::new(lij_core::tier2_wallet::encrypted(LocalStorage, root_key.encryption_key()))   // v263: one key list, shared with node.rs
+}
+
+thread_local! {
+    /// v296: the block-filter servers the last sync read — a change is written to the tape once, not every 15 s.
+    static T2_SERVERS: std::cell::RefCell<(String, String)> = std::cell::RefCell::new((String::new(), String::new()));
+}
+/// v296: write the servers to the tape when they change (the first sync of a page load included).
+fn t2_note_servers(base: &str, sp_base: &str) {
+    T2_SERVERS.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.0 != base || c.1 != sp_base {
+            let def = lij_core::tier2_sync::DEFAULT_FILTER_BASE;
+            log::info!("[tier2] v296 block-filter server: {base}{} · silent-payment index: {sp_base}{}",
+                if base == def { " (the default)" } else { "" }, if sp_base == def { " (the default)" } else { "" });
+            *c = (base.to_string(), sp_base.to_string());
+        }
+    });
+}
+
+/// v298 (S52, DP #2 and #3): a send this wallet has just broadcast — its raw bytes into the tx store (the drill-down
+/// reads them while it is unconfirmed and after), and, when it was typed to an sp1 address, that address into the
+/// marks by txid (the chain shows only the one-time taproot output the sp1 address made).
+fn t2_note_send(storage: &dyn lij_core::storage::LijStorage, txid: &str, raw_hex: &str, dest: Option<&str>) {
+    if !raw_hex.is_empty() {
+        if let Err(e) = lij_core::tx_store::put(storage, &[(txid.to_string(), 0, raw_hex.to_string())]) {
+            log::warn!("[tier2] v298 tx store (send {txid}): {e}");
+        }
+    }
+    if let Some(d) = dest.map(|d| d.trim()) {
+        let low = d.to_ascii_lowercase();
+        if low.starts_with("sp1") || low.starts_with("tsp1") {
+            let mut m = lij_core::tier2_wallet::load_marks(storage).unwrap_or_default();
+            m.sp_sends.insert(txid.to_string(), d.to_string());
+            if let Err(e) = lij_core::tier2_wallet::save_marks(storage, &m) { log::warn!("[tier2] v298 sp1 record ({txid}): {e}"); }
+        }
+    }
 }
 
 thread_local! {
@@ -782,8 +823,14 @@ impl LijWalletHandle {
     /// Persists across sessions and resumes from the saved cursor. `birthday`
     /// is the wallet's creation height, used only when no cursor exists yet.
     /// Returns Tier2Summary JSON.
+    /// v296 (S52, DP 23:09 "#1: Go"): `filter_base` = the block-filter server the walk reads (the page passes its
+    /// own provider's when the LIJOX directory lists one); `sp_base` = the server whose silent-payment index the
+    /// scan reads (none = the walk's server). Either missing or not a plain https address = the project's server
+    /// (tier2_sync::DEFAULT_FILTER_BASE). Servers are interchangeable: filters and headers are the chain's own
+    /// (PoW-checked, linked to the walk's record), blocks are hash-bound — a change of server mid-walk is safe.
+    /// The summary names the two servers used (`filter_server`, `sp_server`).
     #[wasm_bindgen]
-    pub fn tier2_onchain_sync(&self, birthday: f64) -> js_sys::Promise {
+    pub fn tier2_onchain_sync(&self, birthday: f64, filter_base: Option<String>, sp_base: Option<String>) -> js_sys::Promise {
         let inner = self.inner.clone();
         future_to_promise(async move {
             let (root_key, network, live_funding, live_closing) = {
@@ -801,7 +848,12 @@ impl LijWalletHandle {
                 }).unwrap_or_default();
                 (rk, net, lf, lc)
             };
-            let base = "https://filters.lightning-mod.com";
+            // v296: the servers come from the page per call (was one constant, the project's server, for every wallet)
+            let base_owned = lij_core::tier2_sync::filter_base_or_default(filter_base.as_deref());
+            let sp_base_owned = match sp_base.as_deref() { Some(s) => lij_core::tier2_sync::filter_base_or_default(Some(s)), None => base_owned.clone() };
+            let base: &str = base_owned.as_str();
+            let sp_base: &str = sp_base_owned.as_str();
+            t2_note_servers(base, sp_base);
             let http: Arc<dyn lij_core::independent::EsploraHttp> =
                 Arc::new(WasmEsploraHttp::for_filter_walk());   // v264: 60 s per request, errors name the filter server
             let storage: Arc<dyn lij_core::storage::LijStorage> = t2_storage(&root_key);   // v256: encrypted at rest
@@ -854,7 +906,7 @@ impl LijWalletHandle {
                 Ok(t) => t,
                 Err(e) => {
                     // v257: the failure is written down where the face and the tape can read it
-                    let msg = format!("block-filter server unreachable: {}", e.to_string().trim_start_matches("Network error: "));
+                    let msg = format!("block-filter server unreachable ({}): {}", base.trim_start_matches("https://"), e.to_string().trim_start_matches("Network error: "));   // v296: names the server
                     log::warn!("[tier2] sync failed: {msg}");
                     view.last_sync = Some(lij_core::tier2_wallet::SyncNote { at_ms: now_ms, ok: false, note: msg.clone() });
                     let _ = lij_core::tier2_wallet::save_view(storage.as_ref(), &view);
@@ -925,18 +977,18 @@ impl LijWalletHandle {
             if walk_error.is_none() {
                 let t1 = js_sys::Date::now();
                 let sp_on = lij_core::tier2_wallet::load_marks(storage.as_ref()).map(|m| m.sp_enabled).unwrap_or(true);
-                match lij_core::sp_scan::refresh_info(&http, base, &mut view).await {
+                match lij_core::sp_scan::refresh_info(&http, sp_base, &mut view).await {
                     Ok(()) => {
                         let available = view.sp.as_ref().map(|s| s.available).unwrap_or(false);
                         if available && sp_on {
                             let walk_done = view.down.as_ref().map(|d| d.done).unwrap_or(false);
                             let max_batches = if walk_done { 2 } else { 1 };
-                            match lij_core::sp_scan::scan(&http, base, &root_key, &mut view, storage.as_ref(), 100, max_batches).await {
+                            match lij_core::sp_scan::scan(&http, sp_base, &root_key, &mut view, storage.as_ref(), 100, max_batches).await {
                                 Ok((b, n)) => {
                                     if b > 0 { log::info!("[sp] {n} · {} ms", (js_sys::Date::now() - t1) as u64); }
                                     let at_top = view.sp.as_ref().map(|s| s.scanned_to >= view.cursor.scanned_to.min(s.indexed_to)).unwrap_or(false);
                                     if at_top {
-                                        match lij_core::sp_scan::mempool(&http, base, &root_key, &mut view, storage.as_ref(), now_ms).await {
+                                        match lij_core::sp_scan::mempool(&http, sp_base, &root_key, &mut view, storage.as_ref(), now_ms).await {
                                             Ok(found) => { if found > 0 { log::info!("[sp] {found} silent payment(s) pending in the mempool"); } }
                                             Err(e) => {
                                                 let msg = format!("silent payments: mempool: {}", e.to_string().trim_start_matches("Network error: "));
@@ -1068,10 +1120,12 @@ impl LijWalletHandle {
             let json = json.replacen(
                 '{',
                 &format!(
-                    "{{\"view_dupes\":{},\"conflicts\":{},\"sync_error\":{},",
+                    "{{\"view_dupes\":{},\"conflicts\":{},\"sync_error\":{},\"filter_server\":{},\"sp_server\":{},",
                     view_dupes,
                     conflicts.len(),
-                    serde_json::to_string(&walk_error).unwrap_or_else(|_| "null".into())   // v264
+                    serde_json::to_string(&walk_error).unwrap_or_else(|_| "null".into()),   // v264
+                    serde_json::to_string(base).unwrap_or_else(|_| "null".into()),      // v296: the servers this call read
+                    serde_json::to_string(sp_base).unwrap_or_else(|_| "null".into())
                 ),
                 1,
             );
@@ -1190,6 +1244,7 @@ impl LijWalletHandle {
                 ) {
                     log::error!("record pending on-chain send failed: {e}");
                 }
+                t2_note_send(storage.as_ref(), &result.txid, &result.raw_hex, Some(dest.as_str()));   // v298
             }
 
             let json = result
@@ -1262,6 +1317,7 @@ impl LijWalletHandle {
                 ) {
                     log::error!("record pending on-chain send-all failed: {e}");
                 }
+                t2_note_send(storage.as_ref(), &result.txid, &result.raw_hex, Some(dest.as_str()));   // v298
             }
             let json = result
                 .to_json()
@@ -1337,6 +1393,7 @@ impl LijWalletHandle {
                 ) {
                     log::error!("record pending on-chain chosen-coin send failed: {e}");
                 }
+                t2_note_send(storage.as_ref(), &result.txid, &result.raw_hex, Some(r.dest.as_str()));   // v298
             }
             let json = result
                 .to_json()
@@ -1702,6 +1759,7 @@ impl LijWalletHandle {
             let dest_sats_keep = prev.dest_sats;
             {
                 let storage2: Arc<dyn lij_core::storage::LijStorage> = t2_storage(&root_key);   // v256
+                t2_note_send(storage2.as_ref(), &result.txid, &result.raw_hex, dest_addr_keep.as_deref());   // v298: the replacement, kept whole; its sp1 too
                 let mut list = lij_core::tier2_wallet::load_pending(storage2.as_ref());
                 list.retain(|p| p.txid != old_txid);
                 list.push(lij_core::tier2_wallet::PendingTx {
@@ -1955,69 +2013,153 @@ impl LijWalletHandle {
         })
     }
 
-    /// v261 (DP: the on-chain drill-down): everything the panel shows for one transaction,
-    /// read from the independent sources at tap time — fee (sats, sat/vB), the inputs and
-    /// outputs with which are ours, the counterparty address, the output type, mempool or
-    /// block (with the header time), and the block time recorded into the ledger so the
-    /// face's row gains its clock. Answers JSON:
+    /// v261 (DP: the on-chain drill-down): everything the panel shows for one transaction — fee (sats,
+    /// sat/vB), the inputs and outputs with which are ours, the counterparty address, the output type, mempool
+    /// or block (with the header time). Answers JSON:
     /// {"txid","fee_sats","vsize","sat_vb","confirmed","height","time","our_in","our_out",
-    ///  "address","address_type","outputs":[{"address","value","ours","type"}]}
+    ///  "address","address_type","outputs":[{"address","value","ours","type"}],"source","sp_address"}
+    /// v298 (S52, DP 22:48 "build the drill-down from the block the wallet already downloaded" + 23:43 "Go on #2 and
+    /// #3"): the details come from the wallet's own data — NO explorer is asked (until v298 every tap sent the txid
+    /// to four public explorers). In order: the transaction kept whole (the walk and the scan keep every own
+    /// transaction from its block; a send is kept at broadcast); else, for a ledger row from before v298, its block
+    /// read once more from the wallet's block-filter server (`filter_base`: the page's lijFilterBases().walk; the
+    /// header's work checked, the block bound to it, the transaction authentic by its txid; every own transaction in
+    /// that block kept); else a pending transaction's own bytes, or a pending send's record (destination, fee). A
+    /// transaction the ledger does not hold is looked up nowhere. `source` says which; `fee_sats` is 0 when an input
+    /// is someone else's (its value is not the wallet's to know). `sp_address` (#3): the sp1 address a send from
+    /// this phone was typed to — the chain shows only the taproot output it made.
     #[wasm_bindgen]
-    pub fn tx_details(&self, txid: String) -> js_sys::Promise {
+    pub fn tx_details(&self, txid: String, filter_base: Option<String>) -> js_sys::Promise {
         let inner = self.inner.clone();
         future_to_promise(async move {
-            let (root_key, independent, network) = {
+            let (root_key, _independent, network) = {
                 let wallet = inner
                     .lock()
                     .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
                 wallet.onchain_handles()
             };
             let storage: Arc<dyn lij_core::storage::LijStorage> = t2_storage(&root_key);
+            let txid = txid.trim().to_ascii_lowercase();
             let mut view = lij_core::tier2_wallet::load_view(storage.as_ref())
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
-            let width = view.net_width.max(lij_core::tier2_wallet::NET_WIDTH);
-            let scripts = t2_scripts(&root_key, network, width).await?;
-            let tx = independent
-                .fetch_tx(&txid)
-                .await
-                .map_err(|e| JsValue::from_str(&e.to_string()))?;
-            let ours = |spk_hex: &str| -> bool {
-                match hex::decode(spk_hex) {
-                    Ok(b) => scripts.owner_of(&bitcoin::ScriptBuf::from_bytes(b)).is_some(),
-                    Err(_) => false,
+            let pending = lij_core::tier2_wallet::load_pending(storage.as_ref());
+            let pend = pending.iter().find(|p| p.txid == txid).cloned();
+            let marks = lij_core::tier2_wallet::load_marks(storage.as_ref()).unwrap_or_default();
+            let is_sp1 = |d: &str| { let l = d.trim().to_ascii_lowercase(); l.starts_with("sp1") || l.starts_with("tsp1") };
+            let sp_address: Option<String> = marks.sp_sends.get(&txid).cloned()
+                .or_else(|| pend.as_ref().and_then(|p| p.dest_addr.clone()).filter(|d| is_sp1(d)));
+            let ledger_h = lij_core::tier2_wallet::ledger_height_of(&view, &txid);
+            let mut source = "ledger";
+            // v300: a kept transaction comes without its signatures, its full weight beside it
+            let mut found: Option<(bitcoin::Transaction, u32, Option<u64>)> = lij_core::tx_store::get(storage.as_ref(), &txid).map(|k| (k.tx, k.height, Some(k.weight)));
+            if found.is_none() {
+                if let Some(h) = ledger_h {
+                    let base = lij_core::tier2_sync::filter_base_or_default(filter_base.as_deref());
+                    let http: Arc<dyn lij_core::independent::EsploraHttp> = Arc::new(WasmEsploraHttp::for_filter_walk());
+                    found = lij_core::tier2_wallet::reread_own_tx(&http, &base, storage.as_ref(), &txid, h)
+                        .await
+                        .map_err(|e| JsValue::from_str(&e.to_string()))?
+                        .map(|(t, h)| (t, h, None));
+                    source = "block";
+                    view = lij_core::tier2_wallet::load_view(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;   // the block time the re-read noted
+                }
+            }
+            if found.is_none() {
+                if let Some(p) = pend.as_ref() {
+                    if let Some(t) = p.raw_tx_hex.as_deref().and_then(|hx| lij_core::tx_store::decode_checked(hx, &txid)) {
+                        found = Some((t, 0, None)); source = "pending";
+                    }
+                }
+            }
+            let (tx, kept_h, kept_w) = match found {
+                Some(x) => x,
+                None => {
+                    // a pending send recorded before v298 (no bytes kept): what this phone wrote down when it sent
+                    if let Some(p) = pend.as_ref() {
+                        let dest = p.dest_addr.clone().filter(|d| !is_sp1(d));
+                        let out = serde_json::json!({
+                            "txid": txid, "fee_sats": p.fee_sats.unwrap_or(0), "vsize": 0, "sat_vb": 0.0,
+                            "confirmed": false, "height": null, "time": null, "our_in": 0, "our_out": 0,
+                            "address": dest, "address_type": "", "outputs": [], "source": "pending-record", "sp_address": sp_address,
+                        });
+                        return Ok(JsValue::from_str(&out.to_string()));
+                    }
+                    return Err(JsValue::from_str("not in this wallet's ledger — no lookup made"));
                 }
             };
+            let width = view.net_width.max(lij_core::tier2_wallet::NET_WIDTH);
+            let scripts = t2_scripts(&root_key, network, width).await?;
+            let ours = |spk_hex: &str| -> bool {
+                match hex::decode(spk_hex) {
+                    Ok(b) if !b.is_empty() => scripts.owner_of(&bitcoin::ScriptBuf::from_bytes(b)).is_some(),
+                    _ => false,
+                }
+            };
+            let store = lij_core::tx_store::load(storage.as_ref());
+            let parents = |id: &str| -> Option<bitcoin::Transaction> {
+                store.tx(id)
+                    .or_else(|| pending.iter().find(|q| q.txid == id).and_then(|q| q.raw_tx_hex.as_deref()).and_then(|hx| lij_core::tx_store::decode_checked(hx, id)))
+            };
+            let height = ledger_h.or(if kept_h > 0 { Some(kept_h) } else { None });
+            let (etx, fee_known) = lij_core::tier2_wallet::drill_tx(&view, &pending, &parents, &tx, network, height, kept_w);
             // v294 (S52, DP 21:49): ours = the m/84 net's scripts OR an outpoint the ledger holds as a coin — a
-            // silent-payment coin (m/352) is never in the net, so its receive had no address of record and a send
-            // from it read as a receive (lij_core::tier2_wallet::tx_ownership).
-            let own = lij_core::tier2_wallet::tx_ownership(&view, &tx, &ours);
+            // silent-payment coin (m/352) is never in the net (lij_core::tier2_wallet::tx_ownership).
+            let own = lij_core::tier2_wallet::tx_ownership(&view, &etx, &ours);
             let (our_in, our_out) = (own.our_in, own.our_out);
-            let in_total: u64 = tx.vins.iter().map(|i| i.value).sum();
             let mut outs = Vec::new();
-            for (n, o) in tx.vouts.iter().enumerate() {
+            for (n, o) in etx.vouts.iter().enumerate() {
                 outs.push(serde_json::json!({ "address": o.address, "value": o.value, "ours": own.outs_ours.get(n).copied().unwrap_or(false), "type": o.script_type }));
             }
-            let fee = if tx.fee > 0 { tx.fee } else { in_total.saturating_sub(tx.vouts.iter().map(|o| o.value).sum::<u64>()) };
-            let vsize = if tx.weight > 0 { (tx.weight + 3) / 4 } else { 0 };
-            let sat_vb = if vsize > 0 { (fee as f64) / (vsize as f64) } else { 0.0 };
+            let fee = if fee_known { etx.fee } else { 0 };
+            let vsize = if etx.weight > 0 { (etx.weight + 3) / 4 } else { 0 };
+            let sat_vb = if vsize > 0 && fee > 0 { (fee as f64) / (vsize as f64) } else { 0.0 };
             // the address of record: a send → the output that isn't ours; a receive → our output;
             // a self-move (channel funding) → our funding output
-            let pick = own.pick.and_then(|n| tx.vouts.get(n));
+            let pick = own.pick.and_then(|n| etx.vouts.get(n));
             let (address, address_type) = match pick { Some(o) => (o.address.clone(), o.script_type.clone()), None => (None, String::new()) };
-            // the block time goes into the ledger so the face's row gains its clock
-            if let (Some(h), Some(t)) = (tx.block_height, tx.block_time) {
-                if !view.block_times.contains_key(&h) {
-                    view.block_times.insert(h, t as u32);
-                    let _ = lij_core::tier2_wallet::save_view(storage.as_ref(), &view);
-                }
-            }
             let out = serde_json::json!({
-                "txid": tx.txid, "fee_sats": fee, "vsize": vsize, "sat_vb": (sat_vb * 10.0).round() / 10.0,
-                "confirmed": tx.confirmed, "height": tx.block_height, "time": tx.block_time,
+                "txid": etx.txid, "fee_sats": fee, "vsize": vsize, "sat_vb": (sat_vb * 10.0).round() / 10.0,
+                "confirmed": etx.confirmed, "height": etx.block_height, "time": etx.block_time,
                 "our_in": our_in, "our_out": our_out, "address": address, "address_type": address_type, "outputs": outs,
+                "source": source, "sp_address": sp_address,
             });
             Ok(JsValue::from_str(&out.to_string()))
         })
+    }
+
+    /// v300 (S52, DP 00:25 "if a wallet approaches 1000 transactions, some notification to the user should happen that
+    /// lets them either delete old data or expand the size"): the kept transactions' state for the page —
+    /// {"count","cap","near","bytes","oldest_height","steps"}; `near` = 90 % of the ceiling.
+    #[wasm_bindgen]
+    pub fn tx_keep_status(&self) -> Result<String, JsValue> {
+        let storage: Arc<dyn lij_core::storage::LijStorage> = {
+            let wallet = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+            t2_storage(&wallet.onchain_handles().0)
+        };
+        serde_json::to_string(&lij_core::tx_store::status(storage.as_ref())).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// v300: "expand the size" — the ceiling, one of the offered steps (1,000 / 2,000 / 4,000); a lower one trims the
+    /// oldest at once. Answers the new status.
+    #[wasm_bindgen]
+    pub fn tx_keep_set_cap(&self, cap: u32) -> Result<String, JsValue> {
+        let storage: Arc<dyn lij_core::storage::LijStorage> = {
+            let wallet = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+            t2_storage(&wallet.onchain_handles().0)
+        };
+        let st = lij_core::tx_store::set_cap(storage.as_ref(), cap as usize).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        serde_json::to_string(&st).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// v300: "delete old data" — the kept transactions from blocks below `height` go (their rows read their block again
+    /// when tapped); coins, balance and history are not touched. Answers how many went.
+    #[wasm_bindgen]
+    pub fn tx_keep_drop_before(&self, height: u32) -> Result<u32, JsValue> {
+        let storage: Arc<dyn lij_core::storage::LijStorage> = {
+            let wallet = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+            t2_storage(&wallet.onchain_handles().0)
+        };
+        lij_core::tx_store::drop_before(storage.as_ref(), height).map(|n| n as u32).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     #[wasm_bindgen]
