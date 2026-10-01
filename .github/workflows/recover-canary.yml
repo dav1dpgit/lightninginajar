@@ -1,16 +1,30 @@
 name: recover-canary
 
-# S49 draft (DP 2026-09-23: "build a draft and let's discuss") — NOT pushed.
-# Once a day: fetch the page served at lightninginajar.xyz/recover, hash it, and
-# compare against (1) the hash listed for that build in docs/releases.md and
-# (2) the file in this repository. Reads only — this workflow never writes to
-# the repository. A mismatch fails the run (GitHub posts a commit comment on a
-# failure) and the "last confirmed" time on /recover stops advancing.
+# Once a day: fetch the page served at lightninginajar.xyz/recover/, hash it, and compare it
+# against (1) the hash listed for that build in docs/releases.md and (2) the file in this
+# repository. Reads only — this workflow never writes to the repository. A mismatch fails the
+# run, and the /recover page's canary line (it reads the public repository's latest run)
+# turns red.
+#
+# S52 (DP 2026-09-30, "fix the failing canary"): every run since the first had failed. The
+# cause, in this file's own bytes: it fetched /recover/index.html without following
+# redirects, and Cloudflare Pages answers that URL with a redirect to /recover/ (its
+# documented "pretty URL" rule). curl's -f does not treat a redirect as an error, so
+# served.html held the redirect's empty body — no build stamp, no listed row, exit 1 —
+# every day, whatever the page was. Now: the canonical URL /recover/, the HTTP status
+# checked (anything but 200 fails and says so), the response headers printed, and on a
+# mismatch the first lines of the difference written as an annotation, so the run page
+# itself says what differed. The /recover/* block in _headers carries no-transform (S52)
+# so Cloudflare's edge features do not add bytes of their own to the served page.
+# A push of this file runs the check once (a change to the check is tested at once).
 
 on:
   schedule:
     - cron: '17 3 * * *'   # daily 03:17 UTC (20:17 PDT)
   workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths: ['.github/workflows/recover-canary.yml']
 
 permissions:
   contents: read
@@ -23,16 +37,30 @@ jobs:
 
       - name: Fetch the served /recover page and compare it to the listed hash
         run: |
-          set -euo pipefail
-          curl -fsS --max-time 30 -H 'Cache-Control: no-cache' -o served.html https://lightninginajar.xyz/recover/index.html
+          set -uo pipefail
+          URL='https://lightninginajar.xyz/recover/'
+          REPO_FILE='lij-pwa/frontend/recover/index.html'
+          note() { local m="$1"; m="${m//'%'/'%25'}"; echo "::error title=recover canary::${m}"; }
+          CODE=$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -D headers.txt -o served.html -w '%{http_code}' "$URL") || CODE="curl-failed"
+          BYTES=$(wc -c < served.html 2>/dev/null || echo 0)
+          echo "GET ${URL} -> HTTP ${CODE}, ${BYTES} bytes"
+          grep -i -E '^(content-type|cache-control|content-encoding|cf-cache-status|location):' headers.txt || true
+          if [ "$CODE" != "200" ]; then note "GET ${URL} answered HTTP ${CODE} (expected 200), ${BYTES} bytes"; exit 1; fi
           SERVED=$(sha256sum served.html | cut -d' ' -f1)
-          STAMP=$(grep -oP "const RECOVER_BUILD = '\K[^']+" served.html || echo '?')
+          STAMP=$(grep -oP "const RECOVER_BUILD = '\K[^']+" served.html | head -1 || true)
+          STAMP=${STAMP:-?}
           LISTED=$( (grep -oP "recover/index.html \(build ${STAMP}\) sha256 \`\K[0-9a-f]{64}" docs/releases.md || true) | tail -1)
-          REPO=$(sha256sum lij-pwa/frontend/recover/index.html | cut -d' ' -f1)
+          REPO=$(sha256sum "$REPO_FILE" | cut -d' ' -f1)
           echo "served  build ${STAMP}  sha256 ${SERVED}"
           echo "listed  for ${STAMP}     ${LISTED:-none}"
           echo "repo    file             ${REPO}"
-          [ -n "$LISTED" ] || { echo "CANARY FAIL: docs/releases.md has no row for build ${STAMP}"; exit 1; }
-          [ "$SERVED" = "$LISTED" ] || { echo "CANARY FAIL: served page != listed hash"; exit 1; }
-          [ "$SERVED" = "$REPO" ]   || { echo "CANARY FAIL: served page != the file in this repository"; exit 1; }
+          if [ -z "$LISTED" ]; then note "docs/releases.md has no row for build ${STAMP} (the served page's stamp)"; exit 1; fi
+          if [ "$SERVED" != "$LISTED" ] || [ "$SERVED" != "$REPO" ]; then
+            echo "--- the difference, repository file (<) against the served page (>):"
+            diff "$REPO_FILE" served.html | head -40 | cut -c1-300
+            FIRST=$(diff "$REPO_FILE" served.html | head -6 | cut -c1-200 | tr '\n' ' ')
+            if [ "$SERVED" != "$LISTED" ]; then note "served page (build ${STAMP}) does not hash to the listed hash. First difference: ${FIRST}"; fi
+            if [ "$SERVED" != "$REPO" ]; then note "served page differs from the file in this repository. First difference: ${FIRST}"; fi
+            exit 1
+          fi
           echo "CANARY OK $(date -u +%FT%TZ) build ${STAMP}"

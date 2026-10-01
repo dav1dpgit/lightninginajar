@@ -46,8 +46,12 @@
   Cache-Control: no-cache, must-revalidate
 
 # Black Start (S48): the /recover page is the words-only exit — always the freshest copy.
+# S52 (DP): no-transform — the bytes served must be the bytes in the repository (the daily
+# canary and the reader's own SHA-256 check of a saved copy both compare them); Cloudflare
+# documents its body changes (the analytics beacon, email obfuscation, JavaScript
+# detections) as off when the origin sends no-transform.
 /recover/*
-  Cache-Control: no-cache, must-revalidate
+  Cache-Control: no-cache, must-revalidate, no-transform
 
 # v313: the site-root stylesheet was NOT covered above — and this file’s
 # own note is right that ?v= does not bust an edge that ignores query
