@@ -154,6 +154,11 @@ impl CooperativeChainHandler {
         self.resubscribe_wanted.swap(false, std::sync::atomic::Ordering::AcqRel)
     }
 
+    /// v295 (S52): put the request back (the tick could not send it this time).
+    pub fn want_resubscribe(&self) {
+        self.resubscribe_wanted.store(true, std::sync::atomic::Ordering::Release);
+    }
+
     /// Drain all received messages. Step-4c bridge calls this each tick.
     pub fn take_received(&self) -> Vec<ReceivedMessage> {
         let mut q = self.inbound.lock().unwrap();

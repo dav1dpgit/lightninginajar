@@ -3,9 +3,11 @@
 //! What this module does: parse an `sp1q…` address (bech32m, hrp "sp" on
 //! mainnet / "tsp" elsewhere, version 0, 33-byte scan key + 33-byte spend key)
 //! and derive the single taproot output a transaction with the wallet's
-//! inputs must pay to. The wallet's inputs are always compressed-key P2WPKH
-//! (m/84 receive/change, m/525 legacy), so no taproot-parity handling is
-//! needed on the sending side; the derivation is exactly the BIP's:
+//! inputs must pay to. The inputs are the wallet's compressed-key P2WPKH coins
+//! (m/84 receive/change, m/525 legacy) and, since v284, its received
+//! silent-payment coins (taproot key-path, m/352): a taproot input counts as
+//! its x-only key with even y, its secret negated when y is odd (the BIP's rule,
+//! see `SpInput`). The derivation is exactly the BIP's:
 //!
 //!   a_sum      = Σ a_i (mod n)                   — the input private keys
 //!   A_sum      = a_sum·G
@@ -16,13 +18,19 @@
 //!   t_0        = TaggedHash("BIP0352/SharedSecret", ecdh ‖ 0u32 BE)
 //!   P_0        = B_spend + t_0·G           → output = OP_1 <x(P_0)>
 //!
-//! One recipient, one output per transaction (k = 0). Labels are the
-//! receiver's business and do not change sending. The RBF bump path rebuilds
+//! Today: one recipient, one output per transaction (k = 0); several recipients
+//! in one send and labelled addresses are planned. The RBF bump path rebuilds
 //! the same inputs, so it re-derives the same output.
 //!
 //! The BIP's own `send_and_receive_test_vectors.json` (sending cases, trimmed to
-//! the fields used) is the unit-test gate in `testdata/`; the cases with
-//! taproot inputs are asserted to be skipped, since the wallet never has them.
+//! the fields used) is the unit-test gate in `testdata/` (`bip352_sending_vectors`).
+//! Since v284 the cases with taproot inputs run too. 16 of the 28 cases run; the
+//! 12 skipped are outside today's sending model (several outputs or recipients,
+//! labels, silent-payment change — the wallet's change goes to m/84) or are input
+//! types the wallet never spends (a NUMS script path, uncompressed or malleated
+//! P2PKH, invalid P2SH), plus the K_max cap and the no-valid-inputs case.
+//! (S52 comment fix, DP 2026-09-30: this header had said the inputs were always
+//! P2WPKH and the taproot cases skipped — both stopped being true at v284.)
 //!
 //! RECEIVING (v284, S50 — the engine groundwork, DP's SP design of 2026-09-28): the keys at
 //! m/352'/{coin}'/0'/1'/0 (scan) and m/352'/{coin}'/0'/0'/0 (spend), the sp1 address, the

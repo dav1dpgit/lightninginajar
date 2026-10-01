@@ -420,8 +420,33 @@ pub struct ClaimedRecord {
     pub parts: Vec<(String, u64)>,
 }
 
+/// v295 (S52, DP "yes 1-4"): the page's "the app is in front again" signal, set without the wallet lock
+/// (note_foreground's try_lock is skipped whenever a sync holds the wallet); the tick takes it.
+pub static STREAM_CHECK_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn request_stream_check() {
+    STREAM_CHECK_WANTED.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// v295 (S52): the tick's watch over the provider's chain stream (see background_tick, the stream block).
+#[derive(Default)]
+pub struct StreamWatch {
+    /// Wall clock of the previous tick (ms); a gap of 2 minutes or more = the page was frozen (iOS hides it).
+    pub last_tick_ms: std::sync::atomic::AtomicU64,
+    /// A checked ask in flight: when it was sent (ms; 0 = none) and the stream's message count then.
+    pub ask_ms: std::sync::atomic::AtomicU64,
+    pub ask_msgs: std::sync::atomic::AtomicU64,
+    /// Since when the independent sources' tip has been above the stream's (ms; 0 = not behind).
+    pub behind_since_ms: std::sync::atomic::AtomicU64,
+    /// The last checked ask (ms) — checks at most once a minute.
+    pub last_check_ms: std::sync::atomic::AtomicU64,
+    /// The last time a silent connection was dropped (ms) — at most once a minute.
+    pub last_drop_ms: std::sync::atomic::AtomicU64,
+}
+
 pub struct LijNode {
     pub config: WalletConfig,
+    /// v295 (S52): the chain stream's watch.
+    pub stream_watch: StreamWatch,
     pub network: Network,
     /// v249: tick_count of the last stream-loss re-subscribe (throttle, 60 s); 0 = none.
     pub last_resubscribe_tick: std::sync::atomic::AtomicU64,
@@ -705,6 +730,7 @@ impl LijNode {
         let mut node = Self {
             config, network, root_key, active_lsp: None,
             last_resubscribe_tick: std::sync::atomic::AtomicU64::new(0),   // v249
+            stream_watch: StreamWatch::default(),   // v295
             keys_manager, signer_provider,
             outstanding_close_attempts: Arc::new(Mutex::new(std::collections::HashMap::new())),
             funding_spend_sightings: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -1050,6 +1076,7 @@ impl LijNode {
             config,
             network,
             last_resubscribe_tick: std::sync::atomic::AtomicU64::new(0),   // v249
+            stream_watch: StreamWatch::default(),   // v295
             root_key,
             active_lsp: None,
             keys_manager,
@@ -2758,19 +2785,47 @@ impl LijNode {
         //       block arrives every ~10 min on average, so silence that long is a lost
         //       stream (an adapter restart also empties its subscriber list); a needless
         //       re-subscribe costs one bundle. (b) and (c) send at most once per 60 s.
+        // v295 (S52, DP "yes 1-4" — the CHAIN tile stayed blocks behind after the iPhone woke): four more rules.
+        //   (1) a (re)connect ALWAYS re-subscribes (a new socket starts with no subscription at the provider) — the
+        //       60-tick throttle no longer applies to it — and a request that cannot be sent yet (the peer not yet
+        //       connected) is put back, never dropped (v249's take() lost it whenever the throttle or a missing
+        //       peer stopped the send, leaving only the 20-minute rule);
+        //   (2) the app in front again (the page's signal, set lock-free) or a tick gap of 2 minutes (the page was
+        //       frozen) → ask at once — a CHECKED ask;
+        //   (3) a checked ask with no chain message within 5 s on a connection that still looks up → the socket is
+        //       dead underneath: drop it now (at most once a minute); the page's monitor reconnects within 5 s and
+        //       the reconnect re-subscribes by (1) — instead of waiting for LDK's keep-alive ping (every 10 s, a
+        //       peer that has not answered the last one is dropped on the next: 10-20 s) to notice;
+        //   (4) the independent sources' tip above the stream's for a minute → a checked ask (DP's "tighter
+        //       re-subscribe rule"). Checked asks: at most once a minute.
+        let sw = &self.stream_watch;
+        let now = crate::tier2_wallet::now_ms();
+        let prev_tick = sw.last_tick_ms.swap(now, std::sync::atomic::Ordering::Relaxed);
+        let woke = prev_tick != 0 && now.saturating_sub(prev_tick) >= 120_000;
+        let fg = STREAM_CHECK_WANTED.swap(false, std::sync::atomic::Ordering::AcqRel) || woke;
         let not_subscribed = !self.cooperative_bridge.cooperative_subscribed();
         let reconnect_flag = self.cooperative_bridge.take_resubscribe_wanted();
         let silence = self.cooperative_bridge.cooperative_silence_secs().unwrap_or(0);
         let stale = !not_subscribed && silence >= 1200;
         let last_rs = self.last_resubscribe_tick.load(std::sync::atomic::Ordering::Relaxed);
         let throttled = last_rs != 0 && tick_count.saturating_sub(last_rs) < 60;
-        if not_subscribed || ((reconnect_flag || stale) && !throttled) {
+        let behind = match (self.independent_block_height(), self.cooperative_bridge.cooperative_block_height()) {
+            (Some(ind), Some(coop)) => ind > coop,
+            _ => false,
+        };
+        let ev = stream_behind_due(&sw.behind_since_ms, behind, now);
+        let last_check = sw.last_check_ms.load(std::sync::atomic::Ordering::Relaxed);
+        let check = !not_subscribed && (fg || ev) && !(last_check != 0 && now.saturating_sub(last_check) < 60_000);
+        if not_subscribed || reconnect_flag || check || (stale && !throttled) {
+            let mut sent = false;
             if let Some(lsp_pubkey) = self.cooperative_bridge.target_lsp() {
                 let peer_connected = pm.list_peers().iter()
                     .any(|p| p.counterparty_node_id == lsp_pubkey);
                 if peer_connected {
                     let why = if not_subscribed { "cooperative not subscribed" }
                         else if reconnect_flag { "LSP peer reconnected" }
+                        else if fg { if woke { "woke after a frozen page" } else { "app in front again" } }
+                        else if ev { "independent tip ahead of the stream for a minute" }
                         else { "cooperative stream silent" };
                     log::info!(
                         "background_tick: peer {} connected, {} ({} s since the last chain message) — re-issuing SubscribeChainData",
@@ -2779,7 +2834,37 @@ impl LijNode {
                     if let Err(e) = self.cooperative_bridge.send_subscribe(lsp_pubkey) {
                         log::warn!("background_tick: send_subscribe retry failed: {}", e);
                     }
+                    sent = true;
                     if !not_subscribed { self.last_resubscribe_tick.store(tick_count.max(1), std::sync::atomic::Ordering::Relaxed); }
+                    if check && !reconnect_flag {
+                        // (3) arm the answer deadline — a fresh socket's own subscribe is never second-guessed
+                        sw.last_check_ms.store(now, std::sync::atomic::Ordering::Relaxed);
+                        sw.ask_ms.store(now.max(1), std::sync::atomic::Ordering::Relaxed);
+                        sw.ask_msgs.store(self.cooperative_bridge.cooperative_message_count(), std::sync::atomic::Ordering::Relaxed);
+                        sw.behind_since_ms.store(0, std::sync::atomic::Ordering::Relaxed);
+                    } else if reconnect_flag {
+                        sw.ask_ms.store(0, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            }
+            if reconnect_flag && !sent { self.cooperative_bridge.want_resubscribe(); }   // (1) kept until it can be sent
+        }
+        // (3) the answer deadline
+        let ask = sw.ask_ms.load(std::sync::atomic::Ordering::Relaxed);
+        if ask != 0 && now.saturating_sub(ask) >= 5_000 {
+            sw.ask_ms.store(0, std::sync::atomic::Ordering::Relaxed);
+            let answered = self.cooperative_bridge.cooperative_message_count() != sw.ask_msgs.load(std::sync::atomic::Ordering::Relaxed);
+            let last_drop = sw.last_drop_ms.load(std::sync::atomic::Ordering::Relaxed);
+            if !answered && (last_drop == 0 || now.saturating_sub(last_drop) >= 60_000) {
+                if let Some(lsp_pubkey) = self.cooperative_bridge.target_lsp() {
+                    if pm.list_peers().iter().any(|p| p.counterparty_node_id == lsp_pubkey) {
+                        log::warn!(
+                            "background_tick: no chain message from {} within 5 s of the check — the connection is dead underneath; dropping it (the monitor reconnects and the reconnect re-subscribes)",
+                            lsp_pubkey
+                        );
+                        sw.last_drop_ms.store(now, std::sync::atomic::Ordering::Relaxed);
+                        pm.disconnect_by_node_id(lsp_pubkey);
+                    }
                 }
             }
         }
@@ -6743,6 +6828,40 @@ fn parse_channel_id_hex(hex_str: &str) -> LijResult<ChannelId> {
     let mut arr = [0u8; 32];
     arr.copy_from_slice(&bytes);
     Ok(ChannelId(arr))
+}
+
+/// v295 (S52): rule (4)'s clock — true once the independent tip has stayed above the stream's for a full
+/// minute (the first sighting starts the clock; any tick that is not behind stops it).
+pub(crate) fn stream_behind_due(since: &std::sync::atomic::AtomicU64, behind: bool, now: u64) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    if !behind { since.store(0, Relaxed); return false; }
+    let s = since.load(Relaxed);
+    if s == 0 { since.store(now.max(1), Relaxed); return false; }
+    now.saturating_sub(s) >= 60_000
+}
+
+#[cfg(test)]
+mod stream_watch_tests {
+    use super::*;
+    #[test]
+    fn behind_for_a_minute_then_due_and_a_catch_up_resets() {
+        let s = std::sync::atomic::AtomicU64::new(0);
+        assert!(!stream_behind_due(&s, true, 1_000_000), "the first sighting only starts the clock");
+        assert!(!stream_behind_due(&s, true, 1_059_999));
+        assert!(stream_behind_due(&s, true, 1_060_000), "a full minute behind → due");
+        assert!(!stream_behind_due(&s, false, 1_061_000), "caught up → the clock stops");
+        assert!(!stream_behind_due(&s, true, 1_062_000), "behind again → a new minute");
+        assert!(stream_behind_due(&s, true, 1_122_000));
+    }
+    #[test]
+    fn a_resubscribe_request_put_back_is_taken_again() {
+        let h = crate::cooperative_chain_handler::CooperativeChainHandler::new();
+        h.want_resubscribe();
+        assert!(h.take_resubscribe_wanted());
+        assert!(!h.take_resubscribe_wanted(), "taken once");
+        h.want_resubscribe();   // the tick could not send it — put back
+        assert!(h.take_resubscribe_wanted(), "kept until it can be sent");
+    }
 }
 
 fn current_time_secs() -> u64 {

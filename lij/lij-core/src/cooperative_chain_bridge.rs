@@ -88,6 +88,9 @@ struct SharedState {
     /// Confirm trait. Drained by LijNode::background_tick which has access to
     /// ChannelManager + ChainMonitor.
     pending_confirmations: Vec<FundingTxConfirmed>,
+    /// v295 (S52): every chain message received (ChainDataBundle or BlockHeightUpdate) — the tick's
+    /// stream check asks "did anything arrive since I asked?" by this count, not by a seconds clock.
+    chain_msgs: u64,
 }
 
 // ── CooperativeChainBridge ──────────────────────────────────────────────────
@@ -286,6 +289,17 @@ impl CooperativeChainBridge {
         self.handler.take_resubscribe_wanted()
     }
 
+    /// v295 (S52): chain messages received so far (see SharedState::chain_msgs).
+    pub fn cooperative_message_count(&self) -> u64 {
+        self.state.lock().unwrap().chain_msgs
+    }
+
+    /// v295 (S52): ask the tick to re-issue SubscribeChainData (a request that could not be sent yet is
+    /// put back, never dropped).
+    pub fn want_resubscribe(&self) {
+        self.handler.want_resubscribe()
+    }
+
     /// v249: seconds since the last cooperative chain message; None if none ever.
     pub fn cooperative_silence_secs(&self) -> Option<u64> {
         self.state.lock().unwrap().last_update_ts.map(|t| current_time_secs().saturating_sub(t))
@@ -316,6 +330,7 @@ impl CooperativeChainBridge {
                 state.last_fee_quote = Some(FeeQuote::from_fast_sat_per_vb(b.fee_sat_per_vb_fast));
                 state.subscribed = true;
                 state.last_update_ts = Some(current_time_secs());  // Step 3.6 (F7)
+                state.chain_msgs = state.chain_msgs.wrapping_add(1);   // v295
                 drop(state);
                 log::info!(
                     "cooperative_chain_bridge: ChainDataBundle received, tip {} fast_fee {} sat/vB",
@@ -334,6 +349,7 @@ impl CooperativeChainBridge {
                 state.last_block_height = Some(h.new_height);
                 state.last_block_hash = Some(h.new_blockhash);
                 state.last_update_ts = Some(current_time_secs());
+                state.chain_msgs = state.chain_msgs.wrapping_add(1);   // v295
                 drop(state);
                 log::debug!("cooperative_chain_bridge: BlockHeightUpdate to {}", h.new_height);
             }

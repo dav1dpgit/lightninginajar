@@ -96,7 +96,9 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v293".to_string()  // v293 (S51, DP 22:57 "Go with O1" — THE SCAN YIELDS BY TIME): the silent-payment scan hands the screen back whenever 40 ms of work has passed (tier2_sync::YIELD_BUDGET_MS, checked before every block and between groups of 32 tweaks) instead of every 8 blocks; same work, same order, same results — the iPhone X readout showed every stall (longest 6.4 s) inside tier2_onchain_sync's scan runs. Test: candidate_scripts_in_groups_equal_the_whole.
+    "phase11-v295".to_string()  // v295 (S52, DP 22:21 "All yes for 1-4" — the CHAIN tile stayed blocks behind after the iPhone woke): the provider's chain stream is asked again (1) on every (re)connect, never throttled, and a request that cannot be sent yet is kept (v249 dropped it under the 60-tick throttle); (2) when the app is in front again (note_foreground → a lock-free flag the tick takes) or after a 2-minute tick gap; (3) a check with no chain message within 5 s on a connection that still looks up drops the connection at once (at most once a minute) — the monitor reconnects and the reconnect re-subscribes — instead of waiting 10-20 s for LDK's keep-alive to notice; (4) the independent tip above the stream's for a minute → a check. node.rs background_tick (the stream block), StreamWatch, stream_behind_due; tests stream_watch_tests.
+    // "phase11-v294".to_string()  // v294 (S52, DP 21:49 — "a silent-payment receive's ADDRESS in the drill-down says reading… and never fills"): tx_details counted as ours only the scripts of the m/84 net, so a silent-payment coin (m/352, a one-time taproot output) was nobody's — its receive had no address of record, and a send FROM it read as a receive with our change as the address. Now ours = the net's scripts OR an outpoint the wallet's own ledger holds as a coin (spent or not, the scan's unconfirmed ones too); inputs carry the outpoint they spend (Esplora's vin txid/vout). lij_core::tier2_wallet::tx_ownership; test drill_down_ownership_knows_silent_payment_coins.
+    // "phase11-v293".to_string()  // v293 (S51, DP 22:57 "Go with O1" — THE SCAN YIELDS BY TIME): the silent-payment scan hands the screen back whenever 40 ms of work has passed (tier2_sync::YIELD_BUDGET_MS, checked before every block and between groups of 32 tweaks) instead of every 8 blocks; same work, same order, same results — the iPhone X readout showed every stall (longest 6.4 s) inside tier2_onchain_sync's scan runs. Test: candidate_scripts_in_groups_equal_the_whole.
     // "phase11-v292".to_string()  // v292 (S51, DP 16:43 "Go, run the gate and the cut" — THE 64-BIT MULTIPLY PATH): no Rust change; lij/.cargo/config.toml now hands the wasm32 C build USE_FORCE_WIDEMUL_INT64, so libsecp256k1 (pristine in vendor/) uses its 10x26 field / 8x32 scalar with native i64 products instead of the 5x52 / 4x64 path whose 128-bit products WebAssembly has to emulate through __multi3. Same results (gated: six builds, one identical output over every operation the wallet uses + BIP-340 vector 0); every curve operation ~2x faster in the browser — the silent-payment scan, the address walk's derivations, signing, ECDH, the kit. Reversible by deleting the [env] line.
     // "phase11-v291".to_string()  // v291 (S50, DP 23:04 "Go on Black start v291 engine" — THE BLACK START KIT'S SILENT-PAYMENT SWEEPS): for every unspent silent-payment coin the kit carries ONE pre-signed transaction moving that coin alone (never combined — DP) to a fresh m/84 receive address of the wallet's own (one address per coin: the kit's destination index + 1 + i, on the chain any BIP-84 wallet derives from the 12 words), at the kit's two rates (10 and 40 sat/vB; a coin too small for a rate gets nothing at that rate), signed by the one signer every spend shares (Schnorr on the taproot key-path), RBF-signalled so the high variant can replace the normal one, valid the moment it is broadcast; the kit's `silent_payments` list (+ a note when the ledger could not be read — the channels' half always exports); the push fingerprint includes the unspent silent-payment outpoints, so a coin arriving or leaving makes a push due (`silent_payments` count on the fingerprint). Test: two coins → two sweeps to consecutive fresh addresses, the small one normal-rate only, the Schnorr signature verifies, the high variant a replacement, spent and m/84 coins excluded. 281 green.
     // "phase11-v290".to_string()  // v290 (S50, DP's Nostur field test 21:52 — "NWC request from Nostur refused: this wallet speaks NIP-44 v2 only"): NIP-04 beside NIP-44. Nostur (and most NWC apps today) encrypt requests with the older scheme — AES-256-CBC under the raw ECDH x, base64 with "?iv=" — which v286 refused. Now the content's shape decides (a "?iv=" payload is NIP-04; a tag that names another scheme is refused as UNSUPPORTED_ENCRYPTION naming both), the request is decrypted either way, `Opened.encryption` says which, and the reply goes back in kind (a NIP-04 reply carries no encryption tag, per NIP-47); the info event lists "nip44_v2 nip04". AES-CBC rides the vendored `aes` (aes-gcm's) — no new crate; gated by the NIST SP 800-38A CBC-AES256 vector, a round trip, a wrong-key refusal, and an end-to-end NIP-04 request/reply. The wasm nwc_reply takes `encryption`. Also carries v289 (the row marker), which CI never shipped — its build's flip collided with v288's. 280 green.
@@ -1985,27 +1987,22 @@ impl LijWalletHandle {
                     Err(_) => false,
                 }
             };
-            let mut our_in: u64 = 0;
-            let mut in_total: u64 = 0;
-            for i in &tx.vins { in_total = in_total.saturating_add(i.value); if ours(&i.scriptpubkey) { our_in = our_in.saturating_add(i.value); } }
-            let mut our_out: u64 = 0;
+            // v294 (S52, DP 21:49): ours = the m/84 net's scripts OR an outpoint the ledger holds as a coin — a
+            // silent-payment coin (m/352) is never in the net, so its receive had no address of record and a send
+            // from it read as a receive (lij_core::tier2_wallet::tx_ownership).
+            let own = lij_core::tier2_wallet::tx_ownership(&view, &tx, &ours);
+            let (our_in, our_out) = (own.our_in, own.our_out);
+            let in_total: u64 = tx.vins.iter().map(|i| i.value).sum();
             let mut outs = Vec::new();
-            for o in &tx.vouts {
-                let mine = ours(&o.scriptpubkey);
-                if mine { our_out = our_out.saturating_add(o.value); }
-                outs.push(serde_json::json!({ "address": o.address, "value": o.value, "ours": mine, "type": o.script_type }));
+            for (n, o) in tx.vouts.iter().enumerate() {
+                outs.push(serde_json::json!({ "address": o.address, "value": o.value, "ours": own.outs_ours.get(n).copied().unwrap_or(false), "type": o.script_type }));
             }
             let fee = if tx.fee > 0 { tx.fee } else { in_total.saturating_sub(tx.vouts.iter().map(|o| o.value).sum::<u64>()) };
             let vsize = if tx.weight > 0 { (tx.weight + 3) / 4 } else { 0 };
             let sat_vb = if vsize > 0 { (fee as f64) / (vsize as f64) } else { 0.0 };
             // the address of record: a send → the output that isn't ours; a receive → our output;
             // a self-move (channel funding) → our funding output
-            let is_send = our_in > 0 && our_in > our_out;
-            let pick = if is_send {
-                tx.vouts.iter().find(|o| !ours(&o.scriptpubkey)).or_else(|| tx.vouts.iter().find(|o| ours(&o.scriptpubkey)))
-            } else {
-                tx.vouts.iter().find(|o| ours(&o.scriptpubkey))
-            };
+            let pick = own.pick.and_then(|n| tx.vouts.get(n));
             let (address, address_type) = match pick { Some(o) => (o.address.clone(), o.script_type.clone()), None => (None, String::new()) };
             // the block time goes into the ledger so the face's row gains its clock
             if let (Some(h), Some(t)) = (tx.block_height, tx.block_time) {
@@ -3553,6 +3550,7 @@ impl LijWalletHandle {
     /// is busy (a walk is likely already in flight). See node::note_foreground.
     #[wasm_bindgen]
     pub fn note_foreground(&self) {
+        lij_core::node::request_stream_check();   // v295 (S52): the stream check, lock-free — taken by the next tick
         if let Ok(wallet) = self.inner.try_lock() {
             wallet.node().note_foreground();
         }

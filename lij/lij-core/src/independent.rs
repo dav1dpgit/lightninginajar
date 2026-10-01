@@ -196,6 +196,10 @@ pub struct EsploraTxPrevout {
     pub value: u64,
     pub script_type: String,
     pub address: Option<String>,
+    /// v294 (S52): the outpoint this input spends — so a spend of a coin the m/84 net cannot
+    /// recognise by its script (a silent-payment coin) is still recognised as the wallet's own.
+    pub prev_txid: String,
+    pub prev_vout: u32,
 }
 
 #[derive(serde::Deserialize)]
@@ -217,6 +221,11 @@ struct EsploraTxRaw {
 struct EsploraTxVinRaw {
     #[serde(default)]
     prevout: Option<EsploraTxPrevoutRaw>,
+    /// v294 (S52): the spent outpoint (Esplora's vin carries both).
+    #[serde(default)]
+    txid: String,
+    #[serde(default)]
+    vout: u32,
 }
 #[derive(serde::Deserialize, Clone, Debug, Default)]
 struct EsploraTxPrevoutRaw {
@@ -269,7 +278,7 @@ impl From<EsploraTxRaw> for EsploraTx {
                 .into_iter()
                 .map(|i| {
                     let p = i.prevout.unwrap_or_default();
-                    EsploraTxPrevout { scriptpubkey: p.scriptpubkey, value: p.value, script_type: p.scriptpubkey_type, address: p.scriptpubkey_address }
+                    EsploraTxPrevout { scriptpubkey: p.scriptpubkey, value: p.value, script_type: p.scriptpubkey_type, address: p.scriptpubkey_address, prev_txid: i.txid, prev_vout: i.vout }
                 })
                 .collect(),
             fee: raw.fee,

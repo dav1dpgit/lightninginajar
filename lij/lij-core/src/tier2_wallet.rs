@@ -1506,6 +1506,56 @@ pub async fn sync_down(
     Ok((batches, note))
 }
 
+/// v294 (S52, DP 21:49 — "a silent-payment receive's ADDRESS in the drill-down says reading… and never fills"):
+/// which inputs and outputs of a transaction are this wallet's, for the drill-down (tx_details). Until v294 the
+/// only test was the script against the m/84 net (receive, change, the close branch), so a silent-payment coin —
+/// a one-time taproot output at m/352, never in that net — was nobody's: a silent-payment receive had no output
+/// of ours (no address of record; the page waited for one for ever) and a send FROM a silent-payment coin had no
+/// input of ours (read as a receive; its change shown as the address of record). Now an output is ours when its
+/// script is in the net OR the ledger holds that outpoint as a coin (spent or not; silent-payment coins included,
+/// and the scan's unconfirmed ones); an input is ours when its spent output's script is in the net OR the ledger
+/// holds the outpoint it spends. The ledger is the wallet's own record — nothing is asked of anyone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TxOwnership {
+    pub our_in: u64,
+    pub our_out: u64,
+    /// One flag per output, in order.
+    pub outs_ours: Vec<bool>,
+    /// A send (we spent more than came back to us).
+    pub is_send: bool,
+    /// The output of record: a send → the first output that isn't ours (else our first); a receive or a
+    /// self-move → our first output. None when no output qualifies.
+    pub pick: Option<usize>,
+}
+
+pub fn tx_ownership(
+    view: &Tier2View,
+    tx: &crate::independent::EsploraTx,
+    ours_script: &dyn Fn(&str) -> bool,
+) -> TxOwnership {
+    let mut held: std::collections::HashSet<(String, u32)> = view.utxos.iter().map(|u| (u.txid.clone(), u.vout)).collect();
+    if let Some(sp) = view.sp.as_ref() {
+        for p in &sp.pending { held.insert((p.txid.clone(), p.vout)); }
+    }
+    let mut our_in: u64 = 0;
+    for i in &tx.vins {
+        if ours_script(&i.scriptpubkey) || (!i.prev_txid.is_empty() && held.contains(&(i.prev_txid.clone(), i.prev_vout))) {
+            our_in = our_in.saturating_add(i.value);
+        }
+    }
+    let mut our_out: u64 = 0;
+    let mut outs_ours = Vec::with_capacity(tx.vouts.len());
+    for (n, o) in tx.vouts.iter().enumerate() {
+        let mine = ours_script(&o.scriptpubkey) || held.contains(&(tx.txid.clone(), n as u32));
+        if mine { our_out = our_out.saturating_add(o.value); }
+        outs_ours.push(mine);
+    }
+    let is_send = our_in > 0 && our_in > our_out;
+    let first = |want: bool| outs_ours.iter().position(|m| *m == want);
+    let pick = if is_send { first(false).or_else(|| first(true)) } else { first(true) };
+    TxOwnership { our_in, our_out, outs_ours, is_send, pick }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1892,5 +1942,56 @@ mod tests {
         let sm = summary(&view, &[], 900_000, &marks);
         assert!(sm.utxos[0].frozen);
         assert_eq!(sm.frozen_sats, 30_000);
+    }
+
+    // v294 (S52): the drill-down's ownership — silent-payment coins are the wallet's own.
+    fn etx(txid: &str, vins: Vec<(&str, u64, &str, u32)>, vouts: Vec<(&str, u64)>) -> crate::independent::EsploraTx {
+        crate::independent::EsploraTx {
+            txid: txid.to_string(),
+            vouts: vouts.into_iter().map(|(spk, v)| crate::independent::EsploraTxVout { scriptpubkey: spk.to_string(), value: v, script_type: "x".into(), address: Some(format!("addr-{spk}")) }).collect(),
+            vins: vins.into_iter().map(|(spk, v, pt, pv)| crate::independent::EsploraTxPrevout { scriptpubkey: spk.to_string(), value: v, script_type: "x".into(), address: None, prev_txid: pt.to_string(), prev_vout: pv }).collect(),
+            fee: 0, weight: 0, confirmed: true, block_height: Some(1), block_time: None,
+        }
+    }
+    fn coin(chain: u32, txid: &str, vout: u32, value: u64, spent_txid: Option<&str>) -> OnchainUtxo {
+        OnchainUtxo { chain, index: 0, txid: txid.into(), vout, value_sats: value, height: 1, spent_height: spent_txid.map(|_| 2), spent_txid: spent_txid.map(|s| s.to_string()), sp_tweak: if chain == 352 { Some("00".repeat(32)) } else { None } }
+    }
+
+    #[test]
+    fn drill_down_ownership_knows_silent_payment_coins() {
+        let net = |spk: &str| spk == "m84a" || spk == "m84chg";
+        let mut view = Tier2View::default();
+        // a silent-payment receive: output 1 of R is a chain-352 coin; its script is not in the m/84 net
+        view.utxos.push(coin(352, "R", 1, 5_000, None));
+        let r = etx("R", vec![("theirs", 9_000, "P", 0)], vec![("theirchange", 3_800), ("sp-taproot", 5_000)]);
+        let o = tx_ownership(&view, &r, &net);
+        assert_eq!((o.our_in, o.our_out, o.is_send, o.pick), (0, 5_000, false, Some(1)), "the SP output is ours and is the address of record");
+        // before v294 (script only): nothing was ours, no address of record
+        let old = tx_ownership(&Tier2View::default(), &r, &net);
+        assert_eq!(old.pick, None);
+        // a send FROM a silent-payment coin: the input spends the held SP coin; change to m/84
+        view.utxos[0].spent_txid = Some("S".into());
+        let s = etx("S", vec![("sp-taproot", 5_000, "R", 1)], vec![("someone", 2_000), ("m84chg", 2_800)]);
+        let o = tx_ownership(&view, &s, &net);
+        assert_eq!((o.our_in, o.our_out, o.is_send, o.pick), (5_000, 2_800, true, Some(0)), "a send: the payee's output is the address of record, not our change");
+        // DP 21:58: a send TO an sp1 address from an m/84 coin — the destination (a taproot output not ours) is the
+        // address of record, with the script test alone (pre-v294) and with the ledger: only a send that spent a
+        // silent-payment coin ever showed our change
+        let d = etx("D", vec![("m84a", 9_000, "W", 0)], vec![("m84chg", 3_700), ("their-sp-taproot", 5_000)]);
+        assert_eq!(tx_ownership(&Tier2View::default(), &d, &net).pick, Some(1));
+        assert_eq!(tx_ownership(&view, &d, &net).pick, Some(1));
+        let old_s = tx_ownership(&Tier2View::default(), &s, &net);
+        assert_eq!((old_s.our_in, old_s.is_send, old_s.pick), (0, false, Some(1)), "pre-v294: the SP-coin spend read as a receive and picked our change");
+        // an ordinary m/84 receive still works by script alone
+        let m = etx("M", vec![("theirs", 10_000, "Q", 0)], vec![("m84a", 7_000), ("theirchange", 2_900)]);
+        let o = tx_ownership(&Tier2View::default(), &m, &net);
+        assert_eq!((o.is_send, o.pick, o.outs_ours.clone()), (false, Some(0), vec![true, false]));
+        // the scan's unconfirmed silent payment (mempool leg) is ours too
+        let mut v2 = Tier2View::default();
+        let mut sc = crate::sp_scan::SpScan::default();
+        sc.pending.push(crate::sp_scan::SpPending { txid: "U".into(), vout: 0, value_sats: 1_234, t_k: "00".repeat(32), k: 0, seen_ms: 0 });
+        v2.sp = Some(sc);
+        let u = etx("U", vec![("theirs", 2_000, "Z", 0)], vec![("sp-taproot-2", 1_234), ("theirchange", 600)]);
+        assert_eq!(tx_ownership(&v2, &u, &net).pick, Some(0));
     }
 }
