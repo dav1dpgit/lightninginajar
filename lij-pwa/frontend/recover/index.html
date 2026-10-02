@@ -18,41 +18,123 @@
      leaves this page but the requests you see in the log and the transactions you broadcast.
      The standard: docs/black-start-standard.md in the lightninginajar repo. -->
 <style>
-:root { --bg:#f6f1e7; --ink:#26190f; --ink2:#5a4a3b; --ink3:#8a7a6a; --rule:#d9cfbf; --card:#fffdf5; --amber:#c9871a; --red:#a33d2e; --ok:#3d7a4a; }
-@media (prefers-color-scheme: dark) { :root { --bg:#0a080c; --ink:#f0e8dc; --ink2:#c7bcae; --ink3:#8e8377; --rule:#2a2530; --card:#15121a; --amber:#e0a23b; --red:#e06a58; --ok:#6fbf7a; } }
-* { box-sizing:border-box } html { background:var(--bg) } body { margin:0; font:15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; color:var(--ink); background:var(--bg); padding:20px 16px 60px; max-width:720px; margin:0 auto }
-h1 { font-size:22px; margin:0 0 4px } h2 { font-size:16px; margin:22px 0 8px } .sub { color:var(--ink2); margin:0 0 18px }
-.card { background:var(--card); border:1px solid var(--rule); border-radius:12px; padding:14px 16px; margin:12px 0 }
+/* v903 (S53, DP 2026-10-01 "roll out the /recover v2 look"): Design v2's /recover — the tokens (ink3 a step darker in light,
+   a step lighter in dark, for contrast), the header and the five steps, cards, rows, pills, buttons, the word boxes. */
+:root { --bg:#f6f1e7; --ink:#26190f; --ink2:#5a4a3b; --ink3:#7a6a5a; --rule:#d9cfbf; --card:#fffdf5; --amber:#c9871a; --red:#a33d2e; --ok:#3d7a4a; color-scheme: light dark; }
+@media (prefers-color-scheme: dark) { :root { --bg:#0a080c; --ink:#f0e8dc; --ink2:#c7bcae; --ink3:#9a8f83; --rule:#2a2530; --card:#15121a; --amber:#e0a23b; --red:#e06a58; --ok:#6fbf7a; } }
+* { box-sizing:border-box } html { background:var(--bg) }
+body { margin:0 auto; font:15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; color:var(--ink); background:var(--bg); padding:0 16px 60px; max-width:600px; -webkit-text-size-adjust:100% }
+a { color:var(--amber) }
+.rh { position:sticky; top:0; z-index:5; background:var(--bg); display:flex; flex-direction:column; gap:12px; padding:16px 0 10px; margin-bottom:6px; border-bottom:1px solid var(--rule) }
+.rh .top { display:flex; align-items:center; gap:8px }
+.rh .jar { color:var(--ink); flex:none } .rh .jar .bolt { stroke:var(--amber) }
+.rh h1 { font-size:17px; font-weight:700; margin:0; line-height:1.2 }
+.rh .u { margin-left:auto; font-size:12px; color:var(--ink3); white-space:nowrap }
+.st { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:5px }
+.st div { display:flex; flex-direction:column; gap:5px; font-size:11px; font-weight:600; color:var(--ink3); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.st div i { display:block; height:4px; border-radius:2px; background:var(--rule); transition:background .3s ease }
+.st .d { color:var(--ink2) } .st .d i { background:var(--ok) } .st .c { color:var(--amber) } .st .c i { background:var(--amber) }
+h2 { font-size:16px; margin:0 0 6px; line-height:1.3 }
+h2.lead { font-size:21px; margin:14px 0 4px; line-height:1.25 }
+.sub { color:var(--ink2); margin:0 0 14px; font-size:14.5px }
+.card, .rc { background:var(--card); border:1px solid var(--rule); border-radius:12px; padding:12px 14px; margin:12px 0 }
+.card > :first-child, .rc > :first-child { margin-top:0 }
+.card p, .rc p { margin:8px 0 }
 label { display:block; font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink3); margin:10px 0 6px }
 textarea, input { width:100%; font:14px/1.4 ui-monospace, Menlo, Consolas, monospace; padding:10px; border:1px solid var(--rule); border-radius:8px; background:var(--bg); color:var(--ink) }
-button { font:600 14px/1 inherit; padding:11px 16px; border-radius:10px; border:1px solid var(--rule); background:var(--card); color:var(--ink); cursor:pointer; margin:6px 6px 0 0 }
-button.primary { background:var(--amber); border-color:var(--amber); color:#1b1206 } button.danger { border-color:var(--red); color:var(--red) } button:disabled { opacity:.45; cursor:default }
-.log { font:12px/1.5 ui-monospace, Menlo, Consolas, monospace; color:var(--ink2); white-space:pre-wrap; max-height:220px; overflow:auto; border-top:1px dashed var(--rule); margin-top:10px; padding-top:8px }
-.warn { border-color:var(--red); background:color-mix(in srgb, var(--red) 8%, var(--card)) } .warn h2 { color:var(--red); margin-top:0 }
+textarea:focus, input:focus { outline:none; border-color:var(--amber); box-shadow:0 0 0 1px var(--amber) }
+button { font:600 15px/1.2 -apple-system, "Segoe UI", Roboto, sans-serif; min-height:46px; padding:0 16px; border-radius:10px; border:1px solid var(--rule); background:var(--card); color:var(--ink); cursor:pointer; margin:8px 8px 0 0; display:inline-flex; align-items:center; justify-content:center; gap:8px; text-align:center }
+button.primary { background:var(--amber); border-color:var(--amber); color:#1b1206 }
+button.danger { border-color:var(--red); color:var(--red); background:transparent }
+button.wide { width:100%; margin-right:0; min-height:50px }
+button:disabled { opacity:.45; cursor:default }
+button:focus-visible { outline:2px solid var(--amber); outline-offset:2px }
+.rb-t { background:transparent; border:0; color:var(--amber); min-height:40px; padding:0 6px; margin:0 }
+.btn2 { display:flex; flex-direction:column; gap:0 } .btn2 button { width:100%; margin:8px 0 0 }
+.log { font:12px/1.5 ui-monospace, Menlo, Consolas, monospace; color:var(--ink2); white-space:pre-wrap; max-height:220px; overflow:auto; word-break:break-word }
+.logc:has(.log:empty) { display:none }
+.logh { font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink3); margin:0 0 6px }
+.warn, .rwarn { border:1px solid var(--red); background:color-mix(in srgb, var(--red) 8%, var(--card)); border-radius:12px; padding:12px 14px; font-size:14px; line-height:1.45 }
+.warn h2 { color:var(--red) } .rwarn { margin:8px 0 }
+.rok { border:1px solid var(--ok); background:color-mix(in srgb, var(--ok) 8%, var(--card)); border-radius:12px; padding:12px 14px; font-size:14px; line-height:1.45; margin:12px 0 }
 .ok { color:var(--ok) } .bad { color:var(--red) } .mono { font:13px/1.45 ui-monospace, Menlo, Consolas, monospace; word-break:break-all } .dim { color:var(--ink3) }
-.row { display:flex; justify-content:space-between; gap:12px; padding:5px 0; border-bottom:1px solid var(--rule) } .row:last-child { border-bottom:none } .k { color:var(--ink3) } .v { text-align:right }
-details { margin-top:8px } summary { cursor:pointer; color:var(--ink2) }
+.row { display:flex; justify-content:space-between; gap:12px; padding:7px 0; border-bottom:1px solid var(--rule); font-size:14px } .row:last-child { border-bottom:none } .k { color:var(--ink3); flex:none } .v { text-align:right; min-width:0; overflow-wrap:anywhere }
+details { margin-top:8px } summary { cursor:pointer; color:var(--ink2); padding:4px 0 }
+details .mono[style*="pre-wrap"], .card details > .mono { background:var(--bg); border:1px solid var(--rule); border-radius:8px; padding:8px 10px; color:var(--ink2); font-size:12.5px }
+.rpill { display:inline-flex; align-items:center; height:22px; padding:0 9px; border-radius:999px; font:600 11px -apple-system, "Segoe UI", Roboto, sans-serif; letter-spacing:.06em; text-transform:uppercase; border:1px solid var(--ink3); color:var(--ink3); white-space:nowrap; flex:none }
+.rpill.ok { border-color:var(--ok); color:var(--ok) } .rpill.bad { border-color:var(--red); color:var(--red) } .rpill.a { border-color:var(--amber); color:var(--amber) }
+#copies summary > .ok, #copies summary > .bad { display:inline-flex; align-items:center; height:22px; padding:0 9px; border-radius:999px; border:1px solid currentColor; font:600 11px -apple-system, "Segoe UI", Roboto, sans-serif; letter-spacing:.04em; vertical-align:1px }
+.rprog { height:6px; border-radius:3px; background:var(--rule); overflow:hidden; margin:10px 0 2px } .rprog i { display:block; height:100%; width:0; background:var(--amber); transition:width .4s ease }
+.rprog[hidden] { display:none }
+.chh { display:flex; justify-content:space-between; align-items:center; gap:10px; margin:0 0 4px } .chh b { font-size:16px }
+.st-line { margin:6px 0 0; font-size:13.5px } .st-line:empty { display:none }
+/* the keep-your-copy card: one line, opens */
+.keep { padding:4px 14px 10px }
+.keep > details { margin:0 }
+.keep > details > summary { list-style:none; display:flex; align-items:center; gap:10px; padding:8px 0; color:var(--ink) }
+.keep > details > summary::-webkit-details-marker { display:none }
+.keep .shield { color:var(--ok); display:inline-flex; flex:none }
+.keep .kt { flex:1; font-size:13.5px; line-height:1.35 } .keep .kt span { display:block; color:var(--ink3) }
+.keep .chev { color:var(--ink3); display:inline-flex; transition:transform .2s ease; flex:none } .keep > details[open] > summary .chev { transform:rotate(90deg) }
+.keep-b { border-top:1px solid var(--rule); padding-top:6px; font-size:14px }
+#canary { margin:6px 0 0; font-size:13px }
+.keep .canx { margin-top:4px } .keep .canx summary { color:var(--ink3); font-size:13px; padding:2px 0 }
+.keep .canx p { font-size:13px }
+/* the twelve words */
+.wl { display:flex; align-items:center; justify-content:space-between; margin:4px 0 8px }
+.wl span { font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink3) }
+.wd { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px }
+.wc { display:flex; align-items:center; gap:5px; height:44px; margin:0; border:1px solid var(--rule); border-radius:8px; background:var(--bg); padding:0 8px; text-transform:none; letter-spacing:0; cursor:text; min-width:0 }
+.wc b { font:600 10.5px -apple-system, "Segoe UI", Roboto, sans-serif; color:var(--ink3); width:14px; flex:none; text-align:right }
+.wc input { border:0; background:transparent; padding:0; margin:0; height:100%; width:100%; min-width:0; font:500 16px/1 -apple-system, "Segoe UI", Roboto, sans-serif; color:var(--ink); border-radius:0 }
+.wc input:focus { box-shadow:none; outline:none }
+.wc.on { border-color:var(--amber); box-shadow:0 0 0 1px var(--amber) }
+.wc.bad { border-color:var(--red) } .wc.bad input { color:var(--red) } .wc.bad.on { box-shadow:0 0 0 1px var(--red) }
+.sugg { margin:10px 0 0 } .sugg[hidden] { display:none }
+.sugg-h { font-size:13px; color:var(--ink3); margin-bottom:2px }
+.sugg-c { display:flex; gap:7px; flex-wrap:wrap }
+.sugg-c button { min-height:34px; padding:0 13px; border-radius:999px; font:500 14px -apple-system, "Segoe UI", Roboto, sans-serif; margin:4px 0 0 }
+.note { font-size:13px; color:var(--ink3); line-height:1.45 }
+.rf { display:flex; flex-direction:column; align-items:stretch; gap:4px; margin:14px 0 4px }
+.rf #find { margin:0 }
+.why2 { font-size:13px; color:var(--ink3); text-align:center; min-height:1.5em } .why2.bad { color:var(--red) } .why2.ok { color:var(--ok) }
+.idrow { display:flex; align-items:center; justify-content:center; gap:10px; flex-wrap:wrap } .idrow:has(#ident:empty) { display:none }
+/* the provider */
+.prow { display:flex; align-items:center; gap:10px } .prow .pic { display:inline-flex; color:var(--ink2); flex:none }
+.prow .pn { flex:1; min-width:0 } .prow .pn b { display:block; overflow-wrap:anywhere } .prow .pn span { font-size:13px; color:var(--ink3) }
+.pw { font-size:13.5px; color:var(--ink2); margin-top:6px }
 </style>
 </head>
 <body>
-<h1>Black start</h1>
-<p class="sub">Recover with your 12 words alone — when the phone, its cloud copy and your provider are all gone. Everything here runs in your browser.</p>
+<header class="rh">
+  <div class="top"><svg class="jar" viewBox="0 0 32 32" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="11" y="3.5" width="10" height="3" rx="0.5"/><path d="M12 6.8 L12 8 C9.2 8.7 7.5 11 7.5 13.5 L7.5 25.5 a1.5 1.5 0 0 0 1.5 1.5 L23 27 a1.5 1.5 0 0 0 1.5 -1.5 L24.5 13.5 C24.5 11 22.8 8.7 20 8 L20 6.8"/><path class="bolt" d="M16 6.5 L14.6 11.5 L17.2 13.5 L13.8 18 L16.6 20.5 L14.2 25" stroke-width="1.3"/><path class="bolt" d="M15.7 14.5 L18.2 17 L17 19" stroke-width="1.1"/><path class="bolt" d="M14.6 11.5 L12.5 13.5" stroke-width="1"/></svg><h1>Black start</h1><span class="u">lightninginajar.xyz/recover</span></div>
+  <div class="st" id="steps"><div class="c"><i></i>Words</div><div><i></i>Provider</div><div><i></i>Kit</div><div><i></i>Close</div><div><i></i>Collect</div></div>
+</header>
+<h2 class="lead">Recover with your 12 words alone</h2>
+<p class="sub">When the phone, its cloud copy and your provider are all gone. Everything here runs in your browser.</p>
 
-<div class="card" id="keep">
-  <h2 style="margin-top:0">Keep your own copy of this page</h2>
+<div class="rc keep" id="keep">
+  <details><summary><span class="shield"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg></span><span class="kt"><b>Keep your own copy of this page</b><span>Download it, check its hash, keep it with your words.</span></span><span class="chev"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></summary>
+    <div class="keep-b">
   <p>This page is one file with nothing else to load. Save it now, keep it with your 12 words, and on the day you need it open the saved copy — then no server is involved. <a id="dl" href="index.html" download="lij-black-start.html">Download this page</a></p>
   <details><summary>Check the copy before you trust it with your words</summary>
     <p class="dim">The file's SHA-256 must equal the <span class="mono">recover/index.html</span> hash in <span class="mono">docs/releases.md</span> of the lightninginajar repository on GitHub (<span class="mono">github.com/dav1dpgit/lightninginajar</span>), in the row for the page build shown at the foot of this page. To get the hash of your copy: Mac <span class="mono">shasum -a 256 lij-black-start.html</span> · Windows <span class="mono">certutil -hashfile lij-black-start.html SHA256</span> · Linux <span class="mono">sha256sum lij-black-start.html</span>. A copy that does not match is not this page — do not give it your words.</p>
   </details>
+    </div>
+  </details>
   <!-- v824 (DP, S49): the canary — the latest result of the daily check that fetches this page as served and compares its hash to the one listed in the public repository -->
   <p class="dim" id="canary">Canary · reading the daily check…</p>
+  <details class="canx"><summary>What the canary is</summary>
   <p class="dim">Every day a check on GitHub fetches this page as served at lightninginajar.xyz and compares its SHA-256 with the hash listed in the public repository; the line above is its latest result (every check: <a href="https://github.com/dav1dpgit/lightninginajar/actions/workflows/recover-canary.yml">github.com/dav1dpgit/lightninginajar/actions</a>). That line is printed by this page, and a tampered page could print anything — check the hash yourself, as described above; that is the check nobody can fake.</p>
+  </details>
 </div>
 
-<div class="card">
-  <label for="words">Your 12 words</label>
-  <textarea id="words" rows="3" autocapitalize="none" autocorrect="off" autocomplete="off" spellcheck="false" placeholder="twelve words, in order"></textarea>
-  <p class="dim" style="margin:8px 0 0">Your words are used once, here in your browser, to make two things — the key that opens your kit and your public name — and are then erased from this page. What the page keeps cannot spend your coins.</p>
+<div class="rc">
+  <div class="wl"><span>Your 12 words</span><button type="button" class="rb-t" id="wclear">Clear</button></div>
+  <div class="wd" id="wgrid"><label class="wc" for="w1"><b>1</b><input id="w1" type="text" aria-label="Word 1" autocapitalize="none" autocorrect="off" autocomplete="off" spellcheck="false" enterkeyhint="next"></label><label class="wc" for="w2"><b>2</b><input id="w2" type="text" aria-label="Word 2" autocapitalize="none" autocorrect="off" autocomplete="off" spellcheck="false" enterkeyhint="next"></label><label class="wc" for="w3"><b>3</b><input id="w3" type="text" aria-label="Word 3" autocapitalize="none" autocorrect="off" autocomplete="off" spellcheck="false" enterkeyhint="next"></label><label class="wc" for="w4"><b>4</b><input id="w4" type="text" aria-label="Word 4" autocapitalize="none" autocorrect="off" autocomplete="off" spellcheck="false" enterkeyhint="next"></label><label class="wc" for="w5"><b>5</b><input id="w5" type="text" aria-label="Word 5" autocapitalize="none" autocorrect="off" autocomplete="off" spellcheck="false" enterkeyhint="next"></label><label class="wc" for="w6"><b>6</b><input id="w6" type="text" aria-label="Word 6" autocapitalize="none" autocorrect="off" autocomplete="off" spellcheck="false" enterkeyhint="next"></label><label class="wc" for="w7"><b>7</b><input id="w7" type="text" aria-label="Word 7" autocapitalize="none" autocorrect="off" autocomplete="off" spellcheck="false" enterkeyhint="next"></label><label class="wc" for="w8"><b>8</b><input id="w8" type="text" aria-label="Word 8" autocapitalize="none" autocorrect="off" autocomplete="off" spellcheck="false" enterkeyhint="next"></label><label class="wc" for="w9"><b>9</b><input id="w9" type="text" aria-label="Word 9" autocapitalize="none" autocorrect="off" autocomplete="off" spellcheck="false" enterkeyhint="next"></label><label class="wc" for="w10"><b>10</b><input id="w10" type="text" aria-label="Word 10" autocapitalize="none" autocorrect="off" autocomplete="off" spellcheck="false" enterkeyhint="next"></label><label class="wc" for="w11"><b>11</b><input id="w11" type="text" aria-label="Word 11" autocapitalize="none" autocorrect="off" autocomplete="off" spellcheck="false" enterkeyhint="next"></label><label class="wc" for="w12"><b>12</b><input id="w12" type="text" aria-label="Word 12" autocapitalize="none" autocorrect="off" autocomplete="off" spellcheck="false" enterkeyhint="go"></label></div>
+  <textarea id="words" hidden tabindex="-1" aria-hidden="true" autocomplete="off" spellcheck="false"></textarea>
+  <div class="sugg" id="sugg" hidden><div class="sugg-h" id="sugg-h"></div><div class="sugg-c" id="sugg-c"></div></div>
+  <p class="note">Your words are used once, here in your browser, to make two things — the key that opens your kit and your public name — and are then erased from this page. What the page keeps cannot spend your coins.</p>
   <details><summary>Where the page looks</summary>
     <label for="dir">LIJOX directory</label><input id="dir" value="https://lij-worker.dp-a95.workers.dev/lsps">
     <label for="relays">Relays · one per line</label><textarea id="relays" rows="4">wss://relay.damus.io
@@ -65,9 +147,15 @@ wss://nostr.mom</textarea>
 https://blockstream.info/api
 https://mempool.emzy.de/api</textarea>
   </details>
-  <div><button class="primary" id="find">Find my kit</button> <button id="forget" style="display:none">Forget the keys</button> <span id="ident" class="dim mono"></span></div>
-  <div class="log" id="log"></div>
 </div>
+<div class="rf">
+  <button class="primary wide" id="find">Find my kit</button>
+  <div class="why2" id="why"></div>
+  <div class="idrow"><span id="ident" class="dim mono"></span><button class="rb-t" id="forget" style="display:none">Forget the keys</button></div>
+</div>
+<div class="rc logc"><div class="logh">What the page did</div><div class="log" id="log"></div></div>
+
+<div class="rc" id="prov" style="display:none"></div>
 
 <div id="alive" class="card warn" style="display:none">
   <h2>Your provider answered</h2>
@@ -77,6 +165,7 @@ https://mempool.emzy.de/api</textarea>
 
 <div id="copies" style="display:none"></div>
 <div id="kit" style="display:none"></div>
+<div class="rok" id="done" style="display:none">Every transaction in this kit has been accepted by a chain server. The coins reach addresses on your 12 words — any BIP84 wallet on them shows them once they confirm (a third-party wallet may need its address gap limit raised to 500).</div>
 
 <div class="card" id="about">
   <h2 style="margin-top:0">What a kit is</h2>
@@ -127,7 +216,7 @@ https://mempool.emzy.de/api</textarea>
 // ── constants of the standard ──────────────────────────────────────────────────────────────────
 const HKDF_SALT = 'lijox-black-start', HKDF_INFO = 'escape-kit-v1', AAD_PREFIX = 'lijox-kit-v1:';
 const NOSTR_KIND = 30078, NOSTR_D = 'lijox-kit-v1';
-const RECOVER_BUILD = 'v896';   // bumped by hand whenever this file changes; the releases row for that page build carries this file's SHA-256
+const RECOVER_BUILD = 'v903';   // bumped by hand whenever this file changes; the releases row for that page build carries this file's SHA-256
 const WORDS = "abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve acid acoustic acquire across act action actor actress actual adapt add addict address adjust admit adult advance advice aerobic affair afford afraid again age agent agree ahead aim air airport aisle alarm album alcohol alert alien all alley allow almost alone alpha already also alter always amateur amazing among amount amused analyst anchor ancient anger angle angry animal ankle announce annual another answer antenna antique anxiety any apart apology appear apple approve april arch arctic area arena argue arm armed armor army around arrange arrest arrive arrow art artefact artist artwork ask aspect assault asset assist assume asthma athlete atom attack attend attitude attract auction audit august aunt author auto autumn average avocado avoid awake aware away awesome awful awkward axis baby bachelor bacon badge bag balance balcony ball bamboo banana banner bar barely bargain barrel base basic basket battle beach bean beauty because become beef before begin behave behind believe below belt bench benefit best betray better between beyond bicycle bid bike bind biology bird birth bitter black blade blame blanket blast bleak bless blind blood blossom blouse blue blur blush board boat body boil bomb bone bonus book boost border boring borrow boss bottom bounce box boy bracket brain brand brass brave bread breeze brick bridge brief bright bring brisk broccoli broken bronze broom brother brown brush bubble buddy budget buffalo build bulb bulk bullet bundle bunker burden burger burst bus business busy butter buyer buzz cabbage cabin cable cactus cage cake call calm camera camp can canal cancel candy cannon canoe canvas canyon capable capital captain car carbon card cargo carpet carry cart case cash casino castle casual cat catalog catch category cattle caught cause caution cave ceiling celery cement census century cereal certain chair chalk champion change chaos chapter charge chase chat cheap check cheese chef cherry chest chicken chief child chimney choice choose chronic chuckle chunk churn cigar cinnamon circle citizen city civil claim clap clarify claw clay clean clerk clever click client cliff climb clinic clip clock clog close cloth cloud clown club clump cluster clutch coach coast coconut code coffee coil coin collect color column combine come comfort comic common company concert conduct confirm congress connect consider control convince cook cool copper copy coral core corn correct cost cotton couch country couple course cousin cover coyote crack cradle craft cram crane crash crater crawl crazy cream credit creek crew cricket crime crisp critic crop cross crouch crowd crucial cruel cruise crumble crunch crush cry crystal cube culture cup cupboard curious current curtain curve cushion custom cute cycle dad damage damp dance danger daring dash daughter dawn day deal debate debris decade december decide decline decorate decrease deer defense define defy degree delay deliver demand demise denial dentist deny depart depend deposit depth deputy derive describe desert design desk despair destroy detail detect develop device devote diagram dial diamond diary dice diesel diet differ digital dignity dilemma dinner dinosaur direct dirt disagree discover disease dish dismiss disorder display distance divert divide divorce dizzy doctor document dog doll dolphin domain donate donkey donor door dose double dove draft dragon drama drastic draw dream dress drift drill drink drip drive drop drum dry duck dumb dune during dust dutch duty dwarf dynamic eager eagle early earn earth easily east easy echo ecology economy edge edit educate effort egg eight either elbow elder electric elegant element elephant elevator elite else embark embody embrace emerge emotion employ empower empty enable enact end endless endorse enemy energy enforce engage engine enhance enjoy enlist enough enrich enroll ensure enter entire entry envelope episode equal equip era erase erode erosion error erupt escape essay essence estate eternal ethics evidence evil evoke evolve exact example excess exchange excite exclude excuse execute exercise exhaust exhibit exile exist exit exotic expand expect expire explain expose express extend extra eye eyebrow fabric face faculty fade faint faith fall false fame family famous fan fancy fantasy farm fashion fat fatal father fatigue fault favorite feature february federal fee feed feel female fence festival fetch fever few fiber fiction field figure file film filter final find fine finger finish fire firm first fiscal fish fit fitness fix flag flame flash flat flavor flee flight flip float flock floor flower fluid flush fly foam focus fog foil fold follow food foot force forest forget fork fortune forum forward fossil foster found fox fragile frame frequent fresh friend fringe frog front frost frown frozen fruit fuel fun funny furnace fury future gadget gain galaxy gallery game gap garage garbage garden garlic garment gas gasp gate gather gauge gaze general genius genre gentle genuine gesture ghost giant gift giggle ginger giraffe girl give glad glance glare glass glide glimpse globe gloom glory glove glow glue goat goddess gold good goose gorilla gospel gossip govern gown grab grace grain grant grape grass gravity great green grid grief grit grocery group grow grunt guard guess guide guilt guitar gun gym habit hair half hammer hamster hand happy harbor hard harsh harvest hat have hawk hazard head health heart heavy hedgehog height hello helmet help hen hero hidden high hill hint hip hire history hobby hockey hold hole holiday hollow home honey hood hope horn horror horse hospital host hotel hour hover hub huge human humble humor hundred hungry hunt hurdle hurry hurt husband hybrid ice icon idea identify idle ignore ill illegal illness image imitate immense immune impact impose improve impulse inch include income increase index indicate indoor industry infant inflict inform inhale inherit initial inject injury inmate inner innocent input inquiry insane insect inside inspire install intact interest into invest invite involve iron island isolate issue item ivory jacket jaguar jar jazz jealous jeans jelly jewel job join joke journey joy judge juice jump jungle junior junk just kangaroo keen keep ketchup key kick kid kidney kind kingdom kiss kit kitchen kite kitten kiwi knee knife knock know lab label labor ladder lady lake lamp language laptop large later latin laugh laundry lava law lawn lawsuit layer lazy leader leaf learn leave lecture left leg legal legend leisure lemon lend length lens leopard lesson letter level liar liberty library license life lift light like limb limit link lion liquid list little live lizard load loan lobster local lock logic lonely long loop lottery loud lounge love loyal lucky luggage lumber lunar lunch luxury lyrics machine mad magic magnet maid mail main major make mammal man manage mandate mango mansion manual maple marble march margin marine market marriage mask mass master match material math matrix matter maximum maze meadow mean measure meat mechanic medal media melody melt member memory mention menu mercy merge merit merry mesh message metal method middle midnight milk million mimic mind minimum minor minute miracle mirror misery miss mistake mix mixed mixture mobile model modify mom moment monitor monkey monster month moon moral more morning mosquito mother motion motor mountain mouse move movie much muffin mule multiply muscle museum mushroom music must mutual myself mystery myth naive name napkin narrow nasty nation nature near neck need negative neglect neither nephew nerve nest net network neutral never news next nice night noble noise nominee noodle normal north nose notable note nothing notice novel now nuclear number nurse nut oak obey object oblige obscure observe obtain obvious occur ocean october odor off offer office often oil okay old olive olympic omit once one onion online only open opera opinion oppose option orange orbit orchard order ordinary organ orient original orphan ostrich other outdoor outer output outside oval oven over own owner oxygen oyster ozone pact paddle page pair palace palm panda panel panic panther paper parade parent park parrot party pass patch path patient patrol pattern pause pave payment peace peanut pear peasant pelican pen penalty pencil people pepper perfect permit person pet phone photo phrase physical piano picnic picture piece pig pigeon pill pilot pink pioneer pipe pistol pitch pizza place planet plastic plate play please pledge pluck plug plunge poem poet point polar pole police pond pony pool popular portion position possible post potato pottery poverty powder power practice praise predict prefer prepare present pretty prevent price pride primary print priority prison private prize problem process produce profit program project promote proof property prosper protect proud provide public pudding pull pulp pulse pumpkin punch pupil puppy purchase purity purpose purse push put puzzle pyramid quality quantum quarter question quick quit quiz quote rabbit raccoon race rack radar radio rail rain raise rally ramp ranch random range rapid rare rate rather raven raw razor ready real reason rebel rebuild recall receive recipe record recycle reduce reflect reform refuse region regret regular reject relax release relief rely remain remember remind remove render renew rent reopen repair repeat replace report require rescue resemble resist resource response result retire retreat return reunion reveal review reward rhythm rib ribbon rice rich ride ridge rifle right rigid ring riot ripple risk ritual rival river road roast robot robust rocket romance roof rookie room rose rotate rough round route royal rubber rude rug rule run runway rural sad saddle sadness safe sail salad salmon salon salt salute same sample sand satisfy satoshi sauce sausage save say scale scan scare scatter scene scheme school science scissors scorpion scout scrap screen script scrub sea search season seat second secret section security seed seek segment select sell seminar senior sense sentence series service session settle setup seven shadow shaft shallow share shed shell sheriff shield shift shine ship shiver shock shoe shoot shop short shoulder shove shrimp shrug shuffle shy sibling sick side siege sight sign silent silk silly silver similar simple since sing siren sister situate six size skate sketch ski skill skin skirt skull slab slam sleep slender slice slide slight slim slogan slot slow slush small smart smile smoke smooth snack snake snap sniff snow soap soccer social sock soda soft solar soldier solid solution solve someone song soon sorry sort soul sound soup source south space spare spatial spawn speak special speed spell spend sphere spice spider spike spin spirit split spoil sponsor spoon sport spot spray spread spring spy square squeeze squirrel stable stadium staff stage stairs stamp stand start state stay steak steel stem step stereo stick still sting stock stomach stone stool story stove strategy street strike strong struggle student stuff stumble style subject submit subway success such sudden suffer sugar suggest suit summer sun sunny sunset super supply supreme sure surface surge surprise surround survey suspect sustain swallow swamp swap swarm swear sweet swift swim swing switch sword symbol symptom syrup system table tackle tag tail talent talk tank tape target task taste tattoo taxi teach team tell ten tenant tennis tent term test text thank that theme then theory there they thing this thought three thrive throw thumb thunder ticket tide tiger tilt timber time tiny tip tired tissue title toast tobacco today toddler toe together toilet token tomato tomorrow tone tongue tonight tool tooth top topic topple torch tornado tortoise toss total tourist toward tower town toy track trade traffic tragic train transfer trap trash travel tray treat tree trend trial tribe trick trigger trim trip trophy trouble truck true truly trumpet trust truth try tube tuition tumble tuna tunnel turkey turn turtle twelve twenty twice twin twist two type typical ugly umbrella unable unaware uncle uncover under undo unfair unfold unhappy uniform unique unit universe unknown unlock until unusual unveil update upgrade uphold upon upper upset urban urge usage use used useful useless usual utility vacant vacuum vague valid valley valve van vanish vapor various vast vault vehicle velvet vendor venture venue verb verify version very vessel veteran viable vibrant vicious victory video view village vintage violin virtual virus visa visit visual vital vivid vocal voice void volcano volume vote voyage wage wagon wait walk wall walnut want warfare warm warrior wash wasp waste water wave way wealth weapon wear weasel weather web wedding weekend weird welcome west wet whale what wheat wheel when where whip whisper wide width wife wild will win window wine wing wink winner winter wire wisdom wise wish witness wolf woman wonder wood wool word work world worry worth wrap wreck wrestle wrist write wrong yard year yellow you young youth zebra zero zone zoo".split(' ');
 const $ = (id) => document.getElementById(id);
 const log = (m, cls) => { const el = $('log'); const d = document.createElement('div'); if (cls) d.className = cls; d.textContent = m; el.appendChild(d); el.scrollTop = el.scrollHeight; };
@@ -230,6 +319,93 @@ async function txStatus(txid) { for (const s of servers()) { try { const st = aw
 // can spend. Forget drops the two.
 let KIT = null, KEYS = null, KEY = null;
 $('build').textContent = RECOVER_BUILD;
+// v903 (S53, the v2 look) — THE TWELVE BOXES feed the one field the flow reads (#words, hidden): the checks, the keys and the
+// erase below are unchanged. Typing a space or Enter moves on; a paste of all twelve (numbers and commas fine) fills the boxes
+// from the one it lands in; a word that is not on the list turns red (while typing, only once no list word starts with it);
+// the chips offer the list words that start with it, or the nearest ones.
+const WSET = new Set(WORDS);
+const cells = Array.from({ length: 12 }, (_, i) => $('w' + (i + 1)));
+let wActive = -1, wSeq = 0;
+const wNorm = (v) => String(v || '').toLowerCase().replace(/[^a-z]/g, '');
+function wSync() { $('words').value = cells.map((c) => wNorm(c.value)).filter(Boolean).join(' '); }
+function wBad(i) { const v = wNorm(cells[i].value); if (!v || WSET.has(v)) return false; return !(document.activeElement === cells[i] && WORDS.some((w) => w.startsWith(v))); }
+function wDist(a, b) {   // edits to turn a into b; two swapped neighbours count as one (chari → chair)
+  const m = a.length, n = b.length, d = Array.from({ length: m + 1 }, (_, i) => { const r = new Array(n + 1).fill(0); r[0] = i; return r; });
+  for (let j = 0; j <= n; j++) d[0][j] = j;
+  for (let i = 1; i <= m; i++) for (let j = 1; j <= n; j++) {
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+  }
+  return d[m][n];
+}
+const wPre = (a, b) => { let k = 0; while (k < a.length && k < b.length && a[k] === b[k]) k++; return k; };
+function wSuggest(v) { if (!v) return []; const pre = WORDS.filter((w) => w.startsWith(v)); if (pre.length) return pre.slice(0, 4); return WORDS.map((w) => [wDist(v, w), -wPre(v, w), Math.abs(w.length - v.length), w]).filter((x) => x[0] <= 2).sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]).slice(0, 3).map((x) => x[3]); }
+function wWhy(t, k) { const el = $('why'); el.textContent = t || ''; el.className = 'why2' + (k ? ' ' + k : ''); }
+function wPaint() {
+  wSync();
+  let firstBad = -1, filled = 0;
+  cells.forEach((c, i) => { const bad = wBad(i); c.parentElement.classList.toggle('bad', bad); c.parentElement.classList.toggle('on', document.activeElement === c); if (bad && firstBad < 0) firstBad = i; if (wNorm(c.value)) filled++; });
+  const av = wActive >= 0 ? wNorm(cells[wActive].value) : '';
+  const si = (av && !WSET.has(av)) ? wActive : firstBad;
+  const list = si >= 0 ? wSuggest(wNorm(cells[si].value)) : [];
+  const sg = $('sugg'), sc = $('sugg-c'); sc.innerHTML = '';
+  if (list.length) {
+    $('sugg-h').textContent = 'Word ' + (si + 1) + ' · did you mean';
+    for (const w of list) { const b = document.createElement('button'); b.type = 'button'; b.textContent = w; b.onpointerdown = (e) => e.preventDefault(); b.onclick = () => { cells[si].value = w; const nx = cells.findIndex((c, j) => j > si && !wNorm(c.value)); (nx >= 0 ? cells[nx] : cells[si]).focus(); wPaint(); }; sc.appendChild(b); }
+    sg.hidden = false;
+  } else sg.hidden = true;
+  const seq = ++wSeq;
+  if (firstBad >= 0) wWhy('Word ' + (firstBad + 1) + ' is not on the word list', 'bad');
+  else if (!filled) wWhy(KEY && KEYS ? 'Your keys are held — Find searches again without the words' : 'Type your words, or paste all 12 into the first box');
+  else if (filled < 12) wWhy((12 - filled) + ' word' + (12 - filled === 1 ? '' : 's') + ' to go');
+  else { wWhy(''); const idx = cells.map((c) => WORDS.indexOf(wNorm(c.value))); checksumOk(idx).then((ok) => { if (seq === wSeq) wWhy(ok ? 'The 12 words check out' : 'The words do not check out — a word is wrong or out of order', ok ? 'ok' : 'bad'); }).catch(() => {}); }
+}
+function wClear() { cells.forEach((c) => { c.value = ''; }); $('words').value = ''; wActive = -1; wPaint(); }
+cells.forEach((c, i) => {
+  c.addEventListener('input', () => {
+    const raw = String(c.value || '');
+    if (/\s|,/.test(raw)) {
+      const toks = raw.toLowerCase().split(/[\s,]+/).map(wNorm).filter(Boolean);
+      if (toks.length > 1) { toks.slice(0, 12 - i).forEach((t, k) => { cells[i + k].value = t; }); const last = Math.min(11, i + toks.length - 1); const nx = cells.findIndex((x, j) => j > last && !wNorm(x.value)); (nx >= 0 ? cells[nx] : cells[last]).focus(); }
+      else { c.value = toks[0] || ''; if (toks.length && i < 11) cells[i + 1].focus(); }
+    }
+    wPaint();
+  });
+  c.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); if (i < 11) cells[i + 1].focus(); else $('find').click(); }
+    else if (e.key === 'Backspace' && !c.value && i > 0) { e.preventDefault(); cells[i - 1].focus(); }
+  });
+  c.addEventListener('focus', () => { wActive = i; wPaint(); });
+  c.addEventListener('blur', () => { setTimeout(wPaint, 0); });
+});
+$('wclear').onclick = () => { wClear(); cells[0].focus(); };
+// THE FIVE STEPS — what has happened, not a wizard: Words until the keys exist; Provider until a kit is shown; Kit until a
+// close is accepted; Close until every close confirms; Collect until every collect (and silent-payment sweep) is accepted.
+const S = { keys: false, kit: false, nch: 0, nsp: 0, closesSent: new Set(), closesConf: new Set(), collectsSent: new Set(), spSent: new Set() };
+function stepNow() {
+  if (S.kit) {
+    if (!S.nch && !S.nsp) return 5;
+    if (S.nch) { if (!S.closesSent.size) return 2; if (S.closesConf.size < S.nch) return 3; if (S.collectsSent.size < S.nch) return 4; }
+    return (S.nsp && S.spSent.size < S.nsp) ? 4 : 5;
+  }
+  return S.keys ? 1 : 0;
+}
+function paintSteps() {
+  const n = stepNow();
+  document.querySelectorAll('#steps > div').forEach((d, i) => { d.className = i < n ? 'd' : (i === n ? 'c' : ''); });
+  $('done').style.display = (S.kit && n === 5 && (S.nch || S.nsp)) ? '' : 'none';
+}
+window.__lijStep = stepNow;   // the gate reads the step
+function chPill(i, t, k) { const el = $('cpill' + i); if (el) { el.textContent = t; el.className = 'rpill' + (k ? ' ' + k : ''); } }
+function chProg(i, f) { const el = $('cprog' + i); if (el) { el.hidden = false; el.firstChild.style.width = Math.round(Math.min(1, Math.max(0, f)) * 100) + '%'; } }
+const aboutH = (n) => { const m = n * 10; return m < 90 ? m + ' minutes' : Math.round(m / 60) + ' hours'; };
+const SERVER_SVG = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="7" rx="2"/><rect x="4" y="13" width="16" height="7" rx="2"/><path d="M8 7.5h.01M8 16.5h.01"/></svg>';
+function paintProv(lsp, pc) {
+  const el = $('prov'); let host = String(lsp.endpoint || ''); try { host = new URL(host).host; } catch (e) {}
+  el.innerHTML = '<div class="prow"><span class="pic">' + SERVER_SVG + '</span><div class="pn"><b>' + esc(host) + '</b><span>your provider</span></div><span class="rpill ' + (pc.alive ? 'ok' : 'bad') + '" id="provpill">' + (pc.alive ? 'Answered' : 'No answer') + '</span></div><div class="pw">' + esc(pc.why) + '</div>';
+  el.style.display = '';
+}
+wPaint(); paintSteps();
 // v824 (DP, S49): the canary — the latest result of the daily served-vs-listed check, read from GitHub's public Actions API.
 // Only when this page is served from the site: a copy opened from disk stays silent (nothing leaves a saved copy).
 (async function canary() {
@@ -251,12 +427,13 @@ $('build').textContent = RECOVER_BUILD;
     } else { el.className = 'bad'; el.textContent = 'Canary · the daily check FAILED ' + when(run.updated_at) + n + ': the served page did not match the public repository. Do not give this page your words.'; }
   } catch (e) { el.textContent = 'Canary · the daily check could not be read (no connection, or no check yet).'; }
 })();
-function forget() { KEY = null; KEYS = null; $('ident').textContent = ''; $('forget').style.display = 'none'; }
+function forget() { KEY = null; KEYS = null; $('ident').textContent = ''; $('forget').style.display = 'none'; S.keys = false; paintSteps(); wPaint(); }   // v903: the steps and the line under Find
 $('forget').onclick = () => { forget(); log('the keys are forgotten — enter the words again to search again'); };
 $('find').onclick = async () => {
   $('log').textContent = ''; $('alive').style.display = 'none'; $('kit').style.display = 'none'; $('kit').innerHTML = ''; $('copies').style.display = 'none'; $('copies').innerHTML = ''; $('find').disabled = true;
+  $('prov').style.display = 'none'; $('prov').innerHTML = ''; S.kit = false; paintSteps();   // v903
   try {
-    const typed = $('words').value.trim();
+    wSync(); const typed = $('words').value.trim();   // v903: the boxes, read once more
     if (typed) {
       const { ws, idx } = checkWords(typed);
       if (!(await checksumOk(idx))) throw new Error('the words do not check out — a word is wrong or out of order');
@@ -264,8 +441,8 @@ $('find').onclick = async () => {
       const d = await derive(seed);
       KEY = await kitKey(d.root);           // non-extractable; decrypt only
       d.root.fill(0); seed.fill(0); ws.length = 0; idx.length = 0;
-      KEYS = { pubkey: d.pubkey, npub: d.npub };
-      $('words').value = '';                // the words leave the page
+      KEYS = { pubkey: d.pubkey, npub: d.npub }; S.keys = true; paintSteps();
+      wClear();                             // the words leave the page (v903: the boxes and the field)
       $('forget').style.display = '';
       log('words used once and erased from this page; the kit key (not readable) and your public name are held until you close this tab or press Forget');
     } else if (!KEY || !KEYS) { throw new Error('enter your 12 words'); }
@@ -289,9 +466,9 @@ $('find').onclick = async () => {
     KIT = kit; log('kit opened — seq ' + from.seq + ' from ' + from.from + ' · made ' + new Date(Number(kit.made_at) || 0).toLocaleString() + ' · ' + (kit.channels || []).length + ' channel(s)', 'ok');
     // §7.3: the LSP first
     let alive = false;
-    if (kit.lsp && kit.lsp.endpoint) { const pc = await providerCheck(kit.lsp, KEYS.npub); alive = pc.alive; log('your provider ' + kit.lsp.endpoint + ': ' + (alive ? 'ANSWERED' : 'no answer') + ' \u2014 ' + pc.why, alive ? 'bad' : 'ok'); }   // v896: §7.3 — the adapter's own answer only
+    if (kit.lsp && kit.lsp.endpoint) { const pc = await providerCheck(kit.lsp, KEYS.npub); alive = pc.alive; paintProv(kit.lsp, pc); log('your provider ' + kit.lsp.endpoint + ': ' + (alive ? 'ANSWERED' : 'no answer') + ' \u2014 ' + pc.why, alive ? 'bad' : 'ok'); }   // v896: §7.3 — the adapter's own answer only
     if (alive) { $('alive').style.display = ''; $('override').onclick = () => { $('alive').style.display = 'none'; render(kit); }; } else render(kit);
-  } catch (e) { log(e.message, 'bad'); } finally { $('find').disabled = false; }
+  } catch (e) { log(e.message, 'bad'); wWhy(e.message, 'bad'); } finally { $('find').disabled = false; }
 };
 
 // every copy the search saw — where, how fresh, whether the words opened it, the raw envelope and the way to look at it yourself
@@ -318,21 +495,26 @@ function render(kit) {
   const chans = (kit.channels || []);
   const head = document.createElement('div'); head.className = 'card';
   const sps = (kit.silent_payments || []);   // v863 (engine v291): one pre-signed sweep per silent-payment coin
+  unwatchAll(); S.kit = true; S.nch = chans.length; S.nsp = sps.length; S.closesSent.clear(); S.closesConf.clear(); S.collectsSent.clear(); S.spSent.clear(); paintSteps();   // v903: the steps
   head.innerHTML = '<h2 style="margin-top:0">Your kit</h2>' + row('made', esc(new Date(Number(kit.made_at) || 0).toLocaleString())) + row('channels', chans.length) + row('silent-payment coins', sps.length) + row('funds land at', esc(kit.sweep_destination_address || '—'), true)
-    + '<p class="dim">The close pays the balances as they were when this kit was made. Funds reach the address above — any wallet on your 12 words shows them (BIP84; a third-party wallet may need its address gap limit raised to 500).</p>';
+    + '<p class="dim">The close pays the balances as they were when this kit was made. Funds reach the address above — any wallet on your 12 words shows them (BIP84; a third-party wallet may need its address gap limit raised to 500).</p>'
+    + (chans.length ? '<div class="rwarn">Used this wallet after ' + esc(new Date(Number(kit.made_at) || 0).toLocaleString()) + '? Then this kit is out of date — safe only while your provider stays gone.</div>' : '');   // v903 (Design v2)
   box.appendChild(head);
   if (!chans.length) { const d = document.createElement('div'); d.className = 'card'; d.innerHTML = '<p>This kit says the wallet had no open channels when it was last kept. There is nothing to close; your on-chain funds are on your words already' + (sps.length ? ' — except the silent-payment coins below, which need their sweeps.' : '.') + '</p>'; box.appendChild(d); }
   chans.forEach((c, i) => {
     const d = document.createElement('div'); d.className = 'card';
-    d.innerHTML = '<h2 style="margin-top:0">Channel ' + (i + 1) + (c.open === false ? ' <span class="dim">(the kit thought it closed)</span>' : '') + '</h2>'
+    // v903 (Design v2): the channel's own pill (Open → Close sent → Close seen → Closed → Collect ready → Collect sent) and the wait's bar
+    d.innerHTML = '<div class="chh"><b>Channel ' + (i + 1) + ' · ' + esc((Number(c.our_to_local_sats) || 0).toLocaleString()) + ' sats</b><span class="rpill" id="cpill' + i + '">' + (c.open === false ? 'Kit says closed' : 'Open') + '</span></div>'
+      + (c.open === false ? '<p class="dim" style="margin:0 0 4px">(the kit thought it closed)</p>' : '')
       + row('yours in it', esc((Number(c.our_to_local_sats) || 0).toLocaleString()) + ' sats') + row('wait after the close', esc(c.to_self_delay) + ' blocks') + row('close txid', esc(c.commitment_txid), true)
-      + '<p><button class="primary" data-close="' + i + '">1 · Broadcast the close</button> <span class="dim" id="cst' + i + '"></span></p><p class="dim" id="cwatch' + i + '"></p>'
-      + '<p><button data-sweep="' + i + '" data-fee="normal"' + (c.sweep_hex_normal ? '' : ' disabled') + '>2 · Broadcast the collect (normal fee)</button> <button data-sweep="' + i + '" data-fee="high"' + (c.sweep_hex_high ? '' : ' disabled') + '>2 · high fee</button> <span class="dim" id="sst' + i + '"></span></p>'
+      + '<button class="primary wide" data-close="' + i + '">1 · Broadcast the close</button><p class="dim st-line" id="cst' + i + '"></p>'
+      + '<div class="rprog" id="cprog' + i + '" hidden><i></i></div><p class="dim st-line" id="cwatch' + i + '"></p>'
+      + '<div class="btn2"><button data-sweep="' + i + '" data-fee="normal"' + (c.sweep_hex_normal ? '' : ' disabled') + '>2 · Broadcast the collect (normal fee)</button><button data-sweep="' + i + '" data-fee="high"' + (c.sweep_hex_high ? '' : ' disabled') + '>2 · high fee</button></div><p class="dim st-line" id="sst' + i + '"></p>'
       + '<details><summary>Raw transactions (broadcast anywhere)</summary><label>the close</label><div class="mono">' + esc(c.commitment_hex) + '</div>' + (c.htlc_tx_hexes && c.htlc_tx_hexes.length ? '<label>HTLC transactions</label><div class="mono">' + c.htlc_tx_hexes.map(esc).join('<br><br>') + '</div>' : '') + (c.sweep_hex_normal ? '<label>the collect · normal</label><div class="mono">' + esc(c.sweep_hex_normal) + '</div>' : '') + (c.sweep_hex_high ? '<label>the collect · high</label><div class="mono">' + esc(c.sweep_hex_high) + '</div>' : '') + '</details>';
     box.appendChild(d);
   });
-  box.querySelectorAll('[data-close]').forEach((b) => { b.onclick = async () => { const c = chans[Number(b.dataset.close)]; if (!confirm('Broadcast the close for channel ' + (Number(b.dataset.close) + 1) + '? This cannot be undone.')) return; b.disabled = true; const r = await broadcast(c.commitment_hex); const st = $('cst' + b.dataset.close); st.textContent = r.map((x) => (x.ok ? 'accepted' : 'refused') + ' by ' + x.s.replace(/^https:\/\//, '') + (x.ok ? '' : ' (' + x.t + ')')).join(' · '); b.disabled = !r.some((x) => x.ok); if (r.some((x) => x.ok)) pollNow(Number(b.dataset.close)); }; });
-  box.querySelectorAll('[data-sweep]').forEach((b) => { b.onclick = async () => { const c = chans[Number(b.dataset.sweep)]; const hx = b.dataset.fee === 'high' ? c.sweep_hex_high : c.sweep_hex_normal; b.disabled = true; const r = await broadcast(hx); $('sst' + b.dataset.sweep).textContent = r.map((x) => (x.ok ? 'accepted' : 'refused') + ' by ' + x.s.replace(/^https:\/\//, '') + (x.ok ? '' : ' (' + x.t + ')')).join(' · ') + (r.some((x) => x.ok) ? '' : ' — too early? the collect is valid only ' + c.to_self_delay + ' blocks after the close confirms'); b.disabled = false; }; });
+  box.querySelectorAll('[data-close]').forEach((b) => { b.onclick = async () => { const c = chans[Number(b.dataset.close)]; if (!confirm('Broadcast the close for channel ' + (Number(b.dataset.close) + 1) + '? This cannot be undone.')) return; b.disabled = true; const r = await broadcast(c.commitment_hex); const st = $('cst' + b.dataset.close); st.textContent = r.map((x) => (x.ok ? 'accepted' : 'refused') + ' by ' + x.s.replace(/^https:\/\//, '') + (x.ok ? '' : ' (' + x.t + ')')).join(' · '); b.disabled = !r.some((x) => x.ok); if (r.some((x) => x.ok)) { const ci = Number(b.dataset.close); S.closesSent.add(ci); chPill(ci, 'Close sent', 'a'); paintSteps(); pollNow(ci); } }; });
+  box.querySelectorAll('[data-sweep]').forEach((b) => { b.onclick = async () => { const c = chans[Number(b.dataset.sweep)]; const hx = b.dataset.fee === 'high' ? c.sweep_hex_high : c.sweep_hex_normal; b.disabled = true; const r = await broadcast(hx); $('sst' + b.dataset.sweep).textContent = r.map((x) => (x.ok ? 'accepted' : 'refused') + ' by ' + x.s.replace(/^https:\/\//, '') + (x.ok ? '' : ' (' + x.t + ')')).join(' · ') + (r.some((x) => x.ok) ? '' : ' — too early? the collect is valid only ' + c.to_self_delay + ' blocks after the close confirms'); if (r.some((x) => x.ok)) { const si = Number(b.dataset.sweep); S.collectsSent.add(si); chPill(si, 'Collect sent', 'ok'); paintSteps(); } b.disabled = false; }; });
   chans.forEach((c, i) => watch(i, c));
   // v863 — the silent-payment coins: each sweep moves one coin, alone, to one of the wallet's own BIP84 addresses;
   // "Sweep all" goes one at a time, 20 seconds apart (DP: stagger, never jam the queue).
@@ -351,6 +533,7 @@ function render(kit) {
       const r = await broadcast(hx);
       const st = $('spst' + i); if (st) st.textContent = r.map((x) => (x.ok ? 'accepted' : 'refused') + ' by ' + x.s.replace(/^https:\/\//, '') + (x.ok ? '' : ' (' + x.t + ')')).join(' · ');
       watchSp(i, fee === 'high' ? c.sweep_txid_high : c.sweep_txid_normal);
+      if (r.some((x) => x.ok)) { S.spSent.add(i); paintSteps(); }   // v903: the steps
       return r.some((x) => x.ok);
     };
     d.querySelectorAll('[data-spsweep]').forEach((b) => { b.onclick = async () => { b.disabled = true; await sendOne(Number(b.dataset.spsweep), b.dataset.fee); }; });
@@ -368,17 +551,27 @@ function render(kit) {
   }
 }
 const watchingSp = {};
-function watchSp(i, txid) {
-  if (!txid || watchingSp[i]) return;
-  const tick = async () => { try { const st = await txStatus(txid); const el = $('spwatch' + i); if (el) { if (st && st.seen) el.textContent = st.confirmed ? ('sweep confirmed · ' + st.confs + ' confirmation' + (st.confs === 1 ? '' : 's') + ' — the coin is on your BIP84 address') : 'sweep seen on the network, not yet confirmed'; else el.textContent = 'sweep not seen yet'; } } catch (e) {} watchingSp[i].t = setTimeout(tick, 30000); };
-  watchingSp[i] = { tick, t: null }; tick();
+function watchSp(i, txid) {   // v903: one watcher per coin, for the sweep last sent (a high-fee sweep after the normal one is watched too)
+  if (!txid || (watchingSp[i] && watchingSp[i].txid === txid)) return;
+  if (watchingSp[i]) clearTimeout(watchingSp[i].t);
+  const me = { tick: null, t: null, txid };
+  const tick = async () => { try { const st = await txStatus(txid); const el = $('spwatch' + i); if (el) { if (st && st.seen) el.textContent = st.confirmed ? ('sweep confirmed · ' + st.confs + ' confirmation' + (st.confs === 1 ? '' : 's') + ' — the coin is on your BIP84 address') : 'sweep seen on the network, not yet confirmed'; else el.textContent = 'sweep not seen yet'; } } catch (e) {} if (watchingSp[i] === me) me.t = setTimeout(tick, 30000); };
+  me.tick = tick; watchingSp[i] = me; tick();
 }
 const watching = {};
 function watch(i, c) {
   if (watching[i]) return;
-  const tick = async () => { try { const st = await txStatus(c.commitment_txid); const el = $('cwatch' + i); if (el) { if (st && st.seen) el.textContent = st.confirmed ? ('close confirmed · ' + st.confs + ' of ' + c.to_self_delay + ' blocks' + (st.confs >= Number(c.to_self_delay) ? ' — the collect can go now' : ' — then the collect')) : 'close seen on the network, not yet confirmed'; else if (st) el.textContent = 'close not seen on the network yet'; } } catch (e) {} watching[i].t = setTimeout(tick, 60000); };
-  watching[i] = { tick, t: null }; tick();
+  const me = { tick: null, t: null };   // v903: this kit's watcher (unwatchAll ends it)
+  // v903 (Design v2): the same reading, plus the wait's bar, the channel's pill and the steps (a close found on the chain
+  // counts as sent — the page opened again later picks up where it was)
+  const tick = async () => { try { const st = await txStatus(c.commitment_txid); const el = $('cwatch' + i); if (el) { if (st && st.seen) { const dl = Number(c.to_self_delay) || 0; S.closesSent.add(i);
+        const cb = document.querySelector('[data-close="' + i + '"]'); if (cb) cb.classList.remove('primary');   // the close is on the chain — the next press is the collect
+        if (st.confirmed) { const left = Math.max(0, dl - st.confs); const nb = document.querySelector('[data-sweep="' + i + '"][data-fee="normal"]'); if (nb) nb.classList.toggle('primary', st.confs >= dl && !S.collectsSent.has(i)); el.textContent = 'close confirmed · ' + st.confs + ' of ' + c.to_self_delay + ' blocks' + (st.confs >= dl ? ' — the collect can go now' : ' — then the collect, in ' + left + ' block' + (left === 1 ? '' : 's') + ', about ' + aboutH(left)); chProg(i, dl ? st.confs / dl : 1); S.closesConf.add(i); if (!S.collectsSent.has(i)) chPill(i, st.confs >= dl ? 'Collect ready' : 'Closed', 'ok'); }
+        else { el.textContent = 'close seen on the network, not yet confirmed'; if (!S.collectsSent.has(i)) chPill(i, 'Close seen', 'a'); }
+        paintSteps(); } else if (st) el.textContent = 'close not seen on the network yet'; } } catch (e) {} if (watching[i] === me) me.t = setTimeout(tick, 60000); };
+  me.tick = tick; watching[i] = me; tick();
 }
+function unwatchAll() { for (const k of Object.keys(watching)) { clearTimeout(watching[k].t); delete watching[k]; } for (const k of Object.keys(watchingSp)) { clearTimeout(watchingSp[k].t); delete watchingSp[k]; } }   // v903
 function pollNow(i) { const w = watching[i]; if (!w) return; if (w.t) clearTimeout(w.t); w.tick(); }
 window.__renderKit = render;   // v863: the gate paints a kit object (render holds no key; it only draws)
 })();
