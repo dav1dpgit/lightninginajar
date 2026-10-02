@@ -487,6 +487,9 @@ pub struct IndependentClient {
     /// node.rs installs the cold-start marker here so Ready can land on the
     /// first agreeing source (the v225 floor) instead of after the slowest.
     first_height_hook: Mutex<Option<Arc<dyn Fn(u32) + Send + Sync>>>,
+    /// v301 (S53, DP 2026-10-01 21:54): where the next receive-watch address check starts — the
+    /// checks take the explorers in turn, one at a time (fetch_address_utxos_watch).
+    next_watch: Mutex<usize>,
 }
 
 impl IndependentClient {
@@ -501,6 +504,7 @@ impl IndependentClient {
             last_quorum_state: Mutex::new(QuorumState::InsufficientEndpoints),
             last_consensus_height: Mutex::new(None),  // Step 3.6 (F5)
             first_height_hook: Mutex::new(None),      // v226
+            next_watch: Mutex::new(0),                // v301
         }
     }
 
@@ -1130,6 +1134,48 @@ impl IndependentClient {
         }
     }
 
+    /// v301 (S53, DP 2026-10-01 21:54 — "go for 1-4"; "sometimes the refused address check is only due to too
+    /// many requests, not necessarily an untrustworthy explorer"): the RECEIVE WATCH's address check. One
+    /// explorer per check, in turn (the next check starts at the next one); if it refuses or cannot be
+    /// reached, the next is asked, until one answers — its answer stands (an empty list included: the watch
+    /// asks again in a few seconds, at the next explorer). The check never touches an explorer's standing:
+    /// no failure is recorded (a refusal here is most often "too many requests", not a wrong answer) and no
+    /// success either — trust is the tip-height rounds' business alone. Until v301 the watch went through
+    /// fetch_address_utxos: all four explorers on every check, every refusal counted towards demotion, so a
+    /// page watching ten addresses every three seconds talked the quorum down to one source and the on-chain
+    /// face's Send / Receive greyed (DP 2026-10-01 19:42). fetch_address_utxos (all four, counted) is kept
+    /// for scans that must not trust one source.
+    pub async fn fetch_address_utxos_watch(&self, address: &str) -> LijResult<Vec<EsploraUtxo>> {
+        let urls = self.urls_to_ask();
+        if urls.is_empty() {
+            return Err(LijError::Lsp("address watch: no explorers configured".into()));
+        }
+        let start = {
+            let mut n = self.next_watch.lock().unwrap();
+            let s = *n % urls.len();
+            *n = n.wrapping_add(1);
+            s
+        };
+        let http = self.http.lock().unwrap().clone();
+        let mut last_err = String::new();
+        for k in 0..urls.len() {
+            let url = &urls[(start + k) % urls.len()];
+            let full = format!("{url}/address/{address}/utxo");
+            match http.get(&full).await {
+                Ok(resp) if resp.status == 404 => return Ok(Vec::new()),   // a never-used address on some explorers
+                Ok(resp) if resp.status == 200 => {
+                    match serde_json::from_str::<Vec<EsploraUtxoRaw>>(&resp.body) {
+                        Ok(utxos) => return Ok(utxos.into_iter().map(EsploraUtxo::from).collect()),
+                        Err(e) => last_err = format!("{url}: address utxo parse: {e}"),
+                    }
+                }
+                Ok(resp) => last_err = format!("{url}: address utxo status {}", resp.status),
+                Err(e) => last_err = format!("{url}: {e}"),
+            }
+        }
+        Err(LijError::Lsp(format!("address watch: no explorer answered ({last_err})")))
+    }
+
     /// Fetch median fee schedule from the quorum.
     /// Tolerance window applies between cooperative and this median (in fee_estimator.rs).
     /// Within this method we also internally tolerance-check across endpoints.
@@ -1401,6 +1447,62 @@ mod tests {
             "https://c.example/api".to_string(),
             "https://d.example/api".to_string(),
         ]
+    }
+
+    // v301: the receive watch — one explorer per check, in turn; a refusal moves on and touches nobody's standing
+    #[tokio::test]
+    async fn v301_watch_asks_one_explorer_and_takes_turns() {
+        let mock = Arc::new(MockHttp::new());
+        for ep in ["a.example", "b.example", "c.example", "d.example"] {
+            mock.add_response(ep, ok_body("[]"));
+            mock.add_response(ep, ok_body("[]"));
+        }
+        let client = IndependentClient::new(mock.clone(), four_endpoints());
+        for _ in 0..4 { client.fetch_address_utxos_watch("bc1qx").await.unwrap(); }
+        assert_eq!(mock.get_calls.load(Ordering::SeqCst), 4, "four checks = four requests (was sixteen)");
+        // each explorer was asked exactly once: one canned answer left at every one of them
+        for ep in ["a.example", "b.example", "c.example", "d.example"] {
+            assert!(mock.pop_response(&format!("https://{ep}/api/x")).is_some(), "{ep} asked once");
+            assert!(mock.pop_response(&format!("https://{ep}/api/x")).is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn v301_watch_refusal_moves_on_and_demotes_no_one() {
+        let mock = Arc::new(MockHttp::new());
+        for ep in ["a.example", "b.example", "c.example", "d.example"] { mock.add_response(ep, ok_body("880247")); }   // a tip round first: all four probed and healthy
+        for _ in 0..5 {
+            mock.add_response("a.example", Ok(HttpResponse { status: 429, body: "Too Many Requests".into() }));
+        }
+        let utxo = r#"[{"txid":"aa00000000000000000000000000000000000000000000000000000000000000","vout":1,"value":5000,"status":{"confirmed":false}}]"#;
+        for _ in 0..5 { mock.add_response("b.example", ok_body(utxo)); }
+        let client = IndependentClient::new(mock.clone(), four_endpoints());
+        client.fetch_tip_height().await.unwrap();
+        let before = client.healthy_count();
+        assert_eq!(before, 4);
+        // checks that start at a.example: refused there, answered by b.example
+        let mut found = 0;
+        for _ in 0..8 {
+            if let Ok(u) = client.fetch_address_utxos_watch("bc1qx").await { if !u.is_empty() { found += 1; } }
+        }
+        assert!(found >= 1, "the sighting comes from the next explorer");
+        assert_eq!(client.healthy_count(), before, "a refused address check demotes no one");
+        assert!(client.endpoint_status().iter().all(|(_, healthy, fails, _)| *healthy && *fails == 0), "no failure recorded anywhere");
+        assert_eq!(client.last_quorum_state(), QuorumState::Healthy);
+    }
+
+    #[tokio::test]
+    async fn v301_watch_all_refuse_is_an_error_and_still_no_demotion() {
+        let mock = Arc::new(MockHttp::new());
+        for ep in ["a.example", "b.example", "c.example", "d.example"] {
+            mock.add_response(ep, ok_body("880247"));   // the tip round
+            for _ in 0..4 { mock.add_response(ep, Ok(HttpResponse { status: 429, body: String::new() })); }
+        }
+        let client = IndependentClient::new(mock.clone(), four_endpoints());
+        client.fetch_tip_height().await.unwrap();
+        for _ in 0..3 { assert!(client.fetch_address_utxos_watch("bc1qx").await.is_err()); }
+        assert_eq!(client.healthy_count(), 4, "twelve refusals, no one demoted");
+        assert_eq!(client.last_quorum_state(), QuorumState::Healthy);
     }
 
     #[tokio::test]
