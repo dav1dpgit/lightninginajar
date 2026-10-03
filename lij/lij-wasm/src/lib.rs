@@ -96,7 +96,11 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v301".to_string()  // v301 (S53, DP 2026-10-01 21:54 "go for 1-4"): the receive watch's address check (watch_address_inbound) asks ONE explorer per check, in turn, moving to the next only when one refuses or cannot be reached, and never touches an explorer's standing — a refused address check is most often "too many requests", not a wrong answer; trust stays with the tip-height rounds. Before: all four explorers on every check, every refusal counted towards demotion — ten watched addresses every 3 s talked the quorum down to one source and greyed the on-chain face's Send / Receive. fetch_address_utxos (all four, counted) unchanged. Tests: v301_watch_asks_one_explorer_and_takes_turns, v301_watch_refusal_moves_on_and_demotes_no_one, v301_watch_all_refuse_is_an_error_and_still_no_demotion.
+    "phase11-v305".to_string()  // v305 (S54, DP 2026-10-02 13:50 "Go ahead" — SEVERAL RECIPIENTS IN ONE SEND): one builder for every on-chain send (onchain_send::build_send_tx — plan_send → the outputs → the one signer; build_and_send / _all / _pinned are its one-recipient case, unchanged in what they do): up to 20 recipients (MAX_RECIPIENTS), each an address or an sp1 with an amount, or — the LAST only — no amount = everything left after the others and the fee (DP's Max rule); the recipients in order at vout 0 …, the change after them; DP's coin pick for the total (+ the fee for n + 1 outputs) or exactly the chosen coins; a recipient below the 294-sat output minimum refused when there are several. Silent payments: silent_payment::derive_output_scripts — one group per scan key, k = 0, 1 … in recipient order (two payments to one wallet, or to two of its labels, are two outputs it finds with one scan); the input arithmetic once. PendingTx.dests (every recipient, in order) → the RBF bump rebuilds every output from the same inputs (same k, same scripts); change at vout n. wasm: send_onchain_multi(req), onchain_multi_quote(req) (the builder's own plan: the amounts — the Max on the last —, the fee, the change, the coins, or the refusal in plain words). Gate: the BIP's SENDING vectors with several recipients (same recipient twice, several wallets, a plain + a labelled address, the change label) + v305_* (exact amounts and change last, the silent payment found by its receiver, k0/k1 to one wallet, Max on the last with no change and with chosen coins, the refusals, one recipient unchanged, the bump's re-derivation). 325 green.
+    // "phase11-v304".to_string()  // v304 (S54, DP 2026-10-02 13:50 "Go ahead" — SILENT-PAYMENT LABELS): a label m (1..=10, SP_LABEL_MAX) is the BIP-352 labelled address B_m = B_spend + hash("BIP0352/Label", b_scan ‖ m)·G with the same scan key (SpKeys::label_tweak / label_address; m = 0, the change label, is never handed out). The scan checks the change label, every label made or found, and — after a restore from the words with no backup behind it (wallet.rs sets CoinMarks.sp_labels_unknown) — all ten: one more candidate per tweak per label at the filter stage. A coin found under a label carries it (OnchainUtxo.sp_label; its stored t already includes the label, so the spend, the RBF bump and the Black start kit sweep are unchanged); the derived history row lists the labels paid (sp_labels); a number found with no entry is kept nameless ("Label m"). The names, hidden flags and the unknown flag live in the marks record (sealed, rides the backup blob and survives a rescan); the Black start kit carries number + name (silent_payment_labels). FIXED: the change label was added to the even-y point of x(P_k) — wrong for half of all tweaks; a label is now added to the full point (the BIP's "label with odd parity"). wasm: sp_labels(), sp_label_create(name), sp_label_update({m,name?,hidden?}). Gate: the BIP's RECEIVING vectors (testdata/bip352_receive_vectors.json, 28 cases bar K_max: labels even/odd parity, a large label number, several outputs to a labelled address, the change label) + v304_* tests.
+    // "phase11-v303".to_string()  // v303 (S54, DP 2026-10-02 10:11 "Fix all of these … Go."): bolt11_facts(bolt11) — a BOLT11 invoice's payee (the n field, else recovered from the signature), amount, payment hash, network and expiry, signature-checked by lightning-invoice (lij_core::invoice_facts); the page checks the chit's funding invoice with it before paying (amount = the chit's, payee = the provider). A free function: no wallet state, no lock. Tests v303_reads_payee_amount_hash_and_expiry, v303_amountless_and_refusals.
+    // "phase11-v302".to_string()  // v302 (S54, DP 2026-10-01 22:34 "wire it in so it is robust and any fail has fallbacks" + 22:47 "Correct and agreed" to the "Only my server" switch): THE ADDRESS WATCHER IS WIRED. Until v302 the row saved a server the receive watch never read (since v118, 2026-06-13). watch_address_inbound(address, own_base, own_only) → IndependentClient::fetch_address_utxos_watch_via: the user's own Esplora first (cleaned by the filter-base rule: https, a host, optional port and path); if it does not answer (refusal, 404, unreadable, unreachable) the same check asks the public explorers in turn, and the own server rests 60 s (OWN_WATCH_REST_MS) so a dead server cannot cost every check its timeout; an answer ends the rest; a newly saved server is asked at once. own_only = no fallback (the check is an error, no explorer asked). A 404 is now "did not answer" everywhere in the watch (Blockstream and btcscan.org answer an unused address 200 [] — read 2026-10-01; the project's block-filter server answers the path 404 because it has no address route, and the old rule read that as "nothing paid"). watch_report() = how the last check went (answered_by own|public|"", own_error, own_resting); check_watch_server(base) = the row's Save check (/blocks/tip/height is a height, /address/<a never-funded probe>/utxo answers a list). Old pages call with one argument → no own server, as before. Tests v302_* (10).
+    // "phase11-v301".to_string()  // v301 (S53, DP 2026-10-01 21:54 "go for 1-4"): the receive watch's address check (watch_address_inbound) asks ONE explorer per check, in turn, moving to the next only when one refuses or cannot be reached, and never touches an explorer's standing — a refused address check is most often "too many requests", not a wrong answer; trust stays with the tip-height rounds. Before: all four explorers on every check, every refusal counted towards demotion — ten watched addresses every 3 s talked the quorum down to one source and greyed the on-chain face's Send / Receive. fetch_address_utxos (all four, counted) unchanged. Tests: v301_watch_asks_one_explorer_and_takes_turns, v301_watch_refusal_moves_on_and_demotes_no_one, v301_watch_all_refuse_is_an_error_and_still_no_demotion.
     // "phase11-v300".to_string()  // v300 (S52, DP 00:23 "not a hard cap, unless it is super high and never will be hit unless there is something malicious" + 00:25 "if a wallet approaches 1000 transactions, some notification … delete old data or expand the size"): the kept transactions are stored COMPACTLY — the transaction without its signatures (the witness; the txid does not cover it, the check holds) plus its full weight (the fee rate stays exact), binary (LTX2), ~0.12 KB for an ordinary transaction (v298/v299: ~0.6 KB as hex in JSON; their store is read and rewritten). v299's 96 KB budget is gone: the ceiling is 1,000 transactions by default (~125 KB, ~0.5 MB of the browser's 5 MB on Safari) — a normal wallet never reaches it, spam could — with 256 KB per 1,000 as the size backstop and 16 KB per transaction. The user's ceiling (CoinMarks.tx_keep_cap; steps 1,000 / 2,000 / 4,000; rides the backup) and the page's notice at 90 %: tx_keep_status (count, cap, near, bytes, oldest_height, steps), tx_keep_set_cap, tx_keep_drop_before (the ledger untouched). drill_tx takes the kept weight. Tests: kept_compactly_checked_by_txid_weight_exact_heights_filled, v300_a_normal_wallet_never_reaches_the_ceiling_spam_does, v300_the_wallet_is_told_near_the_ceiling_and_can_expand_or_drop_old, v300_the_v298_json_store_is_read_and_kept_compactly. 296 green.
     // "phase11-v299".to_string()  // v299 (S52, DP 2026-10-01 00:21 "make sure the additional block data kept doesn't fill up the memory space"): the kept-transaction store (tier2_txs) is held to TX_STORE_BUDGET_BYTES = 96 KB of JSON (~190 K characters in localStorage — hex of the encrypted bytes — about 160 ordinary transactions); v298 capped only the count (5,000 ≈ 3 MB of JSON ≈ 6 M characters, past the 5 MB a site gets on Safari, beside the channel state). A transaction larger than TX_MAX_HEX (4 KB) is not kept; past the budget the lowest heights go first, never the entries being added; a write that fails deletes the store outright. Whatever is dropped reads its block again when tapped. Tests v299_the_store_never_grows_past_its_budget, v299_a_write_that_fails_removes_the_store. 294 green.
     // "phase11-v298".to_string()  // v298 (S52, DP 23:43 "Go on #2 and #3" — THE DRILL-DOWN FROM THE WALLET'S OWN DATA; THE sp1 OF A SEND): lij_core::tx_store — every own transaction (it creates a coin of ours, spends one, or is a spend the newest-first walk met first) is kept whole from the block the walk or the scan already downloads (capture_own_txs in fetch_and_apply and scan_batch; Tier2View.fresh_txs, never persisted with the view — save_view hands them to the store under tier2_txs, encrypted at rest; 5,000 kept, lowest heights dropped first); a send is kept at broadcast (SendResult.raw_hex, never sent to the page; the bump too). tx_details(txid, filter_base) asks NO explorer (until v298 every tap sent the txid to four): the kept transaction (checked against its txid), else for a ledger row from before v298 its block read once more from the wallet's block-filter server (reread_own_tx: the header's work checked, the block bound to it, every own transaction in it kept), else a pending transaction's bytes or a pending send's record; a transaction the ledger does not hold is looked up nowhere. drill_tx builds the details from the bytes and the ledger (an input's value from the ledger coin or the kept parent; someone else's input → no fee). #3: CoinMarks.sp_sends (txid → the sp1 a send was typed to; the marks ride the backup blob) → tx_details.sp_address. Tests: kept_whole_checked_by_txid_heights_filled_capped, v298_capture_keeps_only_the_wallets_own_transactions, v298_the_drill_down_reads_the_wallets_own_data. 292 green.
@@ -178,6 +182,14 @@ pub fn set_offline_start(v: bool) {
     OFFLINE_START.store(v, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// v303 (S54, DP): what a BOLT11 invoice says, read and signature-checked — {"payee","amount_msat"|null,"payment_hash",
+/// "network","expires_at"}; an error names why it does not decode. The page checks an invoice with it before paying.
+#[wasm_bindgen]
+pub fn bolt11_facts(bolt11: &str) -> Result<String, JsValue> {
+    let f = lij_core::invoice_facts::invoice_facts(bolt11).map_err(|e| JsValue::from_str(&e))?;
+    serde_json::to_string(&f).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
 /// v208: broadcast routing — true routes each tx to one endpoint at a time
 /// (rotating, stop at first acceptance); false fans to all healthy endpoints.
 #[wasm_bindgen]
@@ -189,6 +201,8 @@ pub fn set_broadcast_one(v: bool) {
 /// backup client at every entry — nothing leaves the device — independent of
 /// offline_start. Mirrors the OFFLINE_START pattern.
 pub static BACKUP_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// v302 (S54): the last receive-watch check's report (watch_report) — kept outside the wallet lock.
+static WATCH_REPORT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 /// v256 (S46, DP: "Encrypt it"): the tier-2 ledger and the pending list live encrypted
 /// at rest under the wallet's persistence key — the same key the channel blobs use.
 fn t2_storage(root_key: &lij_core::key::RootKey) -> Arc<dyn lij_core::storage::LijStorage> {
@@ -1241,6 +1255,7 @@ impl LijWalletHandle {
                         dest_sats: Some(amount),
                         fee_sats: Some(result.fee_sats),
                         fee_rate_sat_per_kw: Some(fee_rate_sat_per_kw),
+                        dests: Vec::new(),
                     },
                 ) {
                     log::error!("record pending on-chain send failed: {e}");
@@ -1314,6 +1329,7 @@ impl LijWalletHandle {
                         dest_sats: Some(result.amount_sats),
                         fee_sats: Some(result.fee_sats),
                         fee_rate_sat_per_kw: Some(fee_rate_sat_per_kw),
+                        dests: Vec::new(),
                     },
                 ) {
                     log::error!("record pending on-chain send-all failed: {e}");
@@ -1390,6 +1406,7 @@ impl LijWalletHandle {
                         dest_sats: Some(result.amount_sats),
                         fee_sats: Some(result.fee_sats),
                         fee_rate_sat_per_kw: Some(r.fee_rate_sat_per_kw),
+                        dests: Vec::new(),
                     },
                 ) {
                     log::error!("record pending on-chain chosen-coin send failed: {e}");
@@ -1401,6 +1418,113 @@ impl LijWalletHandle {
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
             Ok(JsValue::from_str(&json))
         })
+    }
+
+    /// v305 (S54, DP 2026-10-02 13:50 "Go ahead" — SEVERAL RECIPIENTS IN ONE SEND): `req` is JSON {"recipients":
+    /// [{"dest","amount_sats"?}], "fee_rate_sat_per_kw", "inputs"?: [{"txid","vout"}]} — a missing amount on the LAST
+    /// recipient = everything left after the others and the fee (Max); chosen coins = exactly those. One transaction:
+    /// the recipients in order (vout 0 …), then the change. Returns SendResult JSON with "recipients" [{dest,
+    /// amount_sats}]. The pending record carries every recipient so a fee bump rebuilds them all.
+    #[wasm_bindgen]
+    pub fn send_onchain_multi(&self, req: &str) -> js_sys::Promise {
+        let inner = self.inner.clone();
+        let req = req.to_string();
+        future_to_promise(async move {
+            #[derive(serde::Deserialize)]
+            struct Pin { txid: String, vout: u32 }
+            #[derive(serde::Deserialize)]
+            struct R { dest: String, #[serde(default)] amount_sats: Option<f64> }
+            #[derive(serde::Deserialize)]
+            struct Req { recipients: Vec<R>, fee_rate_sat_per_kw: u32, #[serde(default)] inputs: Option<Vec<Pin>> }
+            let r: Req = serde_json::from_str(&req).map_err(|e| JsValue::from_str(&format!("send_onchain_multi: bad request: {e}")))?;
+            let mut recipients = Vec::with_capacity(r.recipients.len());
+            for (i, x) in r.recipients.iter().enumerate() {
+                let amount = match x.amount_sats {
+                    None => None,
+                    Some(a) if a.is_finite() && a >= 1.0 && a.fract() == 0.0 => Some(a as u64),
+                    Some(_) => return Err(JsValue::from_str(&format!("recipient {}: the amount must be a positive whole number of sats", i + 1))),
+                };
+                recipients.push(lij_core::onchain_send::Recipient { dest: x.dest.trim().to_string(), amount_sats: amount });
+            }
+            let pins: Option<Vec<(String, u32)>> = r.inputs.map(|v| v.into_iter().map(|p| (p.txid.to_ascii_lowercase(), p.vout)).collect());
+            if matches!(pins.as_ref(), Some(p) if p.is_empty()) {
+                return Err(JsValue::from_str("send_onchain_multi: no coins chosen"));
+            }
+            let (root_key, independent, network) = {
+                let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                wallet.onchain_handles()
+            };
+            let (view, pending, marks) = {
+                let storage = t2_storage(&root_key);
+                let view = lij_core::tier2_wallet::load_view(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+                let pending = lij_core::tier2_wallet::load_pending(storage.as_ref());
+                let marks = lij_core::tier2_wallet::load_marks(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+                (view, pending, marks)
+            };
+            let change_index = lij_core::tier2_wallet::next_change_index(&view, &pending);
+            let result = lij_core::onchain_send::build_and_send_multi(&root_key, independent, network, &recipients, r.fee_rate_sat_per_kw, change_index, &view, &pending, &marks, pins.as_deref())
+                .await
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            {
+                let storage: Arc<dyn lij_core::storage::LijStorage> = t2_storage(&root_key);
+                let first = result.recipients.first().cloned();
+                if let Err(e) = lij_core::tier2_wallet::record_pending(
+                    storage.as_ref(),
+                    lij_core::tier2_wallet::PendingTx {
+                        txid: result.txid.clone(),
+                        spent_outpoints: result.spent_outpoints.clone(),
+                        delta_sats: -((result.amount_sats as i64) + (result.fee_sats as i64)),
+                        direction: lij_core::tier2_wallet::TxDirection::Sent,
+                        kind: lij_core::tier2_wallet::TxKind::Onchain,
+                        created_at_ms: lij_core::tier2_wallet::now_ms(),
+                        change_outpoint: result.change_outpoint.clone(),
+                        change_value_sats: result.change_sats,
+                        change_index: result.change_index,
+                        broadcast_seen: false,
+                        raw_tx_hex: None,
+                        dest_addr: first.as_ref().map(|f| f.dest.clone()),
+                        dest_sats: first.as_ref().map(|f| f.amount_sats),
+                        fee_sats: Some(result.fee_sats),
+                        fee_rate_sat_per_kw: Some(r.fee_rate_sat_per_kw),
+                        dests: if result.recipients.len() > 1 { result.recipients.iter().map(|p| (p.dest.clone(), p.amount_sats)).collect() } else { Vec::new() },
+                    },
+                ) {
+                    log::error!("record pending on-chain send to several failed: {e}");
+                }
+                // v298: kept whole; the first sp1 recipient (if any) noted for the drill-down
+                let sp1 = result.recipients.iter().map(|p| p.dest.clone()).find(|d| { let l = d.to_ascii_lowercase(); l.starts_with("sp1") || l.starts_with("tsp1") });
+                t2_note_send(storage.as_ref(), &result.txid, &result.raw_hex, sp1.as_deref());
+            }
+            let json = result.to_json().map_err(|e| JsValue::from_str(&e.to_string()))?;
+            Ok(JsValue::from_str(&json))
+        })
+    }
+
+    /// v305: the quote for send_onchain_multi — the SAME plan the builder makes (no keys, no network): {"amounts" (the
+    /// last = its Max when its amount is missing), "total_sats", "fee_sats", "change_sats", "inputs", "spend",
+    /// "sat_per_vb", "problem" (the builder's refusal in plain words, else null)}. `req` as send_onchain_multi's.
+    #[wasm_bindgen]
+    pub fn onchain_multi_quote(&self, req: &str) -> Result<String, JsValue> {
+        #[derive(serde::Deserialize)]
+        struct Pin { txid: String, vout: u32 }
+        #[derive(serde::Deserialize)]
+        struct R { dest: String, #[serde(default)] amount_sats: Option<f64> }
+        #[derive(serde::Deserialize)]
+        struct Req { recipients: Vec<R>, fee_rate_sat_per_kw: u32, #[serde(default)] inputs: Option<Vec<Pin>> }
+        let r: Req = serde_json::from_str(req).map_err(|e| JsValue::from_str(&format!("onchain_multi_quote: bad request: {e}")))?;
+        let recipients: Vec<lij_core::onchain_send::Recipient> = r.recipients.iter().map(|x| lij_core::onchain_send::Recipient {
+            dest: x.dest.trim().to_string(),
+            amount_sats: x.amount_sats.filter(|a| a.is_finite() && *a >= 0.0).map(|a| a as u64),
+        }).collect();
+        let pins: Option<Vec<(String, u32)>> = r.inputs.map(|v| v.into_iter().map(|p| (p.txid.to_ascii_lowercase(), p.vout)).collect());
+        let (root_key, _independent, network) = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?.onchain_handles();
+        let storage = t2_storage(&root_key);
+        let view = lij_core::tier2_wallet::load_view(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let pending = lij_core::tier2_wallet::load_pending(storage.as_ref());
+        let marks = lij_core::tier2_wallet::load_marks(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        lij_core::onchain_send::multi_quote(&recipients, network, r.fee_rate_sat_per_kw, &view, &pending, &marks, pins.as_deref())
+            .to_json()
+            .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// v282 (S50, coin control cut 3): the picker's quote. `req` is JSON {"dest", "fee_rate_sat_per_kw",
@@ -1527,6 +1651,67 @@ impl LijWalletHandle {
             "spend_pub": hex::encode(keys.spend_pub.serialize()),
         });
         Ok(out.to_string())
+    }
+
+    /// v304 (S54, DP 2026-10-02 13:50 "Go ahead"): the silent-payment labels — number, name, hidden, the label's own
+    /// sp1 address, and what it has received (coins paid to it, spent or not). JSON {"labels":[{m,name,hidden,
+    /// created_ms,address,payments,received_sats}],"max":10,"used":n,"unknown":bool} — `unknown` = a words-only
+    /// restore checking all ten; a nameless label (found after that restore) shows as "Label m".
+    #[wasm_bindgen]
+    pub fn sp_labels(&self) -> Result<String, JsValue> {
+        let (root_key, _i, _n) = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?.onchain_handles();
+        let storage = t2_storage(&root_key);
+        let marks = lij_core::tier2_wallet::load_marks(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let view = lij_core::tier2_wallet::load_view(storage.as_ref()).unwrap_or_default();
+        let keys = lij_core::silent_payment::SpKeys::from_root(&root_key).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let labels: Vec<serde_json::Value> = marks.sp_labels.iter().map(|l| {
+            let paid: Vec<&lij_core::tier2_wallet::OnchainUtxo> = view.utxos.iter().filter(|u| u.sp_label == Some(l.m)).collect();
+            serde_json::json!({
+                "m": l.m, "name": l.name, "hidden": l.hidden, "created_ms": l.created_ms,
+                "address": keys.label_address(&secp, l.m).unwrap_or_default(),
+                "payments": paid.len(),
+                "received_sats": paid.iter().map(|u| u.value_sats).sum::<u64>(),
+            })
+        }).collect();
+        let main: Vec<&lij_core::tier2_wallet::OnchainUtxo> = view.utxos.iter().filter(|u| u.chain == lij_core::tier2::CHAIN_SP && u.sp_label.is_none()).collect();
+        Ok(serde_json::json!({
+            "labels": labels,
+            "max": lij_core::silent_payment::SP_LABEL_MAX,
+            "used": marks.sp_labels.len(),
+            "unknown": marks.sp_labels_unknown,
+            "main": { "address": keys.address(), "payments": main.len(), "received_sats": main.iter().map(|u| u.value_sats).sum::<u64>() },
+        }).to_string())
+    }
+
+    /// v304: make a label — the next number (never reused), a cleaned name (40 code points at most), ten at most.
+    /// Answers {"m","name","address"}. Saved in the marks (they ride the backup); the scan checks it from the next sync.
+    #[wasm_bindgen]
+    pub fn sp_label_create(&self, name: &str) -> Result<String, JsValue> {
+        let (root_key, _i, _n) = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?.onchain_handles();
+        let storage = t2_storage(&root_key);
+        let mut marks = lij_core::tier2_wallet::load_marks(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let m = marks.sp_label_create(name, lij_core::tier2_wallet::now_ms()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        lij_core::tier2_wallet::save_marks(storage.as_ref(), &marks).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let keys = lij_core::silent_payment::SpKeys::from_root(&root_key).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let address = keys.label_address(&bitcoin::secp256k1::Secp256k1::new(), m).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        log::info!("[sp] label {m} made");
+        Ok(serde_json::json!({ "m": m, "name": marks.sp_label(m).map(|l| l.name.clone()).unwrap_or_default(), "address": address }).to_string())
+    }
+
+    /// v304: rename and/or hide a label — `req` JSON {"m", "name"?, "hidden"?}. No delete (a label handed out can still be
+    /// paid; a hidden one is still checked and its payments still tagged). Answers {"m","name","hidden"}.
+    #[wasm_bindgen]
+    pub fn sp_label_update(&self, req: &str) -> Result<String, JsValue> {
+        #[derive(serde::Deserialize)]
+        struct Req { m: u32, name: Option<String>, hidden: Option<bool> }
+        let r: Req = serde_json::from_str(req).map_err(|e| JsValue::from_str(&format!("sp_label_update: bad request: {e}")))?;
+        let (root_key, _i, _n) = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?.onchain_handles();
+        let storage = t2_storage(&root_key);
+        let mut marks = lij_core::tier2_wallet::load_marks(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let l = marks.sp_label_update(r.m, r.name.as_deref(), r.hidden).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        lij_core::tier2_wallet::save_marks(storage.as_ref(), &marks).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(serde_json::json!({ "m": l.m, "name": l.name, "hidden": l.hidden }).to_string())
     }
 
     /// v288 (S50, DP 21:10 "the wallet has a say"): the wallet-side silent-payment switch. Lives in
@@ -1758,6 +1943,7 @@ impl LijWalletHandle {
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
             let dest_addr_keep = prev.dest_addr.clone();
             let dest_sats_keep = prev.dest_sats;
+            let dests_keep = prev.dests.clone();   // v305: every recipient rides the replacement's record
             {
                 let storage2: Arc<dyn lij_core::storage::LijStorage> = t2_storage(&root_key);   // v256
                 t2_note_send(storage2.as_ref(), &result.txid, &result.raw_hex, dest_addr_keep.as_deref());   // v298: the replacement, kept whole; its sp1 too
@@ -1779,6 +1965,7 @@ impl LijWalletHandle {
                     dest_sats: dest_sats_keep,
                     fee_sats: Some(result.fee_sats),
                     fee_rate_sat_per_kw: Some(new_fee_rate_sat_per_kw),
+                    dests: dests_keep,
                 });
                 lij_core::tier2_wallet::save_pending(storage2.as_ref(), &list)
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -1920,8 +2107,12 @@ impl LijWalletHandle {
     /// That address was just shown to a payer, the query only fires for actively
     /// awaited addresses, and the endpoint is user-configurable (own node →
     /// zero leak). The wallet-wide BIP158 model is untouched.
+    ///
+    /// v302 (S54): `own_base` = the Address watcher row's own Esplora server (None = the public explorers in
+    /// turn, as v301); `own_only` = the row's "Only my server" switch (no fallback). The report of each check is
+    /// kept for watch_report(). A page from before v302 passes the address alone — no own server, as before.
     #[wasm_bindgen]
-    pub fn watch_address_inbound(&self, address: String) -> js_sys::Promise {
+    pub fn watch_address_inbound(&self, address: String, own_base: Option<String>, own_only: Option<bool>) -> js_sys::Promise {
         let inner = self.inner.clone();
         future_to_promise(async move {
             let independent = {
@@ -1931,10 +2122,11 @@ impl LijWalletHandle {
                 let (_rk, independent, _net) = wallet.onchain_handles();
                 independent
             };
-            let utxos = independent
-                .fetch_address_utxos_watch(&address)   // v301 (S53): one explorer per check, in turn; no standing touched
-                .await
-                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let res = independent
+                .fetch_address_utxos_watch_via(&address, own_base.as_deref(), own_only.unwrap_or(false))   // v302: own server first, the explorers as the fallback
+                .await;
+            if let Ok(mut r) = WATCH_REPORT.lock() { *r = independent.last_watch_report().to_json(); }
+            let utxos = res.map_err(|e| JsValue::from_str(&e.to_string()))?;
             // Hand the frontend the raw per-output truth; it owns the
             // pending-inbound bookkeeping and dedup against the scanner.
             let items: Vec<String> = utxos
@@ -1947,6 +2139,35 @@ impl LijWalletHandle {
                 })
                 .collect();
             Ok(JsValue::from_str(&format!("[{}]", items.join(","))))
+        })
+    }
+
+    /// v302 (S54): how the last receive-watch check went — {"answered_by":"own"|"public"|"","own_set",
+    /// "own_error"|null,"own_resting","at_ms"}; "{}" before the first check. Read without the wallet lock.
+    #[wasm_bindgen]
+    pub fn watch_report(&self) -> String {
+        WATCH_REPORT.lock().map(|r| if r.is_empty() { "{}".to_string() } else { r.clone() }).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    /// v302 (S54): the Address watcher row's Save check — resolves to the server's tip height when `base` is a
+    /// clean https address answering as an Esplora server (/blocks/tip/height, then /address/<a never-funded probe
+    /// address>/utxo); rejects with the reason otherwise. Nothing of the user's is sent.
+    #[wasm_bindgen]
+    pub fn check_watch_server(&self, base: String) -> js_sys::Promise {
+        let inner = self.inner.clone();
+        future_to_promise(async move {
+            let (independent, network) = {
+                let wallet = inner
+                    .lock()
+                    .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                let (_rk, independent, network) = wallet.onchain_handles();
+                (independent, network)
+            };
+            let tip = independent
+                .check_watch_server(&base, network)
+                .await
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            Ok(JsValue::from_f64(tip as f64))
         })
     }
 

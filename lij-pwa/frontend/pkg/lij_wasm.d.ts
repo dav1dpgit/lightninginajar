@@ -81,6 +81,12 @@ export class LijWalletHandle {
      * observations, with heights). Read-only diagnosis surface.
      */
     chain_events_json(limit: number): string;
+    /**
+     * v302 (S54): the Address watcher row's Save check — resolves to the server's tip height when `base` is a
+     * clean https address answering as an Esplora server (/blocks/tip/height, then /address/<a never-funded probe
+     * address>/utxo); rejects with the reason otherwise. Nothing of the user's is sent.
+     */
+    check_watch_server(base: string): Promise<any>;
     claimed_payments_json(): string;
     /**
      * Initiate a cooperative close. Synchronous from JS perspective —
@@ -402,6 +408,12 @@ export class LijWalletHandle {
      */
     onchain_max(dest: string, fee_rate_sat_per_kw: number): string;
     /**
+     * v305: the quote for send_onchain_multi — the SAME plan the builder makes (no keys, no network): {"amounts" (the
+     * last = its Max when its amount is missing), "total_sats", "fee_sats", "change_sats", "inputs", "spend",
+     * "sat_per_vb", "problem" (the builder's refusal in plain words, else null)}. `req` as send_onchain_multi's.
+     */
+    onchain_multi_quote(req: string): string;
+    /**
      * v282 (S50, coin control cut 3): the picker's quote. `req` is JSON {"dest", "fee_rate_sat_per_kw",
      * "inputs"?: [{"txid","vout"}], "amount_sats"?, "fill"?: bool} → CoinQuote JSON (chosen, chosen_sats,
      * max_sats, need_sats, covered, short_sats, fill [...], fill_covers, sendable_sats, frozen_sats,
@@ -567,6 +579,14 @@ export class LijWalletHandle {
      */
     send_onchain_all(dest: string, fee_rate_sat_per_kw: number): Promise<any>;
     /**
+     * v305 (S54, DP 2026-10-02 13:50 "Go ahead" — SEVERAL RECIPIENTS IN ONE SEND): `req` is JSON {"recipients":
+     * [{"dest","amount_sats"?}], "fee_rate_sat_per_kw", "inputs"?: [{"txid","vout"}]} — a missing amount on the LAST
+     * recipient = everything left after the others and the fee (Max); chosen coins = exactly those. One transaction:
+     * the recipients in order (vout 0 …), then the change. Returns SendResult JSON with "recipients" [{dest,
+     * amount_sats}]. The pending record carries every recipient so a fee bump rebuilds them all.
+     */
+    send_onchain_multi(req: string): Promise<any>;
+    /**
      * v282 (S50, coin control cut 3 — chosen coins): a send from EXACTLY the coins the user
      * chose. `req` is JSON {"dest", "fee_rate_sat_per_kw", "inputs": [{"txid","vout"}, …],
      * and either "amount_sats" (change to m/84) or "all": true (everything in those coins,
@@ -645,6 +665,23 @@ export class LijWalletHandle {
      * remaining decisions are talked through).
      */
     sp_address(): string;
+    /**
+     * v304: make a label — the next number (never reused), a cleaned name (40 code points at most), ten at most.
+     * Answers {"m","name","address"}. Saved in the marks (they ride the backup); the scan checks it from the next sync.
+     */
+    sp_label_create(name: string): string;
+    /**
+     * v304: rename and/or hide a label — `req` JSON {"m", "name"?, "hidden"?}. No delete (a label handed out can still be
+     * paid; a hidden one is still checked and its payments still tagged). Answers {"m","name","hidden"}.
+     */
+    sp_label_update(req: string): string;
+    /**
+     * v304 (S54, DP 2026-10-02 13:50 "Go ahead"): the silent-payment labels — number, name, hidden, the label's own
+     * sp1 address, and what it has received (coins paid to it, spent or not). JSON {"labels":[{m,name,hidden,
+     * created_ms,address,payments,received_sats}],"max":10,"used":n,"unknown":bool} — `unknown` = a words-only
+     * restore checking all ten; a nameless label (found after that restore) shows as "Label m".
+     */
+    sp_labels(): string;
     /**
      * v288 (S50, DP 21:10 "the wallet has a say"): the wallet-side silent-payment switch. Lives in
      * the marks store (its own encrypted key — a sync in flight cannot clobber it; a rescan keeps
@@ -748,8 +785,17 @@ export class LijWalletHandle {
      * That address was just shown to a payer, the query only fires for actively
      * awaited addresses, and the endpoint is user-configurable (own node →
      * zero leak). The wallet-wide BIP158 model is untouched.
+     *
+     * v302 (S54): `own_base` = the Address watcher row's own Esplora server (None = the public explorers in
+     * turn, as v301); `own_only` = the row's "Only my server" switch (no fallback). The report of each check is
+     * kept for watch_report(). A page from before v302 passes the address alone — no own server, as before.
      */
-    watch_address_inbound(address: string): Promise<any>;
+    watch_address_inbound(address: string, own_base?: string | null, own_only?: boolean | null): Promise<any>;
+    /**
+     * v302 (S54): how the last receive-watch check went — {"answered_by":"own"|"public"|"","own_set",
+     * "own_error"|null,"own_resting","at_ms"}; "{}" before the first check. Read without the wallet lock.
+     */
+    watch_report(): string;
 }
 
 /**
@@ -758,6 +804,12 @@ export class LijWalletHandle {
  * Returns empty vec for empty prefix or no matches.
  */
 export function bip39_suggest(prefix: string, max: number): any[];
+
+/**
+ * v303 (S54, DP): what a BOLT11 invoice says, read and signature-checked — {"payee","amount_msat"|null,"payment_hash",
+ * "network","expires_at"}; an error names why it does not decode. The page checks an invoice with it before paying.
+ */
+export function bolt11_facts(bolt11: string): string;
 
 /**
  * Given 11 valid BIP39 words and 7 binary bits ("0"s and "1"s), compute the
@@ -906,6 +958,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_lijwallethandle_free: (a: number, b: number) => void;
     readonly bip39_suggest: (a: number, b: number, c: number) => [number, number];
+    readonly bolt11_facts: (a: number, b: number) => [number, number, number, number];
     readonly checksum_word_for_bits: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly derive_account_zpub: (a: number, b: number) => [number, number, number, number];
     readonly derive_receive_address: (a: number, b: number, c: number) => [number, number, number, number];
@@ -923,6 +976,7 @@ export interface InitOutput {
     readonly lijwallethandle_black_start_identity_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_bump_onchain_send: (a: number, b: number, c: number, d: number) => any;
     readonly lijwallethandle_chain_events_json: (a: number, b: number) => [number, number, number, number];
+    readonly lijwallethandle_check_watch_server: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_claimed_payments_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_close_channel: (a: number, b: number, c: number) => [number, number];
     readonly lijwallethandle_close_event_log: (a: number) => [number, number];
@@ -981,6 +1035,7 @@ export interface InitOutput {
     readonly lijwallethandle_nwc_set_limits: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_onchain_history: (a: number) => any;
     readonly lijwallethandle_onchain_max: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly lijwallethandle_onchain_multi_quote: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_onchain_quote: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_onchain_summary: (a: number) => any;
     readonly lijwallethandle_open_channel: (a: number, b: bigint) => any;
@@ -1008,6 +1063,7 @@ export interface InitOutput {
     readonly lijwallethandle_restore: (a: number, b: number, c: number, d: number) => any;
     readonly lijwallethandle_send_onchain: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly lijwallethandle_send_onchain_all: (a: number, b: number, c: number, d: number) => any;
+    readonly lijwallethandle_send_onchain_multi: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_send_onchain_with: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_send_payment: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_send_payment_via_lsp_route: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
@@ -1016,6 +1072,9 @@ export interface InitOutput {
     readonly lijwallethandle_set_quorum_endpoints: (a: number, b: number, c: number) => [number, number];
     readonly lijwallethandle_sign_message: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_sp_address: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_sp_label_create: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_sp_label_update: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_sp_labels: (a: number) => [number, number, number, number];
     readonly lijwallethandle_sp_set_enabled: (a: number, b: number) => [number, number, number, number];
     readonly lijwallethandle_spendable_outputs_log: (a: number) => [number, number];
     readonly lijwallethandle_sweeper_broadcast_diag: (a: number, b: number) => [number, number, number, number];
@@ -1027,7 +1086,8 @@ export interface InitOutput {
     readonly lijwallethandle_tx_keep_drop_before: (a: number, b: number) => [number, number, number];
     readonly lijwallethandle_tx_keep_set_cap: (a: number, b: number) => [number, number, number, number];
     readonly lijwallethandle_tx_keep_status: (a: number) => [number, number, number, number];
-    readonly lijwallethandle_watch_address_inbound: (a: number, b: number, c: number) => any;
+    readonly lijwallethandle_watch_address_inbound: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
+    readonly lijwallethandle_watch_report: (a: number) => [number, number];
     readonly lsps2_buy_promise: (a: number, b: number, c: number, d: number, e: bigint, f: number, g: number) => any;
     readonly lsps2_get_info: (a: number, b: number, c: number, d: number) => any;
     readonly psbt_probe: (a: number, b: number, c: number, d: number) => [number, number, number, number];
@@ -1053,8 +1113,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_144: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_145: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_152: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_153: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

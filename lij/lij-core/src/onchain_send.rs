@@ -54,6 +54,8 @@ pub struct SendResult {
     /// never sent to the page.
     #[serde(skip)]
     pub raw_hex: String,
+    /// v305 (S54): what each recipient was paid, in output order (one entry for a one-recipient send).
+    pub recipients: Vec<SentTo>,
 }
 
 impl SendResult {
@@ -96,43 +98,6 @@ fn parse_dest(dest: &str, network: Network) -> LijResult<Dest> {
         .require_network(network)
         .map_err(|e| LijError::Node(format!("address is for the wrong network: {e}")))?;
     Ok(Dest::Script(dest_addr.script_pubkey()))
-}
-
-/// The output script for `dest` given the inputs finally selected — for a
-/// silent-payment address this is where the one-time taproot key is derived.
-fn resolve_dest_script(
-    dest: &Dest,
-    root_key: &RootKey,
-    secp: &Secp256k1<bitcoin::secp256k1::All>,
-    selected: &[&SpendableUtxo],
-) -> LijResult<ScriptBuf> {
-    match dest {
-        Dest::Script(spk) => Ok(spk.clone()),
-        Dest::SilentPayment(addr) => {
-            let mut inputs = Vec::with_capacity(selected.len());
-            let mut sp_keys: Option<crate::silent_payment::SpKeys> = None;
-            for u in selected {
-                let (secret, taproot) = match u.sp_tweak {
-                    Some(t) if u.chain == crate::tier2::CHAIN_SP => {
-                        // v284: a silent-payment coin spends with b_spend + t_k and counts as a taproot input
-                        if sp_keys.is_none() { sp_keys = Some(crate::silent_payment::SpKeys::from_root(root_key)?); }
-                        (sp_keys.as_ref().unwrap().spend_secret(secp, &t)?, true)
-                    }
-                    _ => (signing_secret(root_key, secp, u.chain, u.index)?, false),
-                };
-                inputs.push(crate::silent_payment::SpInput {
-                    secret,
-                    outpoint: OutPoint {
-                        txid: Txid::from_str(&u.txid)
-                            .map_err(|e| LijError::Node(format!("bad utxo txid {}: {e}", u.txid)))?,
-                        vout: u.vout,
-                    },
-                    taproot,
-                });
-            }
-            crate::silent_payment::derive_output_script(secp, &inputs, addr)
-        }
-    }
 }
 
 fn dest_extra_vbytes(dest: &Dest) -> u64 {
@@ -787,10 +752,291 @@ pub(crate) fn sign_inputs(
     Ok(witnesses)
 }
 
-/// v281: the one builder behind build_and_send (an exact amount, change to m/84) and
-/// build_and_send_all (everything, one output). Coins come from the ledger minus the
-/// pending reserve minus the user's freezes; an exact amount picks by DP's rule
-/// (coin_select::pick); everything takes every candidate.
+/// v305 (S54, DP 2026-10-02 13:50 "Go ahead" — SEVERAL RECIPIENTS IN ONE SEND): one recipient — an address (or an sp1
+/// silent-payment address) and an amount, or `None` = everything left after the other recipients and the fee ("Max",
+/// on the LAST recipient only — DP's rule).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct Recipient {
+    pub dest: String,
+    #[serde(default)]
+    pub amount_sats: Option<u64>,
+}
+
+/// v305: what a send paid each recipient, in output order (vout 0, 1, …; the change, if any, comes after them).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct SentTo {
+    pub dest: String,
+    pub amount_sats: u64,
+}
+
+/// v305: the most recipients in one send.
+pub const MAX_RECIPIENTS: usize = 20;
+
+/// v305: the plan of a send — the coins, each recipient's amount, the fee and the change — made before any key is
+/// touched. The quote and the builder share it, so the figures on the screen are the figures that go out.
+struct Plan<'a> {
+    dests: Vec<Dest>,
+    selected: Vec<&'a SpendableUtxo>,
+    amounts: Vec<u64>,
+    /// Includes change too small to keep (folded in).
+    fee_sats: u64,
+    change_sats: u64,
+    total_in: u64,
+}
+
+fn plan_send<'a>(
+    recipients: &[Recipient],
+    network: Network,
+    fee_rate_sat_per_kw: u32,
+    spendable: &'a [SpendableUtxo],
+    frozen: &std::collections::HashSet<(String, u32)>,
+    pins: Option<&[(String, u32)]>,
+) -> LijResult<Plan<'a>> {
+    let n_dest = recipients.len();
+    if n_dest == 0 {
+        return Err(LijError::Node("add who you are paying".into()));
+    }
+    if n_dest > MAX_RECIPIENTS {
+        return Err(LijError::Node(format!("one send pays at most {MAX_RECIPIENTS} recipients")));
+    }
+    let mut dests = Vec::with_capacity(n_dest);
+    for (i, r) in recipients.iter().enumerate() {
+        let d = parse_dest(&r.dest, network).map_err(|e| if n_dest > 1 {
+            let m = match e { LijError::Node(m) => m, other => other.to_string() };
+            LijError::Node(format!("recipient {}: {m}", i + 1))
+        } else { e })?;
+        dests.push(d);
+        match r.amount_sats {
+            None if i + 1 != n_dest => return Err(LijError::Node("only the last recipient can take everything left (Max)".into())),
+            Some(0) => return Err(LijError::Node(if n_dest > 1 { format!("recipient {}: the amount must be greater than zero", i + 1) } else { "amount must be greater than zero".into() })),
+            Some(a) if n_dest > 1 && a < DUST_THRESHOLD_SATS => return Err(LijError::Node(format!("recipient {}: {a} sats is below the {DUST_THRESHOLD_SATS}-sat minimum an output can carry", i + 1))),
+            _ => {}
+        }
+    }
+    let extra_vb: u64 = dests.iter().map(dest_extra_vbytes).sum();
+    if spendable.is_empty() {
+        return Err(LijError::Node(if frozen.is_empty() {
+            "no spendable on-chain funds found".into()
+        } else {
+            "no spendable on-chain funds found — every coin is frozen".into()
+        }));
+    }
+    // v282: chosen coins are EXACTLY the set the transaction spends (DP 2026-09-28: chosen = exact; a top-up is the
+    // user's explicit "Fill the rest for me", never silent).
+    let chosen: Option<Vec<&SpendableUtxo>> = match pins {
+        Some(p) => Some(resolve_pins(spendable, frozen, p)?),
+        None => None,
+    };
+    let fixed: u64 = recipients.iter().filter_map(|r| r.amount_sats).sum();
+    let rest = recipients.last().map(|r| r.amount_sats.is_none()).unwrap_or(false);
+    if rest {
+        // everything left goes to the last recipient: every candidate (or the chosen set), no change output
+        let selected: Vec<&SpendableUtxo> = match chosen { Some(c) => c, None => spendable.iter().collect() };
+        let total_in: u64 = selected.iter().map(|u| u.value_sats).sum();
+        let fee_sats = estimate_fee_inputs(&selected, n_dest, extra_vb, fee_rate_sat_per_kw);
+        if total_in <= fixed + fee_sats + DUST_THRESHOLD_SATS {
+            return Err(LijError::Node(if n_dest == 1 {
+                format!("nothing left to send after the fee: {total_in} sats of coins, fee {fee_sats}")
+            } else {
+                format!("nothing left for the last recipient: the others take {fixed} sats and the fee {fee_sats} of {total_in}")
+            }));
+        }
+        let mut amounts: Vec<u64> = recipients[..n_dest - 1].iter().filter_map(|r| r.amount_sats).collect();
+        amounts.push(total_in - fixed - fee_sats);
+        return Ok(Plan { dests, selected, amounts, fee_sats, change_sats: 0, total_in });
+    }
+    // exact amounts: DP's pick rule (coin_select::pick) or the chosen set; change back to m/84
+    let selected: Vec<&SpendableUtxo> = match chosen {
+        Some(c) => {
+            let total: u64 = c.iter().map(|u| u.value_sats).sum();
+            let fee = estimate_fee_inputs(&c, n_dest + 1, extra_vb, fee_rate_sat_per_kw);   // v284: the chosen coins' real sizes — the quote's number
+            if total < fixed.saturating_add(fee) {
+                return Err(LijError::Node(format!(
+                    "your chosen coins cover {total} sats; this send needs {} (amount {fixed} + fee {fee}) — add coins or lower the amount",
+                    fixed.saturating_add(fee)
+                )));
+            }
+            c
+        }
+        None => {
+            let values: Vec<u64> = spendable.iter().map(|u| u.value_sats).collect();
+            let picked = crate::coin_select::pick(&values, |n| fixed.saturating_add(estimate_fee_with(n, n_dest + 1, extra_vb, fee_rate_sat_per_kw)));
+            match picked {
+                Some(idx) => idx.into_iter().map(|i| &spendable[i]).collect(),
+                None => {
+                    let have: u64 = values.iter().sum();
+                    let fee = estimate_fee_with(values.len(), n_dest + 1, extra_vb, fee_rate_sat_per_kw);
+                    return Err(LijError::Node(format!(
+                        "insufficient funds: have {have} sats, need {} (amount {fixed} + fee {fee}){}",
+                        fixed + fee,
+                        if frozen.is_empty() { "" } else { " — frozen coins are not counted" }
+                    )));
+                }
+            }
+        }
+    };
+    let total_in: u64 = selected.iter().map(|u| u.value_sats).sum();
+    let mut fee_sats = estimate_fee_inputs(&selected, n_dest + 1, extra_vb, fee_rate_sat_per_kw);   // v284: real input sizes
+    if total_in < fixed + fee_sats {
+        return Err(LijError::Node(format!("insufficient funds: have {total_in} sats, need {} (amount {fixed} + fee {fee_sats})", fixed + fee_sats)));
+    }
+    let mut change_sats = total_in - fixed - fee_sats;
+    if change_sats < DUST_THRESHOLD_SATS {
+        fee_sats += change_sats;   // too small to keep: it goes to the fee
+        change_sats = 0;
+    }
+    let amounts = recipients.iter().filter_map(|r| r.amount_sats).collect();
+    Ok(Plan { dests, selected, amounts, fee_sats, change_sats, total_in })
+}
+
+/// v305: the silent-payment inputs of a selection (each coin's key and outpoint; a silent-payment coin counts as a
+/// taproot input).
+fn sp_inputs(root_key: &RootKey, secp: &Secp256k1<bitcoin::secp256k1::All>, selected: &[&SpendableUtxo]) -> LijResult<Vec<crate::silent_payment::SpInput>> {
+    let mut inputs = Vec::with_capacity(selected.len());
+    let mut sp_keys: Option<crate::silent_payment::SpKeys> = None;
+    for u in selected {
+        let (secret, taproot) = match u.sp_tweak {
+            Some(t) if u.chain == crate::tier2::CHAIN_SP => {
+                if sp_keys.is_none() { sp_keys = Some(crate::silent_payment::SpKeys::from_root(root_key)?); }
+                (sp_keys.as_ref().unwrap().spend_secret(secp, &t)?, true)
+            }
+            _ => (signing_secret(root_key, secp, u.chain, u.index)?, false),
+        };
+        inputs.push(crate::silent_payment::SpInput {
+            secret,
+            outpoint: OutPoint { txid: Txid::from_str(&u.txid).map_err(|e| LijError::Node(format!("bad utxo txid {}: {e}", u.txid)))?, vout: u.vout },
+            taproot,
+        });
+    }
+    Ok(inputs)
+}
+
+/// v305: every recipient's output script for the inputs finally selected — the silent-payment ones derived together
+/// (one group per scan key, k = 0, 1, … in recipient order), the others as given.
+fn resolve_dest_scripts(dests: &[Dest], root_key: &RootKey, secp: &Secp256k1<bitcoin::secp256k1::All>, selected: &[&SpendableUtxo]) -> LijResult<Vec<ScriptBuf>> {
+    let sp: Vec<crate::silent_payment::SpAddress> = dests.iter().filter_map(|d| match d { Dest::SilentPayment(a) => Some(a.clone()), _ => None }).collect();
+    let mut derived = if sp.is_empty() { Vec::new() } else { crate::silent_payment::derive_output_scripts(secp, &sp_inputs(root_key, secp, selected)?, &sp)? }.into_iter();
+    dests.iter().map(|d| match d {
+        Dest::Script(spk) => Ok(spk.clone()),
+        Dest::SilentPayment(_) => derived.next().ok_or_else(|| LijError::Node("silent payment: an output was not derived".into())),
+    }).collect()
+}
+
+/// v305: the change script at m/84'/{coin}'/0'/1/`change_index` — rotated per send so change is not linked by reuse.
+fn change_script(root_key: &RootKey, secp: &Secp256k1<bitcoin::secp256k1::All>, network: Network, change_index: u32) -> LijResult<ScriptBuf> {
+    let change_xpriv = root_key.onchain_key()?   // m/84'/{coin}'/0'
+        .derive_priv(
+            secp,
+            &DerivationPath::from(vec![
+                ChildNumber::from_normal_idx(1).map_err(|e| LijError::Key(format!("{e}")))?,
+                ChildNumber::from_normal_idx(change_index).map_err(|e| LijError::Key(format!("{e}")))?,
+            ]),
+        )
+        .map_err(|e| LijError::Key(format!("change key derivation: {e}")))?;
+    let change_pubkey = bitcoin::PublicKey::new(change_xpriv.private_key.public_key(secp));
+    Ok(Address::p2wpkh(&bitcoin::CompressedPublicKey(change_pubkey.inner), network).script_pubkey())
+}
+
+/// v305: a built, signed send — not yet broadcast.
+pub(crate) struct BuiltSend {
+    pub(crate) tx: Transaction,
+    pub(crate) paid: Vec<SentTo>,
+    pub(crate) fee_sats: u64,
+    pub(crate) change_sats: u64,
+    pub(crate) spent_outpoints: Vec<(String, u32)>,
+}
+
+/// v305: THE one builder — every on-chain send (one recipient or several; an exact amount or Max on the last) is
+/// planned by plan_send, its outputs derived (silent payments together), signed by the one signer. Outputs: the
+/// recipients in order (vout 0 …), then the change. No network.
+pub(crate) fn build_send_tx(
+    root_key: &RootKey,
+    network: Network,
+    recipients: &[Recipient],
+    fee_rate_sat_per_kw: u32,
+    change_index: u32,
+    view: &crate::tier2_wallet::Tier2View,
+    pending: &[crate::tier2_wallet::PendingTx],
+    marks: &crate::tier2_wallet::CoinMarks,
+    pins: Option<&[(String, u32)]>,
+) -> LijResult<BuiltSend> {
+    let secp = Secp256k1::new();
+    let frozen = marks.frozen_set();
+    let spendable = gather_spendable(view, pending, &frozen);
+    let plan = plan_send(recipients, network, fee_rate_sat_per_kw, &spendable, &frozen, pins)?;
+    let scripts = resolve_dest_scripts(&plan.dests, root_key, &secp, &plan.selected)?;
+    let mut outputs: Vec<TxOut> = scripts.into_iter().zip(plan.amounts.iter()).map(|(spk, a)| TxOut { value: bitcoin::Amount::from_sat(*a), script_pubkey: spk }).collect();
+    if plan.change_sats > 0 {
+        outputs.push(TxOut { value: bitcoin::Amount::from_sat(plan.change_sats), script_pubkey: change_script(root_key, &secp, network, change_index)? });
+    }
+    let mut tx_inputs: Vec<TxIn> = Vec::with_capacity(plan.selected.len());
+    for u in &plan.selected {
+        tx_inputs.push(TxIn {
+            previous_output: OutPoint { txid: Txid::from_str(&u.txid).map_err(|e| LijError::Node(format!("bad utxo txid {}: {e}", u.txid)))?, vout: u.vout },
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+            witness: Witness::new(),
+        });
+    }
+    let mut tx = Transaction { version: bitcoin::transaction::Version::TWO, lock_time: LockTime::ZERO, input: tx_inputs, output: outputs };
+    // P2WPKH (BIP143, ECDSA) as ever; v284: a silent-payment coin is a taproot key-path input (Schnorr, BIP-341)
+    let witnesses: Vec<Witness> = sign_inputs(root_key, &secp, &tx, &plan.selected)?;
+    for (i, w) in witnesses.into_iter().enumerate() {
+        tx.input[i].witness = w;
+    }
+    debug_assert_eq!(plan.total_in, plan.amounts.iter().sum::<u64>() + plan.fee_sats + plan.change_sats);
+    Ok(BuiltSend {
+        paid: recipients.iter().zip(plan.amounts.iter()).map(|(r, a)| SentTo { dest: r.dest.trim().to_string(), amount_sats: *a }).collect(),
+        fee_sats: plan.fee_sats,
+        change_sats: plan.change_sats,
+        spent_outpoints: plan.selected.iter().map(|u| (u.txid.clone(), u.vout)).collect(),
+        tx,
+    })
+}
+
+/// v305: build, sign and broadcast a send to one or several recipients. Must run OUTSIDE any wallet lock.
+pub async fn build_and_send_multi(
+    root_key: &RootKey,
+    independent: Arc<IndependentClient>,
+    network: Network,
+    recipients: &[Recipient],
+    fee_rate_sat_per_kw: u32,
+    change_index: u32,
+    view: &crate::tier2_wallet::Tier2View,
+    pending: &[crate::tier2_wallet::PendingTx],
+    marks: &crate::tier2_wallet::CoinMarks,
+    pins: Option<&[(String, u32)]>,
+) -> LijResult<SendResult> {
+    let b = build_send_tx(root_key, network, recipients, fee_rate_sat_per_kw, change_index, view, pending, marks, pins)?;
+    let raw = serialize(&b.tx);
+    independent.broadcast_raw_tx(&raw).await?;
+    let txid = b.tx.compute_txid().to_string();
+    let amount_sats: u64 = b.paid.iter().map(|p| p.amount_sats).sum();
+    let n_in = b.tx.input.len();
+    log::info!(
+        "onchain send: broadcast {txid} ({amount_sats} sats to {} recipient(s){}, fee {}, {n_in} input(s), change {})",
+        b.paid.len(),
+        if b.paid.len() == 1 { format!(" — {}", b.paid[0].dest) } else { String::new() },
+        b.fee_sats,
+        b.change_sats
+    );
+    let change_outpoint = if b.change_sats > 0 { Some((txid.clone(), b.paid.len() as u32)) } else { None };   // after the recipients
+    Ok(SendResult {
+        txid,
+        amount_sats,
+        fee_sats: b.fee_sats,
+        inputs: n_in,
+        change_sats: b.change_sats,
+        spent_outpoints: b.spent_outpoints,
+        change_outpoint,
+        change_index,
+        raw_hex: hex::encode(&raw),   // v298
+        recipients: b.paid,
+    })
+}
+
+/// v281: the builder behind build_and_send (an exact amount, change to m/84) and build_and_send_all (everything, one
+/// output) — since v305 the one-recipient case of build_and_send_multi.
 async fn build_and_send_inner(
     root_key: &RootKey,
     independent: Arc<IndependentClient>,
@@ -804,183 +1050,55 @@ async fn build_and_send_inner(
     marks: &crate::tier2_wallet::CoinMarks,
     pins: Option<&[(String, u32)]>,
 ) -> LijResult<SendResult> {
-    // Parse + network-check the destination (v240: or a silent-payment address).
-    let dest_parsed = parse_dest(dest, network)?;
-    let extra_vb = dest_extra_vbytes(&dest_parsed);
+    let r = Recipient { dest: dest.to_string(), amount_sats: match what { SendAmount::Exact(a) => Some(a), SendAmount::All => None } };
+    build_and_send_multi(root_key, independent, network, std::slice::from_ref(&r), fee_rate_sat_per_kw, change_index, view, pending, marks, pins).await
+}
 
-    let secp = Secp256k1::new();
+/// v305: the quote for a send to several recipients (or one) — the same plan the builder makes. With Max on the last
+/// recipient, `amounts`' last entry is what it gets. `problem` carries the builder's own refusal in plain words.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct MultiQuote {
+    pub amounts: Vec<u64>,
+    pub total_sats: u64,
+    pub fee_sats: u64,
+    pub change_sats: u64,
+    pub inputs: usize,
+    pub spend: Vec<(String, u32)>,
+    pub sat_per_vb: u64,
+    pub problem: Option<String>,
+}
 
-    // Gather spendable UTXOs (receive + change) from the ledger; v281: minus the freezes.
+impl MultiQuote {
+    pub fn to_json(&self) -> LijResult<String> {
+        serde_json::to_string(self).map_err(|e| LijError::Storage(format!("multi quote serialize: {e}")))
+    }
+}
+
+pub fn multi_quote(
+    recipients: &[Recipient],
+    network: Network,
+    fee_rate_sat_per_kw: u32,
+    view: &crate::tier2_wallet::Tier2View,
+    pending: &[crate::tier2_wallet::PendingTx],
+    marks: &crate::tier2_wallet::CoinMarks,
+    pins: Option<&[(String, u32)]>,
+) -> MultiQuote {
     let frozen = marks.frozen_set();
     let spendable = gather_spendable(view, pending, &frozen);
-    if spendable.is_empty() {
-        return Err(LijError::Node(if frozen.is_empty() {
-            "no spendable on-chain funds found".into()
-        } else {
-            "no spendable on-chain funds found — every coin is frozen".into()
-        }));
+    let sat_per_vb = (((fee_rate_sat_per_kw as u64) + 249) / 250).max(1);
+    match plan_send(recipients, network, fee_rate_sat_per_kw, &spendable, &frozen, pins) {
+        Ok(p) => MultiQuote {
+            total_sats: p.amounts.iter().sum(),
+            amounts: p.amounts,
+            fee_sats: p.fee_sats,
+            change_sats: p.change_sats,
+            inputs: p.selected.len(),
+            spend: p.selected.iter().map(|u| (u.txid.clone(), u.vout)).collect(),
+            sat_per_vb,
+            problem: None,
+        },
+        Err(e) => MultiQuote { sat_per_vb, problem: Some(e.to_string()), ..Default::default() },
     }
-    // v282: chosen coins are EXACTLY the set the transaction spends (DP 2026-09-28: chosen
-    // = exact; a top-up is the user's explicit "Fill the rest for me", never silent).
-    let chosen: Option<Vec<&SpendableUtxo>> = match pins {
-        Some(p) => Some(resolve_pins(&spendable, &frozen, p)?),
-        None => None,
-    };
-
-    // v281: the pick (DP's rule) or everything; v282: or the chosen set.
-    let (selected, amount_sats, mut fee_sats, total_in): (Vec<&SpendableUtxo>, u64, u64, u64) = match what {
-        SendAmount::Exact(amount_sats) => {
-            let selected: Vec<&SpendableUtxo> = match chosen {
-                Some(c) => {
-                    let total: u64 = c.iter().map(|u| u.value_sats).sum();
-                    let fee = estimate_fee_inputs(&c, 2, extra_vb, fee_rate_sat_per_kw);   // v284: the chosen coins' real sizes — the quote's number
-                    if total < amount_sats.saturating_add(fee) {
-                        return Err(LijError::Node(format!(
-                            "your chosen coins cover {total} sats; this send needs {} (amount {amount_sats} + fee {fee}) — add coins or lower the amount",
-                            amount_sats.saturating_add(fee)
-                        )));
-                    }
-                    c
-                }
-                None => {
-                    let values: Vec<u64> = spendable.iter().map(|u| u.value_sats).collect();
-                    let picked = crate::coin_select::pick(&values, |n| {
-                        amount_sats.saturating_add(estimate_fee_with(n, 2, extra_vb, fee_rate_sat_per_kw))
-                    });
-                    match picked {
-                        Some(idx) => idx.into_iter().map(|i| &spendable[i]).collect(),
-                        None => {
-                            let have: u64 = values.iter().sum();
-                            let fee = estimate_fee_with(values.len(), 2, extra_vb, fee_rate_sat_per_kw);
-                            return Err(LijError::Node(format!(
-                                "insufficient funds: have {have} sats, need {} (amount {amount_sats} + fee {fee}){}",
-                                amount_sats + fee,
-                                if frozen.is_empty() { "" } else { " — frozen coins are not counted" }
-                            )));
-                        }
-                    }
-                }
-            };
-            let total_in: u64 = selected.iter().map(|u| u.value_sats).sum();
-            let fee_sats = estimate_fee_inputs(&selected, 2, extra_vb, fee_rate_sat_per_kw);   // v284: real input sizes
-            (selected, amount_sats, fee_sats, total_in)
-        }
-        SendAmount::All => {
-            let selected: Vec<&SpendableUtxo> = match chosen { Some(c) => c, None => spendable.iter().collect() };
-            let total_in: u64 = selected.iter().map(|u| u.value_sats).sum();
-            let fee_sats = estimate_fee_inputs(&selected, 1, extra_vb, fee_rate_sat_per_kw);
-            if total_in <= fee_sats + DUST_THRESHOLD_SATS {
-                return Err(LijError::Node(format!(
-                    "nothing left to send after the fee: {total_in} sats of coins, fee {fee_sats}"
-                )));
-            }
-            (selected, total_in - fee_sats, fee_sats, total_in)
-        }
-    };
-    let n_in = selected.len();
-    // v240: a silent-payment output key depends on the inputs just chosen.
-    let dest_spk = resolve_dest_script(&dest_parsed, root_key, &secp, &selected)?;
-    if total_in < amount_sats + fee_sats {
-        return Err(LijError::Node(format!(
-            "insufficient funds: have {total_in} sats, need {} (amount {amount_sats} + fee {fee_sats})",
-            amount_sats + fee_sats
-        )));
-    }
-    let mut change_sats = total_in - amount_sats - fee_sats;   // 0 by construction for All
-
-    // Change address: m/84'/{coin}'/0'/1/n — ROTATED per send (fresh address) so
-    // change isn't linkable by reuse. Index chosen by the caller from the Tier-2
-    // view + pending; the gap-limited scan re-discovers it.
-    let account_xpriv = root_key.onchain_key()?; // m/84'/{coin}'/0'
-    let change_xpriv = account_xpriv
-        .derive_priv(
-            &secp,
-            &DerivationPath::from(vec![
-                ChildNumber::from_normal_idx(1).map_err(|e| LijError::Key(format!("{e}")))?,
-                ChildNumber::from_normal_idx(change_index)
-                    .map_err(|e| LijError::Key(format!("{e}")))?,
-            ]),
-        )
-        .map_err(|e| LijError::Key(format!("change key derivation: {e}")))?;
-    let change_pubkey = bitcoin::PublicKey::new(change_xpriv.private_key.public_key(&secp));
-    let change_spk = Address::p2wpkh(&bitcoin::CompressedPublicKey(change_pubkey.inner), network)
-        .script_pubkey();
-
-    // Outputs: destination, plus change unless it's dust (then it goes to fee).
-    let mut outputs = vec![TxOut {
-        value: bitcoin::Amount::from_sat(amount_sats),
-        script_pubkey: dest_spk,
-    }];
-    if change_sats >= DUST_THRESHOLD_SATS {
-        outputs.push(TxOut {
-            value: bitcoin::Amount::from_sat(change_sats),
-            script_pubkey: change_spk,
-        });
-    } else {
-        fee_sats += change_sats;
-        change_sats = 0;
-    }
-
-    // Inputs (witnesses filled in after we build the tx for sighashing).
-    let mut tx_inputs: Vec<TxIn> = Vec::with_capacity(n_in);
-    for u in &selected {
-        tx_inputs.push(TxIn {
-            previous_output: OutPoint {
-                txid: Txid::from_str(&u.txid)
-                    .map_err(|e| LijError::Node(format!("bad utxo txid {}: {e}", u.txid)))?,
-                vout: u.vout,
-            },
-            script_sig: ScriptBuf::new(),
-            sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-            witness: Witness::new(),
-        });
-    }
-
-    let mut tx = Transaction {
-        version: bitcoin::transaction::Version::TWO,
-        lock_time: LockTime::ZERO,
-        input: tx_inputs,
-        output: outputs,
-    };
-
-    // Sign each input. P2WPKH (BIP143, ECDSA) as ever; v284: a silent-payment coin (chain 352) is a
-    // taproot key-path input — a Schnorr signature over the BIP-341 sighash, which commits to EVERY
-    // input's prevout, so the prevouts are gathered first. Witnesses are collected while the cache
-    // holds an immutable borrow of tx, then assigned after dropping the cache.
-    let witnesses: Vec<Witness> = sign_inputs(root_key, &secp, &tx, &selected)?;
-    for (i, w) in witnesses.into_iter().enumerate() {
-        tx.input[i].witness = w;
-    }
-
-    // Broadcast through the Esplora quorum.
-    let raw = serialize(&tx);
-    independent.broadcast_raw_tx(&raw).await?;
-    let txid = tx.txid().to_string();
-    log::info!(
-        "onchain send: broadcast {txid} ({amount_sats} sats to {dest}, fee {fee_sats}, {n_in} input(s), change {change_sats})"
-    );
-
-    let change_outpoint = if change_sats > 0 {
-        // Outputs are [dest (vout 0), change (vout 1)].
-        Some((txid.clone(), 1u32))
-    } else {
-        None
-    };
-
-    Ok(SendResult {
-        txid,
-        amount_sats,
-        fee_sats,
-        inputs: n_in,
-        change_sats,
-        spent_outpoints: selected
-            .iter()
-            .map(|u| (u.txid.clone(), u.vout))
-            .collect(),
-        change_outpoint,
-        change_index,
-        raw_hex: hex::encode(&raw),   // v298
-    })
 }
 
 /// v166 (#29-4b): RBF replacement of one of OUR pending sends. Same inputs,
@@ -999,12 +1117,20 @@ pub async fn build_and_send_bump(
     view: &crate::tier2_wallet::Tier2View,
     pending: &[crate::tier2_wallet::PendingTx],
 ) -> LijResult<SendResult> {
-    let dest = prev.dest_addr.as_deref().ok_or_else(|| {
-        LijError::Node("this send predates fee-bump support (no destination on record)".into())
-    })?;
-    let amount_sats = prev.dest_sats.ok_or_else(|| {
-        LijError::Node("this send predates fee-bump support (no amount on record)".into())
-    })?;
+    // v305: every recipient the send paid (one for a send recorded before v305 — its dest_addr and dest_sats)
+    let dests: Vec<(String, u64)> = if !prev.dests.is_empty() {
+        prev.dests.clone()
+    } else {
+        let dest = prev.dest_addr.clone().ok_or_else(|| {
+            LijError::Node("this send predates fee-bump support (no destination on record)".into())
+        })?;
+        let amount = prev.dest_sats.ok_or_else(|| {
+            LijError::Node("this send predates fee-bump support (no amount on record)".into())
+        })?;
+        vec![(dest, amount)]
+    };
+    let amount_sats: u64 = dests.iter().map(|d| d.1).sum();
+    let n_dest = dests.len();
     let old_fee = prev.fee_sats.ok_or_else(|| {
         LijError::Node("this send predates fee-bump support (no fee on record)".into())
     })?;
@@ -1022,9 +1148,11 @@ pub async fn build_and_send_bump(
         ));
     }
 
-    let dest_parsed = parse_dest(dest, network)
-        .map_err(|e| LijError::Node(format!("recorded destination unusable: {e}")))?;
-    let extra_vb = dest_extra_vbytes(&dest_parsed);
+    let mut dests_parsed: Vec<Dest> = Vec::with_capacity(n_dest);
+    for (d, _) in &dests {
+        dests_parsed.push(parse_dest(d, network).map_err(|e| LijError::Node(format!("recorded destination unusable: {e}")))?);
+    }
+    let extra_vb: u64 = dests_parsed.iter().map(dest_extra_vbytes).sum();
     let secp = Secp256k1::new();
 
     // Reconstruct the ORIGINAL inputs with signing info.
@@ -1074,10 +1202,11 @@ pub async fn build_and_send_bump(
     let n_in = selected.len();
     let selected_refs: Vec<&SpendableUtxo> = selected.iter().collect();
     // v284: the inputs' real sizes (a silent-payment coin is a 58-vB taproot input, not 68)
-    let vsize = 11 + selected_refs.iter().map(|u| input_vbytes(u.chain)).sum::<u64>() + 31 * 2 + extra_vb;
-    let mut new_fee = estimate_fee_inputs(&selected_refs, 2, extra_vb, new_fee_rate_sat_per_kw);
-    // v240: the same inputs re-derive the same silent-payment output — RBF keeps the output.
-    let dest_spk = resolve_dest_script(&dest_parsed, root_key, &secp, &selected_refs)?;
+    let vsize = 11 + selected_refs.iter().map(|u| input_vbytes(u.chain)).sum::<u64>() + 31 * (n_dest as u64 + 1) + extra_vb;
+    let mut new_fee = estimate_fee_inputs(&selected_refs, n_dest + 1, extra_vb, new_fee_rate_sat_per_kw);
+    // v240: the same inputs re-derive the same silent-payment outputs — RBF keeps every output (v305: every recipient,
+    // in the same order, so a silent payment's k is the same too).
+    let dest_spks = resolve_dest_scripts(&dests_parsed, root_key, &secp, &selected_refs)?;
     let bip125_min = old_fee + vsize; // old absolute fee + 1 sat/vB incremental relay
     if new_fee < bip125_min {
         let min_vb = (bip125_min + vsize - 1) / vsize;
@@ -1111,10 +1240,10 @@ pub async fn build_and_send_bump(
     let change_spk = Address::p2wpkh(&bitcoin::CompressedPublicKey(change_pubkey.inner), network)
         .script_pubkey();
 
-    let mut outputs = vec![TxOut {
-        value: bitcoin::Amount::from_sat(amount_sats),
-        script_pubkey: dest_spk,
-    }];
+    let mut outputs: Vec<TxOut> = dest_spks.into_iter().zip(dests.iter()).map(|(spk, (_, a))| TxOut {
+        value: bitcoin::Amount::from_sat(*a),
+        script_pubkey: spk,
+    }).collect();
     if change_sats >= DUST_THRESHOLD_SATS {
         outputs.push(TxOut {
             value: bitcoin::Amount::from_sat(change_sats),
@@ -1159,7 +1288,7 @@ pub async fn build_and_send_bump(
         prev.txid
     );
 
-    let change_outpoint = if change_sats > 0 { Some((txid.clone(), 1u32)) } else { None };
+    let change_outpoint = if change_sats > 0 { Some((txid.clone(), n_dest as u32)) } else { None };   // v305: after the recipients
     Ok(SendResult {
         txid,
         amount_sats,
@@ -1170,6 +1299,7 @@ pub async fn build_and_send_bump(
         change_outpoint,
         change_index: prev.change_index,
         raw_hex: hex::encode(&raw),   // v298
+        recipients: dests.iter().map(|(d, a)| SentTo { dest: d.clone(), amount_sats: *a }).collect(),   // v305
     })
 }
 
@@ -1287,7 +1417,147 @@ mod coin_control_tests {
     use crate::tier2_wallet::{CoinMarks, OnchainUtxo, Tier2View};
 
     fn coin(txid: &str, vout: u32, chain: u32, value: u64) -> OnchainUtxo {
-        OnchainUtxo { chain, index: 0, txid: txid.into(), vout, value_sats: value, height: 900_000, spent_height: None, spent_txid: None, sp_tweak: None }
+        OnchainUtxo { chain, index: 0, txid: txid.into(), vout, value_sats: value, height: 900_000, spent_height: None, spent_txid: None, sp_tweak: None, sp_label: None }
+    }
+
+    // ── v305 (S54): several recipients in one send ──
+    const SP_EX: &str = "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv";
+    const BC1_EX: &str = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
+    fn root305() -> RootKey {
+        RootKey::from_mnemonic(&"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".parse().unwrap(), Network::Bitcoin).unwrap()
+    }
+    /// the BIP example address's own keys (the first receiving vector) — the receiver of SP_EX
+    fn sp_ex_keys() -> crate::silent_payment::SpKeys {
+        let secp = Secp256k1::new();
+        let scan = bitcoin::secp256k1::SecretKey::from_slice(&hex::decode("0f694e068028a717f8af6b9411f9a133dd3565258714cc226594b34db90c1f2c").unwrap()).unwrap();
+        let spend = bitcoin::secp256k1::SecretKey::from_slice(&hex::decode("9d6ad855ce3417ef84e836892e5a56392bfba05fa5d97ccea30e266f540e08b3").unwrap()).unwrap();
+        let k = crate::silent_payment::SpKeys { scan, spend, scan_pub: bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &scan), spend_pub: bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &spend), network: Network::Bitcoin };
+        assert_eq!(k.address(), SP_EX);
+        k
+    }
+    fn view305() -> Tier2View {
+        let mut view = Tier2View::default();
+        let mut a = coin(&"aa".repeat(32), 0, 0, 100_000); a.index = 1;
+        let mut b = coin(&"bb".repeat(32), 1, 0, 80_000); b.index = 2;
+        view.utxos = vec![a, b];
+        view
+    }
+    fn rcpt(dest: &str, a: Option<u64>) -> Recipient { Recipient { dest: dest.into(), amount_sats: a } }
+    /// what the receiver of SP_EX finds in a built transaction, from the box's tweak of its inputs
+    fn sp_ex_finds(tx: &Transaction, root: &RootKey) -> Vec<(u32, u64)> {
+        let secp = Secp256k1::new();
+        let keys: Vec<bitcoin::secp256k1::PublicKey> = tx.input.iter().map(|i| {
+            let idx = if i.previous_output.txid.to_string() == "aa".repeat(32) { 1 } else { 2 };
+            signing_secret(root, &secp, 0, idx).unwrap().public_key(&secp)
+        }).collect();
+        let ops: Vec<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
+        let tweak = crate::silent_payment::tweak_from_inputs(&secp, &keys, &ops).unwrap();
+        let outs: Vec<(u32, [u8; 32], u64)> = tx.output.iter().enumerate().filter(|(_, o)| o.script_pubkey.is_p2tr()).map(|(i, o)| {
+            let mut k = [0u8; 32]; k.copy_from_slice(&o.script_pubkey.as_bytes()[2..34]); (i as u32, k, o.value.to_sat())
+        }).collect();
+        let mut f: Vec<(u32, u64)> = sp_ex_keys().find_in_outputs(&secp, &tweak, tx.compute_txid(), &outs, &[]).iter().map(|f| (f.vout, f.value_sats)).collect();
+        f.sort();
+        f
+    }
+
+    #[test]
+    fn v305_two_recipients_exact_amounts_change_last_and_the_silent_payment_found() {
+        let root = root305();
+        let view = view305();
+        let rate = 500;   // 2 sat/vB
+        let rs = vec![rcpt(BC1_EX, Some(50_000)), rcpt(SP_EX, Some(30_000))];
+        let b = build_send_tx(&root, Network::Bitcoin, &rs, rate, 7, &view, &[], &CoinMarks::default(), None).unwrap();
+        // DP's pick: the smallest single coin covering 80,000 + the fee for three outputs (one of them taproot)
+        assert_eq!(b.spent_outpoints, vec![("aa".repeat(32), 0)]);
+        let fee = (11 + 68 + 31 * 3 + 12) * 2;
+        assert_eq!((b.fee_sats, b.change_sats), (fee, 100_000 - 80_000 - fee));
+        assert_eq!(b.tx.output.len(), 3);
+        assert_eq!(b.tx.output[0].script_pubkey, Address::from_str(BC1_EX).unwrap().assume_checked().script_pubkey());
+        assert_eq!(b.tx.output[0].value.to_sat(), 50_000);
+        assert!(b.tx.output[1].script_pubkey.is_p2tr());
+        assert_eq!(b.tx.output[1].value.to_sat(), 30_000);
+        assert_eq!(b.tx.output[2].value.to_sat(), b.change_sats, "change after the recipients");
+        assert_eq!(b.paid, vec![SentTo { dest: BC1_EX.into(), amount_sats: 50_000 }, SentTo { dest: SP_EX.into(), amount_sats: 30_000 }]);
+        assert_eq!(sp_ex_finds(&b.tx, &root), vec![(1, 30_000)], "the silent-payment recipient finds its output");
+        // the quote is the same plan
+        let q = multi_quote(&rs, Network::Bitcoin, rate, &view, &[], &CoinMarks::default(), None);
+        assert_eq!((q.amounts.clone(), q.total_sats, q.fee_sats, q.change_sats, q.inputs, q.problem.clone()), (vec![50_000, 30_000], 80_000, fee, b.change_sats, 1, None));
+    }
+
+    #[test]
+    fn v305_two_payments_to_one_silent_payment_wallet_are_k0_and_k1_and_both_found() {
+        let root = root305();
+        let b = build_send_tx(&root, Network::Bitcoin, &[rcpt(SP_EX, Some(10_000)), rcpt(SP_EX, Some(20_000))], 500, 7, &view305(), &[], &CoinMarks::default(), None).unwrap();
+        assert_ne!(b.tx.output[0].script_pubkey, b.tx.output[1].script_pubkey, "two distinct one-time outputs");
+        assert_eq!(sp_ex_finds(&b.tx, &root), vec![(0, 10_000), (1, 20_000)]);
+    }
+
+    #[test]
+    fn v305_max_on_the_last_recipient_takes_what_is_left_with_no_change() {
+        let root = root305();
+        let view = view305();
+        let rs = vec![rcpt(BC1_EX, Some(50_000)), rcpt(SP_EX, None)];
+        let b = build_send_tx(&root, Network::Bitcoin, &rs, 500, 7, &view, &[], &CoinMarks::default(), None).unwrap();
+        let fee = (11 + 68 * 2 + 31 * 2 + 12) * 2;
+        assert_eq!((b.spent_outpoints.len(), b.fee_sats, b.change_sats, b.tx.output.len()), (2, fee, 0, 2), "every coin, no change output");
+        assert_eq!(b.paid[1].amount_sats, 180_000 - 50_000 - fee);
+        assert_eq!(sp_ex_finds(&b.tx, &root), vec![(1, 180_000 - 50_000 - fee)]);
+        let q = multi_quote(&rs, Network::Bitcoin, 500, &view, &[], &CoinMarks::default(), None);
+        assert_eq!(q.amounts, vec![50_000, 180_000 - 50_000 - fee], "the quote shows the Max the send pays");
+        // chosen coins: Max takes exactly those
+        let pins = vec![("bb".repeat(32), 1u32)];
+        let b2 = build_send_tx(&root, Network::Bitcoin, &[rcpt(BC1_EX, Some(10_000)), rcpt(SP_EX, None)], 500, 7, &view, &[], &CoinMarks::default(), Some(&pins)).unwrap();
+        assert_eq!((b2.spent_outpoints.clone(), b2.paid[1].amount_sats), (pins.clone(), 80_000 - 10_000 - (11 + 68 + 31 * 2 + 12) * 2));
+    }
+
+    #[test]
+    fn v305_refusals_in_plain_words() {
+        let root = root305();
+        let view = view305();
+        let m = CoinMarks::default();
+        let err = |rs: Vec<Recipient>| build_send_tx(&root, Network::Bitcoin, &rs, 500, 7, &view, &[], &m, None).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(err(vec![rcpt(SP_EX, None), rcpt(BC1_EX, Some(1_000))]).contains("only the last recipient"));
+        assert!(err(vec![rcpt(BC1_EX, Some(1_000)), rcpt(SP_EX, Some(0))]).contains("recipient 2: the amount must be greater than zero"));
+        assert!(err(vec![rcpt(BC1_EX, Some(1_000)), rcpt(SP_EX, Some(200))]).contains("recipient 2: 200 sats is below"));
+        let bad = err(vec![rcpt(BC1_EX, Some(1_000)), rcpt("bc1qnotanaddress", Some(1_000))]);
+        assert!(bad.starts_with("Node error: recipient 2: invalid address"), "{bad}");
+        assert!(err(vec![]).contains("add who you are paying"));
+        assert!(err((0..21).map(|_| rcpt(BC1_EX, Some(1_000))).collect()).contains("at most 20"));
+        assert!(err(vec![rcpt(BC1_EX, Some(100_000)), rcpt(SP_EX, Some(90_000))]).contains("insufficient funds"));
+        assert!(err(vec![rcpt(BC1_EX, Some(179_700)), rcpt(SP_EX, None)]).contains("nothing left for the last recipient"));
+        // one recipient keeps its old words
+        assert_eq!(err(vec![rcpt(BC1_EX, Some(0))]), "Node error: amount must be greater than zero");
+    }
+
+    #[test]
+    fn v305_one_recipient_is_the_send_it_always_was() {
+        let root = root305();
+        let view = view305();
+        let b = build_send_tx(&root, Network::Bitcoin, &[rcpt(BC1_EX, Some(50_000))], 500, 7, &view, &[], &CoinMarks::default(), None).unwrap();
+        let fee = (11 + 68 + 31 * 2) * 2;
+        assert_eq!((b.tx.output.len(), b.tx.output[0].value.to_sat(), b.fee_sats, b.change_sats), (2, 50_000, fee, 80_000 - 50_000 - fee), "dest at vout 0, change at vout 1, the two-output fee");
+        let all = build_send_tx(&root, Network::Bitcoin, &[rcpt(BC1_EX, None)], 500, 7, &view, &[], &CoinMarks::default(), None).unwrap();
+        let fee1 = (11 + 68 * 2 + 31) * 2;
+        assert_eq!((all.tx.output.len(), all.paid[0].amount_sats, all.fee_sats), (1, 180_000 - fee1, fee1));
+        assert_eq!(max_sendable(BC1_EX, Network::Bitcoin, 500, &view, &[], &CoinMarks::default()).max_sats, all.paid[0].amount_sats, "Max on the screen = Max sent");
+    }
+
+    #[test]
+    fn v305_the_bump_rebuilds_every_recipient_output_in_order() {
+        // the bump re-derives the outputs from the SAME inputs and the recorded recipients, in order — so every
+        // silent payment keeps its k and its output; this is the derivation the bump calls
+        let root = root305();
+        let secp = Secp256k1::new();
+        let rs = vec![rcpt(SP_EX, Some(10_000)), rcpt(BC1_EX, Some(20_000)), rcpt(SP_EX, Some(30_000))];
+        let b = build_send_tx(&root, Network::Bitcoin, &rs, 500, 7, &view305(), &[], &CoinMarks::default(), None).unwrap();
+        let view = view305();
+        let frozen = std::collections::HashSet::new();
+        let sp = gather_spendable(&view, &[], &frozen);
+        let selected: Vec<&SpendableUtxo> = sp.iter().filter(|u| b.spent_outpoints.contains(&(u.txid.clone(), u.vout))).collect();
+        let dests: Vec<Dest> = rs.iter().map(|r| parse_dest(&r.dest, Network::Bitcoin).unwrap()).collect();
+        let again = resolve_dest_scripts(&dests, &root, &secp, &selected).unwrap();
+        assert_eq!(again, b.tx.output[..3].iter().map(|o| o.script_pubkey.clone()).collect::<Vec<_>>());
+        assert_eq!(sp_ex_finds(&b.tx, &root), vec![(0, 10_000), (2, 30_000)]);
     }
 
     #[test]
@@ -1387,7 +1657,7 @@ mod coin_control_tests {
         let pending = vec![crate::tier2_wallet::PendingTx {
             txid: "dd".into(), spent_outpoints: vec![("bb".into(), 1)], delta_sats: -1, direction: crate::tier2_wallet::TxDirection::Sent,
             kind: crate::tier2_wallet::TxKind::Onchain, created_at_ms: 0, change_outpoint: None, change_value_sats: 0, change_index: 0,
-            broadcast_seen: false, raw_tx_hex: None, dest_addr: None, dest_sats: None, fee_sats: None, fee_rate_sat_per_kw: None,
+            broadcast_seen: false, raw_tx_hex: None, dest_addr: None, dest_sats: None, fee_sats: None, fee_rate_sat_per_kw: None, dests: Vec::new(),
         }];
         let got = gather_spendable(&view, &pending, &frozen);
         assert_eq!(got.len(), 1);
@@ -1428,12 +1698,12 @@ mod coin_control_tests {
         let secp = Secp256k1::new();
         let keys = crate::silent_payment::SpKeys::from_root(&root).unwrap();
         let mut view = crate::tier2_wallet::Tier2View::default();
-        let mk = |txid: &str, vout: u32, sats: u64, t: u8| crate::tier2_wallet::OnchainUtxo { sp_tweak: Some(hex::encode([t; 32])), chain: crate::tier2::CHAIN_SP, index: 0, txid: txid.to_string(), vout, value_sats: sats, height: 900_000, spent_height: None, spent_txid: None };
+        let mk = |txid: &str, vout: u32, sats: u64, t: u8| crate::tier2_wallet::OnchainUtxo { sp_tweak: Some(hex::encode([t; 32])), chain: crate::tier2::CHAIN_SP, index: 0, txid: txid.to_string(), vout, value_sats: sats, height: 900_000, spent_height: None, spent_txid: None, sp_label: None };
         view.utxos = vec![mk(&"bb".repeat(32), 0, 1_500, 0x55), mk(&"aa".repeat(32), 1, 50_000, 0x42)];
         // a spent SP coin and an m/84 coin are not in the kit
         let mut spent = mk(&"cc".repeat(32), 0, 9_000, 0x66); spent.spent_height = Some(900_001);
         view.utxos.push(spent);
-        view.utxos.push(crate::tier2_wallet::OnchainUtxo { sp_tweak: None, chain: 0, index: 2, txid: "dd".repeat(32), vout: 0, value_sats: 70_000, height: 1, spent_height: None, spent_txid: None });
+        view.utxos.push(crate::tier2_wallet::OnchainUtxo { sp_tweak: None, chain: 0, index: 2, txid: "dd".repeat(32), vout: 0, value_sats: 70_000, height: 1, spent_height: None, spent_txid: None, sp_label: None });
         let kit = sp_kit_sweeps(&root, &view, Network::Bitcoin, 7, (10, 40)).unwrap();
         assert_eq!(kit.len(), 2);
         assert_eq!((kit[0].txid.as_str(), kit[0].destination_index, kit[1].txid.as_str(), kit[1].destination_index), ("aa".repeat(32).as_str(), 7, "bb".repeat(32).as_str(), 8), "sorted by outpoint; consecutive destinations");

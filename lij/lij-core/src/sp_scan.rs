@@ -90,6 +90,9 @@ pub struct SpPending {
     pub t_k: String,
     pub k: u32,
     pub seen_ms: u64,
+    /// v304: the label it was paid to (see OnchainUtxo::sp_label).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<u32>,
 }
 
 // ── the box's answers ──
@@ -193,6 +196,7 @@ fn add_coin(view: &mut Tier2View, f: &crate::silent_payment::SpFound, height: u3
     }
     view.utxos.push(OnchainUtxo {
         sp_tweak: Some(tweak_hex(&f.t_k)),
+        sp_label: f.label,   // v304
         chain: CHAIN_SP,
         index: f.k,
         txid: txid.clone(),
@@ -260,6 +264,8 @@ async fn scan_batch(
     view: &mut Tier2View,
     start: u32,
     end: u32,
+    labels: &[crate::silent_payment::SpLabelTweak],
+    found_labels: &mut std::collections::BTreeSet<u32>,
 ) -> LijResult<usize> {
     let secp = Secp256k1::new();
     let count = end - start + 1;
@@ -339,9 +345,9 @@ async fn scan_batch(
         if h.hash != f.hash {
             return Err(LijError::Node(format!("sp scan: header/filter hash mismatch at {}", f.height)));
         }
-        let mut query: Vec<ScriptBuf> = Vec::with_capacity(tweaks.len() * 2 + own.len());
+        let mut query: Vec<ScriptBuf> = Vec::with_capacity(tweaks.len() * (1 + labels.len()) + own.len());
         for group in tweaks.chunks(SP_TWEAK_GROUP) {   // v293: the same scripts in the same order, with the budgeted yield between groups
-            query.extend(keys.candidate_scripts(&secp, group, true));
+            query.extend(keys.candidate_scripts(&secp, group, labels));   // v304: the labels in use
             crate::tier2_sync::yield_if_due(&mut mark).await;
         }
         query.extend(own.iter().cloned());
@@ -356,9 +362,10 @@ async fn scan_batch(
         // outputs themselves are the walk's business, so the script net is empty here
         let scripts = crate::tier2::WalletScripts::default();
         apply_txs(view, &scripts, &block.txdata, height);
-        let found = keys.find_in_block(&secp, &tweaks, &block.txdata, true);
+        let found = keys.find_in_block(&secp, &tweaks, &block.txdata, labels);
         let mut new = 0;
         for c in &found {
+            if let Some(m) = c.label { found_labels.insert(m); }   // v304: the marks learn a label found here
             if add_coin(view, c, height) { new += 1; own.push(c.script.clone()); }   // v297: tested from the next block on
             let txid = c.txid.to_string();
             if let Some(sp) = view.sp.as_mut() { sp.pending.retain(|p| !(p.txid == txid && p.vout == c.vout)); }
@@ -390,6 +397,10 @@ pub async fn scan(
 ) -> LijResult<(u32, String)> {
     let sp = match view.sp.clone() { Some(s) if s.available => s, _ => return Ok((0, "no silent-payment index at this provider".into())) };
     let keys = SpKeys::from_root(root_key)?;
+    // v304 (S54): the labels to check — the change label, every label made or found, all ten after a words-only restore
+    let mut marks = crate::tier2_wallet::load_marks(storage).unwrap_or_default();
+    let labels = keys.label_set(&marks.sp_scan_labels());
+    let mut found_labels: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
     let top = view.cursor.scanned_to.min(sp.indexed_to);
     let mut scanned_to = sp.scanned_to.max(sp.from.saturating_sub(1));
     let mut batches = 0u32;
@@ -397,11 +408,16 @@ pub async fn scan(
     while scanned_to < top && (max_batches == 0 || batches < max_batches) {
         let start = scanned_to + 1;
         let end = (start + batch.max(1) - 1).min(top);
-        matched_total += scan_batch(http, base, &keys, view, start, end).await?;
+        matched_total += scan_batch(http, base, &keys, view, start, end, &labels, &mut found_labels).await?;
         scanned_to = end;
         if let Some(s) = view.sp.as_mut() { s.scanned_to = scanned_to; s.waiting_for_index = false; }
         save_view(storage, view)?;
         batches += 1;
+    }
+    // v304: a coin found under a label this wallet has no entry for (a words-only restore) — keep the number
+    let now = crate::tier2_wallet::now_ms();
+    if found_labels.iter().fold(false, |acc, m| marks.sp_label_ensure(*m, now) || acc) {
+        crate::tier2_wallet::save_marks(storage, &marks)?;
     }
     let waiting = view.cursor.scanned_to > sp.indexed_to && scanned_to >= sp.indexed_to;
     let top_of = view.cursor.scanned_to;
@@ -421,6 +437,7 @@ pub async fn mempool(http: &Arc<dyn EsploraHttp>, base: &str, root_key: &RootKey
     let sp = match view.sp.clone() { Some(s) if s.available => s, _ => return Ok(0) };
     let keys = SpKeys::from_root(root_key)?;
     let secp = Secp256k1::new();
+    let labels = keys.label_set(&crate::tier2_wallet::load_marks(storage).unwrap_or_default().sp_scan_labels());   // v304
     let resp: SpMempoolResp = get_json(http, &format!("{base}/sp/mempool?since={}", sp.mempool_seq)).await?;
     let mut found = 0usize;
     let mut changed = false;
@@ -434,12 +451,12 @@ pub async fn mempool(http: &Arc<dyn EsploraHttp>, base: &str, root_key: &RootKey
             let mut key = [0u8; 32]; key.copy_from_slice(&k);
             Some((o.vout, key, o.value))
         }).collect();
-        for f in keys.find_in_outputs(&secp, &tweak, txid, &outs, true) {
+        for f in keys.find_in_outputs(&secp, &tweak, txid, &outs, &labels) {
             let already = view.utxos.iter().any(|u| u.txid == e.txid && u.vout == f.vout)
                 || view.sp.as_ref().map(|s| s.pending.iter().any(|p| p.txid == e.txid && p.vout == f.vout)).unwrap_or(false);
             if already { continue; }
             if let Some(s) = view.sp.as_mut() {
-                s.pending.push(SpPending { txid: e.txid.clone(), vout: f.vout, value_sats: f.value_sats, t_k: tweak_hex(&f.t_k), k: f.k, seen_ms: now_ms });
+                s.pending.push(SpPending { txid: e.txid.clone(), vout: f.vout, value_sats: f.value_sats, t_k: tweak_hex(&f.t_k), k: f.k, seen_ms: now_ms, label: f.label });
             }
             found += 1; changed = true;
             log::info!("[sp] silent payment in the mempool: {}:{} {} sats", &e.txid[..12], f.vout, f.value_sats);
@@ -518,9 +535,9 @@ mod tests {
         let secp = Secp256k1::new();
         let keys = SpKeys::from_root(&root()).unwrap();
         let tweaks: Vec<PublicKey> = (1u32..=70).map(|i| { let mut b = [0u8; 32]; b[28..].copy_from_slice(&i.to_be_bytes()); b[0] = 1; PublicKey::from_secret_key(&secp, &SecretKey::from_slice(&b).unwrap()) }).collect();
-        let whole = keys.candidate_scripts(&secp, &tweaks, true);
+        let whole = keys.candidate_scripts(&secp, &tweaks, &keys.label_set(&[0]));
         let mut grouped = Vec::new();
-        for g in tweaks.chunks(SP_TWEAK_GROUP) { grouped.extend(keys.candidate_scripts(&secp, g, true)); }
+        for g in tweaks.chunks(SP_TWEAK_GROUP) { grouped.extend(keys.candidate_scripts(&secp, g, &keys.label_set(&[0]))); }
         assert_eq!(whole.len(), 140);
         assert_eq!(whole, grouped);
         assert!(crate::tier2_sync::YIELD_BUDGET_MS > 0.0 && crate::tier2_sync::now_ms() > 0.0);
@@ -637,9 +654,17 @@ mod tests {
     /// 102 spends that coin. Returns the box, the blocks, the paid script and the mempool tweak of a third,
     /// unconfirmed payment (777 sats).
     fn build_world(tamper_commit: bool) -> (Arc<MapHttp>, Vec<Served>, ScriptBuf, (PublicKey, Txid, [u8; 32])) {
+        build_world_to(tamper_commit, None)
+    }
+
+    /// v304: the same world, the payments made to label `label`'s address instead of the plain one.
+    fn build_world_to(tamper_commit: bool, label: Option<u32>) -> (Arc<MapHttp>, Vec<Served>, ScriptBuf, (PublicKey, Txid, [u8; 32])) {
         let secp = Secp256k1::new();
         let keys = SpKeys::from_root(&root()).unwrap();
-        let addr = parse(&keys.address(), Network::Bitcoin).unwrap();
+        let addr = match label {
+            None => parse(&keys.address(), Network::Bitcoin).unwrap(),
+            Some(m) => parse(&keys.label_address(&secp, m).unwrap(), Network::Bitcoin).unwrap(),
+        };
         // the sender: one P2WPKH input
         let a1 = SecretKey::from_slice(&[1u8; 32]).unwrap();
         let a1_pub = PublicKey::from_secret_key(&secp, &a1);
@@ -758,6 +783,52 @@ mod tests {
         crate::tier2_wallet::rollback(&mut view, 100);
         let sp = view.sp.as_ref().unwrap();
         assert_eq!((sp.scanned_to, sp.scanned_hash.is_empty(), view.utxos.len()), (100, true, 0));
+    }
+
+    #[tokio::test]
+    async fn v304_a_payment_to_label_2_is_found_only_when_label_2_is_checked_and_the_restore_keeps_its_number() {
+        let (http, blocks, paid, _) = build_world_to(false, Some(2));
+        let http: Arc<dyn EsploraHttp> = http;
+        let fresh_view = || {
+            let mut v = Tier2View::default();
+            v.cursor.birthday = 90;
+            v.cursor.scanned_to = 101;
+            v.cursor.last_hash = Some(blocks[0].block.block_hash().to_string());
+            v.cursor.last_filter_header = Some(bitcoin::hashes::sha256d::Hash::from_byte_array(blocks[0].fh).to_string());
+            v
+        };
+        // a wallet that made no labels does not check label 2 (and pays no filter cost for it)
+        let storage = crate::storage::native_storage::MemoryStorage::new();
+        let mut view = fresh_view();
+        refresh_info(&http, "http://box", &mut view).await.unwrap();
+        scan(&http, "http://box", &root(), &mut view, &storage, 100, 0).await.unwrap();
+        assert!(view.utxos.is_empty(), "label 2 is not checked: {:?}", view.utxos);
+        // a words-only restore checks all ten: found, tagged 2, and the marks keep the number (no name yet)
+        let storage = crate::storage::native_storage::MemoryStorage::new();
+        crate::tier2_wallet::save_marks(&storage, &crate::tier2_wallet::CoinMarks { sp_labels_unknown: true, ..Default::default() }).unwrap();
+        let mut view = fresh_view();
+        refresh_info(&http, "http://box", &mut view).await.unwrap();
+        scan(&http, "http://box", &root(), &mut view, &storage, 100, 0).await.unwrap();
+        assert_eq!(view.utxos.len(), 1, "{:?}", view.utxos);
+        assert_eq!((view.utxos[0].sp_label, view.utxos[0].value_sats), (Some(2), 184_000));
+        let secp = Secp256k1::new();
+        let keys = SpKeys::from_root(&root()).unwrap();
+        let mut t = [0u8; 32]; t.copy_from_slice(&hex::decode(view.utxos[0].sp_tweak.as_deref().unwrap()).unwrap());
+        assert_eq!(keys.script_for(&secp, &t).unwrap(), paid, "its stored t rebuilds the labelled script — the spend and the kit work unchanged");
+        let marks = crate::tier2_wallet::load_marks(&storage).unwrap();
+        assert_eq!(marks.sp_labels.iter().map(|l| (l.m, l.name.clone())).collect::<Vec<_>>(), vec![(2, String::new())]);
+        // a wallet that made label 2 checks it (and only it, with the change label)
+        let storage = crate::storage::native_storage::MemoryStorage::new();
+        let mut m = crate::tier2_wallet::CoinMarks::default();
+        m.sp_label_create("One", 1).unwrap();
+        m.sp_label_create("Two", 2).unwrap();
+        assert_eq!(m.sp_scan_labels(), vec![0, 1, 2]);
+        crate::tier2_wallet::save_marks(&storage, &m).unwrap();
+        let mut view = fresh_view();
+        refresh_info(&http, "http://box", &mut view).await.unwrap();
+        scan(&http, "http://box", &root(), &mut view, &storage, 100, 0).await.unwrap();
+        assert_eq!(view.utxos.iter().map(|u| u.sp_label).collect::<Vec<_>>(), vec![Some(2)]);
+        assert_eq!(crate::tier2_wallet::load_marks(&storage).unwrap().sp_label(2).unwrap().name, "Two", "a named label keeps its name");
     }
 
     #[tokio::test]
@@ -925,7 +996,7 @@ mod tests {
     #[test]
     fn add_coin_is_idempotent_and_tags_chain_352() {
         let mut view = Tier2View::default();
-        let f = crate::silent_payment::SpFound { txid: bitcoin::Txid::all_zeros(), vout: 1, value_sats: 5_000, t_k: [7u8; 32], k: 0, script: ScriptBuf::new(), labelled_change: false };
+        let f = crate::silent_payment::SpFound { txid: bitcoin::Txid::all_zeros(), vout: 1, value_sats: 5_000, t_k: [7u8; 32], k: 0, script: ScriptBuf::new(), labelled_change: false, label: None };
         assert!(add_coin(&mut view, &f, 10));
         assert!(!add_coin(&mut view, &f, 10));
         assert_eq!(view.utxos.len(), 1);

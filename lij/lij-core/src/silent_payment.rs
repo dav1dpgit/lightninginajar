@@ -18,9 +18,15 @@
 //!   t_0        = TaggedHash("BIP0352/SharedSecret", ecdh ‖ 0u32 BE)
 //!   P_0        = B_spend + t_0·G           → output = OP_1 <x(P_0)>
 //!
-//! Today: one recipient, one output per transaction (k = 0); several recipients
-//! in one send and labelled addresses are planned. The RBF bump path rebuilds
-//! the same inputs, so it re-derives the same output.
+//! Several recipients in one send (v305): `derive_output_scripts` — one group per
+//! scan key, k = 0, 1 … in recipient order. The RBF bump path rebuilds the same
+//! inputs and the same recipients in order, so it re-derives the same outputs. A LABELLED address (v304, receive side) is an
+//! ordinary sp1 address to a sender — nothing changes here to pay one.
+//!
+//! LABELS (v304, S54): label m's address is `B_m = B_spend + hash("BIP0352/Label", b_scan ‖ m)·G`
+//! with the same scan key; the receiver checks `P_k + label_m·G` for each label in use
+//! (one point addition per tweak per label) and spends with `b_spend + t_k + label_m`.
+//! The BIP's RECEIVING vectors are the gate (`bip352_receive_vectors.json`).
 //!
 //! The BIP's own `send_and_receive_test_vectors.json` (sending cases, trimmed to
 //! the fields used) is the unit-test gate in `testdata/` (`bip352_sending_vectors`).
@@ -204,6 +210,22 @@ pub fn derive_output_script<C: Signing + Verification>(
     inputs: &[SpInput],
     addr: &SpAddress,
 ) -> LijResult<ScriptBuf> {
+    Ok(derive_output_scripts(secp, inputs, std::slice::from_ref(addr))?.remove(0))
+}
+
+/// v305 (S54, DP 2026-10-02 13:50 "Go ahead" — several recipients in one send): one taproot output script per
+/// silent-payment recipient, in the order given, for exactly these inputs. Recipients that share a scan key form one
+/// group and take k = 0, 1, 2 … in their order (BIP-352 "Creating outputs") — two payments to one wallet, or to two
+/// labels of one wallet, are two distinct outputs it finds with one scan. The input arithmetic (a_sum, input_hash) is
+/// done once.
+pub fn derive_output_scripts<C: Signing + Verification>(
+    secp: &Secp256k1<C>,
+    inputs: &[SpInput],
+    addrs: &[SpAddress],
+) -> LijResult<Vec<ScriptBuf>> {
+    if addrs.is_empty() {
+        return Ok(Vec::new());
+    }
     if inputs.is_empty() {
         return Err(LijError::Node("silent payment: no inputs".into()));
     }
@@ -245,22 +267,37 @@ pub fn derive_output_script<C: Signing + Verification>(
     let k = a_sum
         .mul_tweak(&input_hash)
         .map_err(|e| LijError::Node(format!("silent payment: input_hash·a_sum: {e}")))?;
-    let ecdh = addr
-        .scan
-        .mul_tweak(secp, &Scalar::from(k))
-        .map_err(|e| LijError::Node(format!("silent payment: ecdh: {e}")))?;
 
-    let mut m = Vec::with_capacity(33 + 4);
-    m.extend_from_slice(&ecdh.serialize());
-    m.extend_from_slice(&0u32.to_be_bytes());
-    let t0 = Scalar::from_be_bytes(tagged_hash("BIP0352/SharedSecret", &m))
-        .map_err(|_| LijError::Node("silent payment: t_0 out of range".into()))?;
-    let p0 = addr
-        .spend
-        .add_exp_tweak(secp, &t0)
-        .map_err(|e| LijError::Node(format!("silent payment: output key: {e}")))?;
-    let (xonly, _parity) = p0.x_only_public_key();
-    Ok(ScriptBuf::new_p2tr_tweaked(xonly.dangerous_assume_tweaked()))
+    // v305: per scan key, its ecdh once and a running k
+    let mut groups: Vec<(PublicKey, PublicKey, u32)> = Vec::new();   // (scan key, ecdh, next k)
+    let mut out = Vec::with_capacity(addrs.len());
+    for addr in addrs {
+        let gi = match groups.iter().position(|g| g.0 == addr.scan) {
+            Some(i) => i,
+            None => {
+                let ecdh = addr
+                    .scan
+                    .mul_tweak(secp, &Scalar::from(k))
+                    .map_err(|e| LijError::Node(format!("silent payment: ecdh: {e}")))?;
+                groups.push((addr.scan, ecdh, 0));
+                groups.len() - 1
+            }
+        };
+        let (ecdh, kk) = (groups[gi].1, groups[gi].2);
+        groups[gi].2 += 1;
+        let mut m = Vec::with_capacity(33 + 4);
+        m.extend_from_slice(&ecdh.serialize());
+        m.extend_from_slice(&kk.to_be_bytes());
+        let t_k = Scalar::from_be_bytes(tagged_hash("BIP0352/SharedSecret", &m))
+            .map_err(|_| LijError::Node("silent payment: t_k out of range".into()))?;
+        let p = addr
+            .spend
+            .add_exp_tweak(secp, &t_k)
+            .map_err(|e| LijError::Node(format!("silent payment: output key: {e}")))?;
+        let (xonly, _parity) = p.x_only_public_key();
+        out.push(ScriptBuf::new_p2tr_tweaked(xonly.dangerous_assume_tweaked()));
+    }
+    Ok(out)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -325,7 +362,17 @@ pub struct SpFound {
     pub script: ScriptBuf,
     /// Found under the change label (a seed that was used in another wallet).
     pub labelled_change: bool,
+    /// v304 (S54): the label it was found under — Some(0) the change label, Some(m) a labelled address (m ≥ 1),
+    /// None the plain address.
+    pub label: Option<u32>,
 }
+
+/// v304 (S54, DP 2026-10-02 13:50 "Go ahead"): the most labels a wallet makes (1..=10). A restore from the 12 words
+/// alone cannot know which were handed out, so it checks all ten; the cap keeps that restore finite and complete.
+pub const SP_LABEL_MAX: u32 = 10;
+
+/// One label to check: its number and its scalar `hash("BIP0352/Label", b_scan ‖ m)`.
+pub type SpLabelTweak = (u32, Scalar);
 
 impl SpKeys {
     pub fn from_root(root: &crate::key::RootKey) -> LijResult<SpKeys> {
@@ -359,10 +406,35 @@ impl SpKeys {
     /// The change label `hash("BIP0352/Label", b_scan ‖ 0)` — the one label the BIP asks every
     /// wallet to scan for on a restore (another wallet may have paid its change to it).
     pub fn change_label(&self) -> LijResult<Scalar> {
-        let mut m = Vec::with_capacity(36);
-        m.extend_from_slice(&self.scan.secret_bytes());
-        m.extend_from_slice(&0u32.to_be_bytes());
-        Scalar::from_be_bytes(tagged_hash("BIP0352/Label", &m)).map_err(|_| LijError::Node("silent payment: label out of range".into()))
+        self.label_tweak(0)
+    }
+
+    /// v304: label m's scalar `hash("BIP0352/Label", b_scan ‖ m)` (m = 0 is the change label, never handed out).
+    pub fn label_tweak(&self, m: u32) -> LijResult<Scalar> {
+        let mut msg = Vec::with_capacity(36);
+        msg.extend_from_slice(&self.scan.secret_bytes());
+        msg.extend_from_slice(&m.to_be_bytes());
+        Scalar::from_be_bytes(tagged_hash("BIP0352/Label", &msg)).map_err(|_| LijError::Node("silent payment: label out of range".into()))
+    }
+
+    /// v304: the labels to check, as (m, scalar) — computed once per scan, not per tweak.
+    pub fn label_set(&self, ms: &[u32]) -> Vec<SpLabelTweak> {
+        let mut seen = std::collections::BTreeSet::new();
+        ms.iter().filter(|m| seen.insert(**m)).filter_map(|m| self.label_tweak(*m).ok().map(|t| (*m, t))).collect()
+    }
+
+    /// v304: label m's address — `B_m = B_spend + label_m·G` with the same scan key (BIP-352 "Labels"). m ≥ 1:
+    /// label 0 is the change label and is never handed out (the BIP's rule — a payer could make payments look
+    /// like change).
+    pub fn label_address<C: Verification>(&self, secp: &Secp256k1<C>, m: u32) -> LijResult<String> {
+        if m == 0 {
+            return Err(LijError::Node("silent payment: label 0 is the change label and is never handed out".into()));
+        }
+        let b_m = self.spend_pub.add_exp_tweak(secp, &self.label_tweak(m)?).map_err(|e| LijError::Node(format!("silent payment: label key: {e}")))?;
+        let mut payload = Vec::with_capacity(66);
+        payload.extend_from_slice(&self.scan_pub.serialize());
+        payload.extend_from_slice(&b_m.serialize());
+        Ok(bech32m_encode(if self.network == Network::Bitcoin { "sp" } else { "tsp" }, 0, &payload))
     }
 
     /// The shared secret for one transaction's tweak: `ecdh = b_scan · tweak`.
@@ -374,27 +446,35 @@ impl SpKeys {
 
     /// `t_k` and `P_k = B_spend + t_k·G` for the k-th output of a transaction with this ecdh.
     fn output_k<C: Verification>(&self, secp: &Secp256k1<C>, ecdh: &PublicKey, k: u32) -> LijResult<([u8; 32], XOnlyPublicKey)> {
+        let (t_k, p) = self.output_k_point(secp, ecdh, k)?;
+        Ok((t_k, p.x_only_public_key().0))
+    }
+
+    /// v304: the same with the FULL point `P_k` (its y included). A labelled output is `P_k + label·G` — added to the
+    /// full point. Until v304 the change label was added to the even-y point of x(P_k): wrong whenever P_k's y is
+    /// odd (half of all tweaks), so a change-labelled coin was found only half the time (the BIP's "label with odd
+    /// parity" case).
+    fn output_k_point<C: Verification>(&self, secp: &Secp256k1<C>, ecdh: &PublicKey, k: u32) -> LijResult<([u8; 32], PublicKey)> {
         let mut m = Vec::with_capacity(37);
         m.extend_from_slice(&ecdh.serialize());
         m.extend_from_slice(&k.to_be_bytes());
         let t_k = tagged_hash("BIP0352/SharedSecret", &m);
         let tk = Scalar::from_be_bytes(t_k).map_err(|_| LijError::Node("silent payment: t_k out of range".into()))?;
         let p = self.spend_pub.add_exp_tweak(secp, &tk).map_err(|e| LijError::Node(format!("silent payment: P_k: {e}")))?;
-        Ok((t_k, p.x_only_public_key().0))
+        Ok((t_k, p))
     }
 
     /// The candidate output scripts (k = 0) for a block's tweaks — what the phone tests against
-    /// the block's BIP158 filter before it fetches the block. With `change_label`, the labelled
-    /// candidates too (one point addition each).
-    pub fn candidate_scripts<C: Verification>(&self, secp: &Secp256k1<C>, tweaks: &[PublicKey], change_label: bool) -> Vec<ScriptBuf> {
-        let mut out = Vec::with_capacity(tweaks.len() * if change_label { 2 } else { 1 });
-        let label = if change_label { self.change_label().ok() } else { None };
+    /// the block's BIP158 filter before it fetches the block. Each label in `labels` adds one candidate
+    /// per tweak (one point addition each) — v304: the labels in use (always the change label, 0).
+    pub fn candidate_scripts<C: Verification>(&self, secp: &Secp256k1<C>, tweaks: &[PublicKey], labels: &[SpLabelTweak]) -> Vec<ScriptBuf> {
+        let mut out = Vec::with_capacity(tweaks.len() * (1 + labels.len()));
         for tw in tweaks {
             let Ok(ecdh) = self.ecdh(secp, tw) else { continue };
-            let Ok((_, p0)) = self.output_k(secp, &ecdh, 0) else { continue };
-            out.push(ScriptBuf::new_p2tr_tweaked(p0.dangerous_assume_tweaked()));
-            if let Some(l) = label.as_ref() {
-                if let Ok(pl) = PublicKey::from_x_only_public_key(p0, Parity::Even).add_exp_tweak(secp, l) {
+            let Ok((_, p0)) = self.output_k_point(secp, &ecdh, 0) else { continue };
+            out.push(ScriptBuf::new_p2tr_tweaked(p0.x_only_public_key().0.dangerous_assume_tweaked()));
+            for (_, l) in labels {
+                if let Ok(pl) = p0.add_exp_tweak(secp, l) {   // v304: added to the full point
                     out.push(ScriptBuf::new_p2tr_tweaked(pl.x_only_public_key().0.dangerous_assume_tweaked()));
                 }
             }
@@ -409,7 +489,7 @@ impl SpKeys {
         secp: &Secp256k1<C>,
         tweaks: &[PublicKey],
         txs: &[bitcoin::Transaction],
-        change_label: bool,
+        labels: &[SpLabelTweak],
     ) -> Vec<SpFound> {
         use std::collections::HashMap;
         // every taproot output in the block, by its x-only key
@@ -425,7 +505,7 @@ impl SpKeys {
                 }
             }
         }
-        self.find_by_keys(secp, tweaks, &by_key, change_label)
+        self.find_by_keys(secp, tweaks, &by_key, labels)
     }
 
     /// v287: the same search over one transaction's taproot outputs given as (vout, x-only key,
@@ -436,14 +516,14 @@ impl SpKeys {
         tweak: &PublicKey,
         txid: bitcoin::Txid,
         outputs: &[(u32, [u8; 32], u64)],
-        change_label: bool,
+        labels: &[SpLabelTweak],
     ) -> Vec<SpFound> {
         use std::collections::HashMap;
         let mut by_key: HashMap<[u8; 32], Vec<(bitcoin::Txid, u32, u64)>> = HashMap::new();
         for (vout, key, value) in outputs {
             by_key.entry(*key).or_default().push((txid, *vout, *value));
         }
-        self.find_by_keys(secp, std::slice::from_ref(tweak), &by_key, change_label)
+        self.find_by_keys(secp, std::slice::from_ref(tweak), &by_key, labels)
     }
 
     fn find_by_keys<C: Verification>(
@@ -451,34 +531,34 @@ impl SpKeys {
         secp: &Secp256k1<C>,
         tweaks: &[PublicKey],
         by_key: &std::collections::HashMap<[u8; 32], Vec<(bitcoin::Txid, u32, u64)>>,
-        change_label: bool,
+        labels: &[SpLabelTweak],
     ) -> Vec<SpFound> {
-        let label = if change_label { self.change_label().ok() } else { None };
         let mut found = Vec::new();
         for tw in tweaks {
             let Ok(ecdh) = self.ecdh(secp, tw) else { continue };
             let mut k = 0u32;
             loop {
-                let Ok((t_k, p)) = self.output_k(secp, &ecdh, k) else { break };
+                let Ok((t_k, pk)) = self.output_k_point(secp, &ecdh, k) else { break };
+                let p = pk.x_only_public_key().0;
                 let mut hit = false;
                 if let Some(v) = by_key.get(&p.serialize()) {
                     for (txid, vout, value) in v {
-                        found.push(SpFound { txid: *txid, vout: *vout, value_sats: *value, t_k, k, script: ScriptBuf::new_p2tr_tweaked(p.dangerous_assume_tweaked()), labelled_change: false });
+                        found.push(SpFound { txid: *txid, vout: *vout, value_sats: *value, t_k, k, script: ScriptBuf::new_p2tr_tweaked(p.dangerous_assume_tweaked()), labelled_change: false, label: None });
                     }
                     hit = true;
                 }
-                if let Some(l) = label.as_ref() {
-                    if let Ok(pl) = PublicKey::from_x_only_public_key(p, Parity::Even).add_exp_tweak(secp, l) {
-                        let xl = pl.x_only_public_key().0;
-                        if let Some(v) = by_key.get(&xl.serialize()) {
-                            // t for a labelled output = t_k + label
-                            let tl = Scalar::from_be_bytes(t_k).ok().and_then(|t| SecretKey::from_slice(&t.to_be_bytes()).ok()).and_then(|sk| sk.add_tweak(l).ok());
-                            if let Some(tl) = tl {
-                                for (txid, vout, value) in v {
-                                    found.push(SpFound { txid: *txid, vout: *vout, value_sats: *value, t_k: tl.secret_bytes(), k, script: ScriptBuf::new_p2tr_tweaked(xl.dangerous_assume_tweaked()), labelled_change: true });
-                                }
-                                hit = true;
+                for (m, l) in labels {
+                    // v304: P_k + label·G on the FULL point (see output_k_point)
+                    let Ok(pl) = pk.add_exp_tweak(secp, l) else { continue };
+                    let xl = pl.x_only_public_key().0;
+                    if let Some(v) = by_key.get(&xl.serialize()) {
+                        // t for a labelled output = t_k + label
+                        let tl = SecretKey::from_slice(&t_k).ok().and_then(|sk| sk.add_tweak(l).ok());
+                        if let Some(tl) = tl {
+                            for (txid, vout, value) in v {
+                                found.push(SpFound { txid: *txid, vout: *vout, value_sats: *value, t_k: tl.secret_bytes(), k, script: ScriptBuf::new_p2tr_tweaked(xl.dangerous_assume_tweaked()), labelled_change: *m == 0, label: Some(*m) });
                             }
+                            hit = true;
                         }
                     }
                 }
@@ -715,11 +795,11 @@ mod tests {
         };
         let decoy_tweak = PublicKey::from_secret_key(&secp, &SecretKey::from_slice(&[3u8; 32]).unwrap());
         // the filter candidates carry the paid script
-        let cands = k.candidate_scripts(&secp, &[decoy_tweak, tweak], false);
+        let cands = k.candidate_scripts(&secp, &[decoy_tweak, tweak], &[]);
         assert_eq!(cands.len(), 2);
         assert!(cands.contains(&paid_script));
         // the receiver finds exactly the paid output
-        let found = k.find_in_block(&secp, &[decoy_tweak, tweak], &[decoy.clone(), pay_tx.clone()], true);
+        let found = k.find_in_block(&secp, &[decoy_tweak, tweak], &[decoy.clone(), pay_tx.clone()], &k.label_set(&[0]));
         assert_eq!(found.len(), 1, "{found:?}");
         let f = &found[0];
         assert_eq!((f.txid, f.vout, f.value_sats, f.k, f.labelled_change), (pay_tx.compute_txid(), 1, 184_000, 0, false));
@@ -736,7 +816,7 @@ mod tests {
         let sig = secp.sign_schnorr_no_aux_rand(&msg, &kp);
         assert!(secp.verify_schnorr(&sig, &msg, &xonly).is_ok());
         // a wrong tweak finds nothing; the wallet's own words on another network give another address
-        assert!(k.find_in_block(&secp, &[decoy_tweak], &[pay_tx.clone()], true).is_empty());
+        assert!(k.find_in_block(&secp, &[decoy_tweak], &[pay_tx.clone()], &k.label_set(&[0])).is_empty());
     }
 
     #[test]
@@ -757,7 +837,7 @@ mod tests {
             version: bitcoin::transaction::Version::TWO, lock_time: bitcoin::absolute::LockTime::ZERO, input: vec![],
             output: vec![bitcoin::TxOut { value: bitcoin::Amount::from_sat(10), script_pubkey: s1.clone() }, bitcoin::TxOut { value: bitcoin::Amount::from_sat(20), script_pubkey: s0.clone() }],
         };
-        let found = k.find_in_block(&secp, &[tweak], &[tx], false);
+        let found = k.find_in_block(&secp, &[tweak], &[tx], &[]);
         let mut got: Vec<(u32, u32, u64)> = found.iter().map(|f| (f.k, f.vout, f.value_sats)).collect();
         got.sort();
         assert_eq!(got, vec![(0, 1, 20), (1, 0, 10)]);
@@ -781,6 +861,135 @@ mod tests {
         let (xonly, _) = PublicKey::from_secret_key(&secp, &sk).x_only_public_key();
         let even = PublicKey::from_x_only_public_key(xonly, Parity::Even);
         let tweak = tweak_from_inputs(&secp, &[even], &[op]).unwrap();
-        assert_eq!(k.candidate_scripts(&secp, &[tweak], false), vec![script]);
+        assert_eq!(k.candidate_scripts(&secp, &[tweak], &[]), vec![script]);
+    }
+
+    /// v305 (S54): the BIP's sending vectors with SEVERAL recipients — the same scan key twice (k = 0, 1), several
+    /// wallets, a plain and a labelled address of one wallet, and the sender's own change label — every case whose
+    /// inputs the wallet can have. The output set must equal one of the vector's accepted sets (the order of k within a
+    /// group of one scan key is the sender's choice).
+    #[test]
+    fn v305_bip352_sending_vectors_several_recipients() {
+        let cases: Vec<Case> = serde_json::from_str(include_str!("testdata/bip352_send_vectors.json")).unwrap();
+        let secp = Secp256k1::new();
+        let mut ran = 0;
+        for c in cases.iter().filter(|c| c.recipients.len() > 1) {
+            let inputs: Vec<SpInput> = c.vin.iter().map(|v| SpInput { taproot: v.spk.starts_with("5120"),
+                secret: SecretKey::from_slice(&hex::decode(&v.private_key).unwrap()).unwrap(),
+                outpoint: OutPoint { txid: Txid::from_str(&v.txid).unwrap(), vout: v.vout } }).collect();
+            let addrs: Vec<SpAddress> = c.recipients.iter().map(|r| parse(r, Network::Bitcoin).unwrap()).collect();
+            let got = derive_output_scripts(&secp, &inputs, &addrs).unwrap_or_else(|e| panic!("{}: {e}", c.comment));
+            assert_eq!(got.len(), addrs.len(), "{}", c.comment);
+            let mut got: Vec<String> = got.iter().map(|s| hex::encode(&s.as_bytes()[2..])).collect();
+            got.sort();
+            let ok = c.expected_outputs.iter().any(|set| { let mut w = set.clone(); w.sort(); w == got });
+            assert!(ok, "{}: got {got:?}, none of the accepted sets", c.comment);
+            // one recipient alone gives the same output as the single-recipient path
+            assert_eq!(derive_output_script(&secp, &inputs, &addrs[0]).unwrap(), derive_output_scripts(&secp, &inputs, &addrs[..1]).unwrap()[0]);
+            ran += 1;
+        }
+        assert!(ran >= 5, "ran {ran} several-recipient cases");
+    }
+
+    // ── v304 (S54): labels — the BIP's RECEIVING vectors, every case with a tweak (labels with even and odd
+    // parity, a large label number, several outputs to a labelled address, the change label) ──
+    #[derive(serde::Deserialize)]
+    struct RecvOut { pub_key: String, priv_key_tweak: String }
+    #[derive(serde::Deserialize)]
+    struct RecvCase { comment: String, scan_priv_key: String, spend_priv_key: String, labels: Vec<u32>, outputs: Vec<String>, tweak: Option<String>, addresses: Vec<String>, expected: Vec<RecvOut> }
+
+    fn vector_keys(c: &RecvCase) -> SpKeys {
+        let secp = Secp256k1::new();
+        let scan = SecretKey::from_slice(&hex::decode(&c.scan_priv_key).unwrap()).unwrap();
+        let spend = SecretKey::from_slice(&hex::decode(&c.spend_priv_key).unwrap()).unwrap();
+        SpKeys { scan, spend, scan_pub: PublicKey::from_secret_key(&secp, &scan), spend_pub: PublicKey::from_secret_key(&secp, &spend), network: Network::Bitcoin }
+    }
+
+    #[test]
+    fn v304_bip352_receiving_vectors_with_labels() {
+        let cases: Vec<RecvCase> = serde_json::from_str(include_str!("testdata/bip352_receive_vectors.json")).unwrap();
+        let secp = Secp256k1::new();
+        let (mut ran, mut labelled) = (0, 0);
+        for c in &cases {
+            let Some(tw) = c.tweak.as_deref() else { assert!(c.expected.is_empty(), "{}", c.comment); continue };
+            let keys = vector_keys(c);
+            let tweak = PublicKey::from_slice(&hex::decode(tw).unwrap()).unwrap();
+            let outs: Vec<(u32, [u8; 32], u64)> = c.outputs.iter().enumerate().map(|(i, h)| {
+                let mut k = [0u8; 32];
+                k.copy_from_slice(&hex::decode(h).unwrap());
+                (i as u32, k, 1_000)
+            }).collect();
+            let txid = bitcoin::Txid::from_str("f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16").unwrap();
+            let found = keys.find_in_outputs(&secp, &tweak, txid, &outs, &keys.label_set(&c.labels));
+            let mut got: Vec<(String, String)> = found.iter().map(|f| (hex::encode(&f.script.as_bytes()[2..]), hex::encode(f.t_k))).collect();
+            let mut want: Vec<(String, String)> = c.expected.iter().map(|o| (o.pub_key.clone(), o.priv_key_tweak.clone())).collect();
+            got.sort();
+            want.sort();
+            assert_eq!(got, want, "{}", c.comment);
+            // the keys spend what was found: b_spend + t signs for the output's x-only key
+            for f in &found {
+                let sk = keys.spend_secret(&secp, &f.t_k).unwrap();
+                assert_eq!(hex::encode(PublicKey::from_secret_key(&secp, &sk).x_only_public_key().0.serialize()), hex::encode(&f.script.as_bytes()[2..]), "{}", c.comment);
+            }
+            // the addresses: the plain one first, then one per label handed out (label 0 is never handed out)
+            assert_eq!(keys.address(), c.addresses[0], "{}", c.comment);
+            for m in c.labels.iter().filter(|m| **m > 0) {
+                let a = keys.label_address(&secp, *m).unwrap();
+                assert!(c.addresses.contains(&a), "{}: label {m} address {a} not in the vector's list", c.comment);
+            }
+            if c.labels.iter().any(|m| *m > 0) && !found.is_empty() { labelled += 1; }
+            ran += 1;
+        }
+        assert!(ran >= 24 && labelled >= 5, "ran {ran} receiving cases ({labelled} with labels found) — the vector file changed shape");
+    }
+
+    #[test]
+    fn v304_the_odd_parity_label_is_found_and_the_old_rule_missed_it() {
+        // the BIP's own odd-parity case: P_k + label·G on the full point finds it; the pre-v304 rule (the label added to
+        // the even-y point of x(P_k)) does not
+        let cases: Vec<RecvCase> = serde_json::from_str(include_str!("testdata/bip352_receive_vectors.json")).unwrap();
+        let c = cases.iter().find(|c| c.comment.contains("label with odd parity")).unwrap();
+        let secp = Secp256k1::new();
+        let keys = vector_keys(c);
+        let tweak = PublicKey::from_slice(&hex::decode(c.tweak.as_ref().unwrap()).unwrap()).unwrap();
+        let ecdh = keys.ecdh(&secp, &tweak).unwrap();
+        let (_, pk) = keys.output_k_point(&secp, &ecdh, 0).unwrap();
+        let want = &c.expected[0].pub_key;
+        let hits = |p: PublicKey| c.labels.iter().any(|m| {
+            let l = keys.label_tweak(*m).unwrap();
+            p.add_exp_tweak(&secp, &l).map(|q| hex::encode(q.x_only_public_key().0.serialize()) == *want).unwrap_or(false)
+        });
+        assert!(hits(pk), "the full point finds it");
+        assert_eq!(pk.x_only_public_key().1, Parity::Odd, "this case is the odd one");
+        assert!(!hits(PublicKey::from_x_only_public_key(pk.x_only_public_key().0, Parity::Even)), "the old even-y rule missed it");
+    }
+
+    #[test]
+    fn v304_a_payment_to_a_labelled_address_is_found_with_its_label_and_spends() {
+        let secp = Secp256k1::new();
+        let k = test_keys();
+        let a3 = k.label_address(&secp, 3).unwrap();
+        assert!(a3.starts_with("sp1q") && a3 != k.address());
+        assert!(k.label_address(&secp, 0).is_err(), "the change label is never handed out");
+        let addr = parse(&a3, Network::Bitcoin).unwrap();
+        assert_eq!(addr.scan, k.scan_pub, "same scan key");
+        let a1 = SecretKey::from_slice(&[7u8; 32]).unwrap();
+        let op = OutPoint { txid: Txid::from_str("a1075db55d416d3ca199f55b6084e2115b9345e16c5cf302fc80e9d5fbf5d48d").unwrap(), vout: 2 };
+        let paid = derive_output_script(&secp, &[SpInput { secret: a1, outpoint: op, taproot: false }], &addr).unwrap();
+        let tweak = tweak_from_inputs(&secp, &[PublicKey::from_secret_key(&secp, &a1)], &[op]).unwrap();
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&paid.as_bytes()[2..]);
+        let txid = Txid::from_str("f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16").unwrap();
+        // not found without label 3 in the set; found with it, tagged 3
+        assert!(k.find_in_outputs(&secp, &tweak, txid, &[(0, key, 21_000)], &k.label_set(&[0, 1, 2])).is_empty());
+        let f = k.find_in_outputs(&secp, &tweak, txid, &[(0, key, 21_000)], &k.label_set(&[0, 3]));
+        assert_eq!((f.len(), f[0].label, f[0].labelled_change, f[0].script.clone()), (1, Some(3), false, paid.clone()));
+        let sk = k.spend_secret(&secp, &f[0].t_k).unwrap();
+        assert_eq!(PublicKey::from_secret_key(&secp, &sk).x_only_public_key().0.serialize(), key);
+        assert_eq!(k.script_for(&secp, &f[0].t_k).unwrap(), paid, "the coin's script is rebuilt from its stored t");
+        // the filter stage asks for it too: one more candidate per label
+        let c = k.candidate_scripts(&secp, &[tweak], &k.label_set(&[0, 3]));
+        assert_eq!(c.len(), 3);
+        assert!(c.contains(&paid));
     }
 }

@@ -154,6 +154,23 @@ impl LijWallet {
             }
         }
 
+        // v304 (S54): a restore from the 12 words with no backup behind it cannot know which silent-payment labels were
+        // handed out — the wallet checks all ten (SP_LABEL_MAX) from now on, and names any it finds "Label m". A backup
+        // (cloud now, or a device file loaded later) brings the real list and replaces this record.
+        if !local_has_state && !restored_from_vault {
+            let t2_store = crate::tier2_wallet::encrypted(&*storage, root_key.encryption_key());
+            match crate::tier2_wallet::load_marks(&t2_store) {
+                Ok(mut marks) if marks.sp_labels.is_empty() => {
+                    marks.sp_labels_unknown = true;
+                    if let Err(e) = crate::tier2_wallet::save_marks(&t2_store, &marks) {
+                        log::warn!("restore: silent-payment labels: could not mark the list unknown: {e}");
+                    } else {
+                        log::info!("restore: from the words alone — the silent-payment scan checks labels 1..={}", crate::silent_payment::SP_LABEL_MAX);
+                    }
+                }
+                _ => {}
+            }
+        }
         let node = LijNode::restore(root_key, config.clone(), storage).await?;
 
         // Now we have the real KeysManager-derived pubkey (node identity).

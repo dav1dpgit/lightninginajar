@@ -2176,6 +2176,7 @@ impl LijNode {
                                             dest_sats: None,
                                             fee_sats: None,
                                             fee_rate_sat_per_kw: None,
+                                            dests: Vec::new(),
                                         },
                                     ) {
                                         Ok(()) => log::info!(
@@ -6237,6 +6238,15 @@ impl LijNode {
                 Err(e) => (Vec::new(), format!("coin ledger unreadable: {e}")),
             }
         };
+        // v304 (S54, DP 13:50 "Go ahead" — the names ride the kit): the silent-payment labels this wallet made — number
+        // and name — so a LiJ restored from the words and this kit keeps checking every label handed out and shows its
+        // name. The coins' sweeps above need nothing new (a labelled coin's stored t already includes its label).
+        let sp_labels: Vec<serde_json::Value> = {
+            let t2_store = crate::tier2_wallet::encrypted(&*self.storage, self.root_key.encryption_key());
+            crate::tier2_wallet::load_marks(&t2_store)
+                .map(|m| m.sp_labels.iter().map(|l| serde_json::json!({ "m": l.m, "name": l.name, "hidden": l.hidden })).collect())
+                .unwrap_or_default()
+        };
         let kit = serde_json::json!({
             "version": 1,
             "sweep_destination_index": dest_index,
@@ -6246,6 +6256,7 @@ impl LijNode {
             "channels": channels,
             "silent_payments": silent_payments,   // v291
             "silent_payments_note": sp_note,
+            "silent_payment_labels": sp_labels,   // v304
         });
         serde_json::to_string(&kit)
             .map_err(|e| LijError::Node(format!("escape export: serialize: {e}")))

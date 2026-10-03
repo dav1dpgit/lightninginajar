@@ -490,6 +490,70 @@ pub struct IndependentClient {
     /// v301 (S53, DP 2026-10-01 21:54): where the next receive-watch address check starts — the
     /// checks take the explorers in turn, one at a time (fetch_address_utxos_watch).
     next_watch: Mutex<usize>,
+    /// v302 (S54, DP 2026-10-01 22:34 "wire it in so it is robust and any fail has fallbacks"): the user's own
+    /// Esplora server after a failed check rests until this wall-clock ms (OWN_WATCH_REST_MS), keyed by its base —
+    /// a different base starts fresh. While it rests the checks go straight to the public explorers.
+    own_watch_rest: Mutex<(String, u64)>,
+    /// v302: how the last receive-watch check went (the page's Address watcher row reads it).
+    last_watch: Mutex<WatchReport>,
+}
+
+/// v302 (S54): a resting own server is asked again after this long (a dead server must not cost every check
+/// its timeout).
+pub const OWN_WATCH_REST_MS: u64 = 60_000;
+
+/// v302 (S54): how the last receive-watch check went, for the Address watcher row. `answered_by` = "own" (the
+/// user's server answered), "public" (an explorer answered), "" (no one answered). `own_set` = a usable own
+/// server was passed in. `own_error` = why the own server did not answer this check (None when it answered or
+/// was not asked). `own_resting` = the own server was skipped because it failed less than OWN_WATCH_REST_MS ago.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WatchReport {
+    pub answered_by: String,
+    pub own_set: bool,
+    pub own_error: Option<String>,
+    pub own_resting: bool,
+    pub at_ms: u64,
+}
+
+impl WatchReport {
+    /// The report as the page reads it: {"answered_by","own_set","own_error"|null,"own_resting","at_ms"}.
+    pub fn to_json(&self) -> String {
+        serde_json::json!({
+            "answered_by": self.answered_by,
+            "own_set": self.own_set,
+            "own_error": self.own_error,
+            "own_resting": self.own_resting,
+            "at_ms": self.at_ms,
+        }).to_string()
+    }
+}
+
+/// v302 (S54): ONE server's answer to /address/<a>/utxo, strictly: 200 with a list that parses is an answer
+/// (an empty list included); anything else — a refusal, a 404, an unreadable body, no connection — is "did not
+/// answer", with the reason. A 404 is NOT "nothing paid": Blockstream and btcscan.org answer an unused address
+/// with 200 `[]` (read 2026-10-01), and the project's block-filter server answers this path 404 because it has
+/// no address route at all (it takes no per-user query, by design) — read as "empty", a wrong server would hide
+/// every payment.
+async fn ask_one_for_utxos(http: &Arc<dyn EsploraHttp>, base: &str, address: &str) -> Result<Vec<EsploraUtxo>, String> {
+    let full = format!("{base}/address/{address}/utxo");
+    match http.get(&full).await {
+        Ok(resp) if resp.status == 200 => serde_json::from_str::<Vec<EsploraUtxoRaw>>(&resp.body)
+            .map(|u| u.into_iter().map(EsploraUtxo::from).collect())
+            .map_err(|e| format!("{base}: unreadable answer ({e})")),
+        Ok(resp) => Err(format!("{base}: answered {}", resp.status)),
+        Err(e) => Err(format!("{base}: {e}")),
+    }
+}
+
+/// v302 (S54): a deterministic, never-funded probe address for checking a watch server's address route
+/// (P2WPKH, program = the first 20 bytes of sha256("lij-watch-probe-v1")). It belongs to no one's wallet, so
+/// the check reveals nothing about the user. Anyone could pay it; the check only needs the list to parse.
+pub fn watch_probe_address(network: bitcoin::Network) -> String {
+    use bitcoin::hashes::{sha256, Hash};
+    let h = sha256::Hash::hash(b"lij-watch-probe-v1");
+    let prog = bitcoin::WitnessProgram::new(bitcoin::WitnessVersion::V0, &h.to_byte_array()[..20])
+        .expect("20 bytes is a valid v0 program");
+    bitcoin::Address::from_witness_program(prog, network).to_string()
 }
 
 impl IndependentClient {
@@ -505,6 +569,8 @@ impl IndependentClient {
             last_consensus_height: Mutex::new(None),  // Step 3.6 (F5)
             first_height_hook: Mutex::new(None),      // v226
             next_watch: Mutex::new(0),                // v301
+            own_watch_rest: Mutex::new((String::new(), 0)),   // v302
+            last_watch: Mutex::new(WatchReport::default()),   // v302
         }
     }
 
@@ -1145,6 +1211,8 @@ impl IndependentClient {
     /// page watching ten addresses every three seconds talked the quorum down to one source and the on-chain
     /// face's Send / Receive greyed (DP 2026-10-01 19:42). fetch_address_utxos (all four, counted) is kept
     /// for scans that must not trust one source.
+    /// v302 (S54): a 404 is now "did not answer" here too (ask_one_for_utxos) — the check moves to the next
+    /// explorer instead of ending on "nothing paid".
     pub async fn fetch_address_utxos_watch(&self, address: &str) -> LijResult<Vec<EsploraUtxo>> {
         let urls = self.urls_to_ask();
         if urls.is_empty() {
@@ -1160,20 +1228,100 @@ impl IndependentClient {
         let mut last_err = String::new();
         for k in 0..urls.len() {
             let url = &urls[(start + k) % urls.len()];
-            let full = format!("{url}/address/{address}/utxo");
-            match http.get(&full).await {
-                Ok(resp) if resp.status == 404 => return Ok(Vec::new()),   // a never-used address on some explorers
-                Ok(resp) if resp.status == 200 => {
-                    match serde_json::from_str::<Vec<EsploraUtxoRaw>>(&resp.body) {
-                        Ok(utxos) => return Ok(utxos.into_iter().map(EsploraUtxo::from).collect()),
-                        Err(e) => last_err = format!("{url}: address utxo parse: {e}"),
-                    }
-                }
-                Ok(resp) => last_err = format!("{url}: address utxo status {}", resp.status),
-                Err(e) => last_err = format!("{url}: {e}"),
+            match ask_one_for_utxos(&http, url, address).await {
+                Ok(utxos) => return Ok(utxos),
+                Err(e) => last_err = e,
             }
         }
         Err(LijError::Lsp(format!("address watch: no explorer answered ({last_err})")))
+    }
+
+    /// v302 (S54, DP 2026-10-01 22:34 — "wire it in so it is robust and any fail has fallbacks"): THE RECEIVE
+    /// WATCH WITH THE USER'S OWN SERVER. Until v302 the Address watcher row saved a server the watch never read
+    /// (since v118, 2026-06-13). `own` = the user's own Esplora base from the row (cleaned by the filter-base
+    /// rule: https, a host, an optional port and path); None, or an address that is not clean, = no own server.
+    /// The ladder, every check:
+    ///   1. the own server, unless it failed less than OWN_WATCH_REST_MS ago (then it rests, skipped);
+    ///      its answer stands (an empty list included) and ends a rest;
+    ///   2. when it did not answer or rests: the public explorers in turn (fetch_address_utxos_watch) — DP's
+    ///      fallback. A failure starts the rest; the next check after it asks the own server again.
+    /// `own_only` (DP 22:47, "Correct and agreed" — the row's "Only my server" switch): with an own server, step 2
+    /// never happens — the check is an error and no explorer is asked. Without an own server it changes nothing
+    /// (the page turns the switch off with the server).
+    /// No explorer's standing is touched (as v301). The report of the check is kept (last_watch_report).
+    pub async fn fetch_address_utxos_watch_via(&self, address: &str, own: Option<&str>, own_only: bool) -> LijResult<Vec<EsploraUtxo>> {
+        let own = own.and_then(crate::tier2_sync::clean_filter_base);
+        let now = current_time_ms();
+        let mut report = WatchReport { own_set: own.is_some(), at_ms: now, ..Default::default() };
+        if let Some(base) = own.as_deref() {
+            let resting = {
+                let r = self.own_watch_rest.lock().unwrap();
+                r.0 == base && now < r.1
+            };
+            if resting {
+                report.own_resting = true;
+            } else {
+                let http = self.http.lock().unwrap().clone();
+                match ask_one_for_utxos(&http, base, address).await {
+                    Ok(utxos) => {
+                        *self.own_watch_rest.lock().unwrap() = (String::new(), 0);
+                        report.answered_by = "own".into();
+                        *self.last_watch.lock().unwrap() = report;
+                        return Ok(utxos);
+                    }
+                    Err(e) => {
+                        log::info!("[WATCH] own server did not answer ({e}) — the public explorers this check");
+                        *self.own_watch_rest.lock().unwrap() = (base.to_string(), current_time_ms() + OWN_WATCH_REST_MS);
+                        report.own_error = Some(e);
+                    }
+                }
+            }
+            if own_only {
+                let why = match report.own_error.clone() {
+                    Some(e) => format!("your server did not answer ({e})"),
+                    None => "your server is resting after a failed check".to_string(),
+                };
+                *self.last_watch.lock().unwrap() = report;
+                return Err(LijError::Lsp(format!("address watch (only your server): {why}")));
+            }
+        }
+        let r = self.fetch_address_utxos_watch(address).await;
+        report.answered_by = if r.is_ok() { "public".into() } else { String::new() };
+        *self.last_watch.lock().unwrap() = report.clone();
+        match r {
+            Ok(u) => Ok(u),
+            Err(e) => match report.own_error {
+                Some(oe) => Err(LijError::Lsp(format!("address watch: your server did not answer ({oe}); {e}"))),
+                None => Err(e),
+            },
+        }
+    }
+
+    /// v302 (S54): how the last receive-watch check went.
+    pub fn last_watch_report(&self) -> WatchReport {
+        self.last_watch.lock().unwrap().clone()
+    }
+
+    /// v302 (S54): the Address watcher row's Save check. Answers the server's tip height when `base` is a clean
+    /// https address that answers as an Esplora server: /blocks/tip/height is a block height, and
+    /// /address/<a never-funded probe address>/utxo is 200 with a list. Anything else is refused with the reason,
+    /// and the row does not save the server. A pass also ends any rest of that server.
+    pub async fn check_watch_server(&self, base: &str, network: bitcoin::Network) -> LijResult<u32> {
+        let base = crate::tier2_sync::clean_filter_base(base).ok_or_else(|| LijError::InvalidArgument(
+            "needs an https:// address with a host (an optional :port and path)".into()))?;
+        let http = self.http.lock().unwrap().clone();
+        let tip_url = format!("{base}/blocks/tip/height");
+        let tip = match http.get(&tip_url).await {
+            Ok(resp) if resp.status == 200 => resp.body.trim().parse::<u32>().ok().filter(|h| *h > 0)
+                .ok_or_else(|| LijError::Lsp(format!("{base}/blocks/tip/height did not answer a block height")))?,
+            Ok(resp) => return Err(LijError::Lsp(format!("{base}/blocks/tip/height answered {}", resp.status))),
+            Err(e) => return Err(LijError::Lsp(format!("{base} could not be reached ({e})"))),
+        };
+        ask_one_for_utxos(&http, &base, &watch_probe_address(network)).await
+            .map_err(|e| LijError::Lsp(format!("the address route did not answer — {e}")))?;
+        let mut r = self.own_watch_rest.lock().unwrap();
+        if r.0 == base { *r = (String::new(), 0); }
+        Ok(tip)
     }
 
     /// Fetch median fee schedule from the quorum.
@@ -1503,6 +1651,189 @@ mod tests {
         for _ in 0..3 { assert!(client.fetch_address_utxos_watch("bc1qx").await.is_err()); }
         assert_eq!(client.healthy_count(), 4, "twelve refusals, no one demoted");
         assert_eq!(client.last_quorum_state(), QuorumState::Healthy);
+    }
+
+    // v302 (S54): the receive watch with the user's own server — first, with the public explorers as the fallback
+    const OWN: &str = "https://own.example/api";
+    fn utxo_one() -> String {
+        r#"[{"txid":"bb00000000000000000000000000000000000000000000000000000000000000","vout":0,"value":2100,"status":{"confirmed":false}}]"#.to_string()
+    }
+
+    #[tokio::test]
+    async fn v302_own_server_answers_and_no_explorer_is_asked() {
+        let mock = Arc::new(MockHttp::new());
+        mock.add_response("own.example", ok_body(&utxo_one()));
+        mock.add_response("own.example", ok_body("[]"));
+        let client = IndependentClient::new(mock.clone(), four_endpoints());
+        let u = client.fetch_address_utxos_watch_via("bc1qx", Some(OWN), false).await.unwrap();
+        assert_eq!(u.len(), 1);
+        assert_eq!(u[0].value_sats, 2100);
+        let r = client.last_watch_report();
+        assert_eq!((r.answered_by.as_str(), r.own_set, r.own_error.clone(), r.own_resting), ("own", true, None, false));
+        // an empty answer from the own server stands too — no explorer is asked
+        assert!(client.fetch_address_utxos_watch_via("bc1qx", Some(OWN), false).await.unwrap().is_empty());
+        assert_eq!(mock.get_calls.load(Ordering::SeqCst), 2, "two checks, two requests, both to the own server");
+    }
+
+    #[tokio::test]
+    async fn v302_own_404_falls_back_to_the_explorers_then_rests() {
+        let mock = Arc::new(MockHttp::new());
+        mock.add_response("own.example", Ok(HttpResponse { status: 404, body: r#"{"error":"not found"}"#.into() }));
+        for ep in ["a.example", "b.example", "c.example", "d.example"] {
+            mock.add_response(ep, ok_body(&utxo_one()));
+            mock.add_response(ep, ok_body(&utxo_one()));
+        }
+        let client = IndependentClient::new(mock.clone(), four_endpoints());
+        let u = client.fetch_address_utxos_watch_via("bc1qx", Some(OWN), false).await.unwrap();
+        assert_eq!(u.len(), 1, "the sighting comes from the fallback");
+        let r = client.last_watch_report();
+        assert_eq!(r.answered_by, "public");
+        assert!(r.own_error.as_deref().unwrap_or("").contains("answered 404"), "the reason is kept: {:?}", r.own_error);
+        // the next check skips the resting own server — one request, to an explorer
+        let calls = mock.get_calls.load(Ordering::SeqCst);
+        client.fetch_address_utxos_watch_via("bc1qx", Some(OWN), false).await.unwrap();
+        assert_eq!(mock.get_calls.load(Ordering::SeqCst), calls + 1);
+        let r2 = client.last_watch_report();
+        assert!(r2.own_resting && r2.own_error.is_none() && r2.answered_by == "public");
+        assert_eq!(client.healthy_count(), 0, "no standing recorded (no tip round was run)");
+    }
+
+    #[tokio::test]
+    async fn v302_rest_ends_and_the_own_server_is_asked_again() {
+        let mock = Arc::new(MockHttp::new());
+        mock.add_response("own.example", Err(LijError::Lsp("timeout".into())));
+        mock.add_response("own.example", ok_body("[]"));
+        for ep in ["a.example", "b.example", "c.example", "d.example"] { mock.add_response(ep, ok_body("[]")); }
+        let client = IndependentClient::new(mock.clone(), four_endpoints());
+        client.fetch_address_utxos_watch_via("bc1qx", Some(OWN), false).await.unwrap();
+        assert!(client.last_watch_report().own_error.is_some());
+        // the rest has passed (set its end into the past) — the own server is asked first again, and answers
+        client.own_watch_rest.lock().unwrap().1 = 1;
+        client.fetch_address_utxos_watch_via("bc1qx", Some(OWN), false).await.unwrap();
+        assert_eq!(client.last_watch_report().answered_by, "own");
+        assert_eq!(*client.own_watch_rest.lock().unwrap(), (String::new(), 0), "an answer ends the rest");
+    }
+
+    #[tokio::test]
+    async fn v302_a_different_own_server_is_not_held_by_the_old_ones_rest() {
+        let mock = Arc::new(MockHttp::new());
+        mock.add_response("own.example", Err(LijError::Lsp("timeout".into())));
+        mock.add_response("new.example", ok_body("[]"));
+        for ep in ["a.example", "b.example", "c.example", "d.example"] { mock.add_response(ep, ok_body("[]")); }
+        let client = IndependentClient::new(mock.clone(), four_endpoints());
+        client.fetch_address_utxos_watch_via("bc1qx", Some(OWN), false).await.unwrap();
+        client.fetch_address_utxos_watch_via("bc1qx", Some("https://new.example/api"), false).await.unwrap();
+        assert_eq!(client.last_watch_report().answered_by, "own", "the newly saved server is asked at once");
+    }
+
+    #[tokio::test]
+    async fn v302_unreadable_own_answer_falls_back() {
+        let mock = Arc::new(MockHttp::new());
+        mock.add_response("own.example", ok_body("<html>login</html>"));
+        mock.add_response("a.example", ok_body("[]"));
+        let client = IndependentClient::new(mock.clone(), vec!["https://a.example/api".to_string()]);
+        assert!(client.fetch_address_utxos_watch_via("bc1qx", Some(OWN), false).await.unwrap().is_empty());
+        let r = client.last_watch_report();
+        assert_eq!(r.answered_by, "public");
+        assert!(r.own_error.unwrap().contains("unreadable"));
+    }
+
+    #[tokio::test]
+    async fn v302_no_own_or_an_unclean_one_is_the_public_explorers() {
+        let mock = Arc::new(MockHttp::new());
+        for ep in ["a.example", "b.example", "c.example", "d.example"] { mock.add_response(ep, ok_body("[]")); }
+        let client = IndependentClient::new(mock.clone(), four_endpoints());
+        client.fetch_address_utxos_watch_via("bc1qx", None, false).await.unwrap();
+        assert!(!client.last_watch_report().own_set);
+        // http:// (the page's policy would block it), no host, a space: not an own server — nothing is sent there
+        for bad in ["http://own.example/api", "https://", "https://own example/api"] {
+            client.fetch_address_utxos_watch_via("bc1qx", Some(bad), false).await.unwrap();
+            let r = client.last_watch_report();
+            assert!(!r.own_set && r.answered_by == "public", "{bad}");
+        }
+        assert_eq!(mock.get_calls.load(Ordering::SeqCst), 4, "every request went to an explorer");
+    }
+
+    #[tokio::test]
+    async fn v302_an_explorers_404_moves_to_the_next() {
+        let mock = Arc::new(MockHttp::new());
+        mock.add_response("a.example", Ok(HttpResponse { status: 404, body: String::new() }));
+        mock.add_response("b.example", ok_body(&utxo_one()));
+        let client = IndependentClient::new(mock.clone(), vec!["https://a.example/api".into(), "https://b.example/api".into()]);
+        let u = client.fetch_address_utxos_watch("bc1qx").await.unwrap();
+        assert_eq!(u.len(), 1, "a 404 is not 'nothing paid' — b.example's sighting is found");
+    }
+
+    #[tokio::test]
+    async fn v302_both_fail_is_an_error_naming_your_server() {
+        let mock = Arc::new(MockHttp::new());
+        mock.add_response("own.example", Ok(HttpResponse { status: 502, body: String::new() }));
+        mock.add_response("a.example", Ok(HttpResponse { status: 429, body: String::new() }));
+        let client = IndependentClient::new(mock.clone(), vec!["https://a.example/api".to_string()]);
+        let e = client.fetch_address_utxos_watch_via("bc1qx", Some(OWN), false).await.unwrap_err().to_string();
+        assert!(e.contains("your server did not answer") && e.contains("502") && e.contains("429"), "{e}");
+        assert_eq!(client.last_watch_report().answered_by, "");
+    }
+
+    #[tokio::test]
+    async fn v302_only_my_server_never_asks_an_explorer() {
+        let mock = Arc::new(MockHttp::new());
+        mock.add_response("own.example", Ok(HttpResponse { status: 503, body: String::new() }));
+        mock.add_response("own.example", ok_body(&utxo_one()));
+        for ep in ["a.example", "b.example", "c.example", "d.example"] { mock.add_response(ep, ok_body(&utxo_one())); }
+        let client = IndependentClient::new(mock.clone(), four_endpoints());
+        // the own server fails: an error, and no explorer asked
+        let e = client.fetch_address_utxos_watch_via("bc1qx", Some(OWN), true).await.unwrap_err().to_string();
+        assert!(e.contains("only your server") && e.contains("503"), "{e}");
+        assert_eq!(mock.get_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(client.last_watch_report().answered_by, "");
+        // while it rests: no request at all
+        let e2 = client.fetch_address_utxos_watch_via("bc1qx", Some(OWN), true).await.unwrap_err().to_string();
+        assert!(e2.contains("resting"), "{e2}");
+        assert_eq!(mock.get_calls.load(Ordering::SeqCst), 1);
+        assert!(client.last_watch_report().own_resting);
+        // after the rest it answers — its answer stands
+        client.own_watch_rest.lock().unwrap().1 = 1;
+        assert_eq!(client.fetch_address_utxos_watch_via("bc1qx", Some(OWN), true).await.unwrap().len(), 1);
+        assert_eq!(client.last_watch_report().answered_by, "own");
+        // no own server: the switch changes nothing (the page turns it off with the server)
+        client.fetch_address_utxos_watch_via("bc1qx", None, true).await.unwrap();
+        assert_eq!(client.last_watch_report().answered_by, "public");
+    }
+
+    #[tokio::test]
+    async fn v302_the_save_check() {
+        let net = bitcoin::Network::Bitcoin;
+        let probe = watch_probe_address(net);
+        assert!(probe.starts_with("bc1q") && probe.len() == 42, "{probe}");
+        assert_eq!(probe, watch_probe_address(net), "the same probe every time");
+        // a real Esplora: a height, then the address route answers a list
+        let mock = Arc::new(MockHttp::new());
+        mock.add_response("own.example/api/blocks/tip/height", ok_body("969300\n"));
+        mock.add_response(&format!("own.example/api/address/{probe}/utxo"), ok_body("[]"));
+        let client = IndependentClient::new(mock.clone(), four_endpoints());
+        assert_eq!(client.check_watch_server("https://own.example/api/", net).await.unwrap(), 969_300);
+        // the project's block-filter server: no Esplora tip route (404) — refused, with the reason
+        let mock2 = Arc::new(MockHttp::new());
+        mock2.add_response("filters.example/blocks/tip/height", Ok(HttpResponse { status: 404, body: r#"{"error":"not found"}"#.into() }));
+        let c2 = IndependentClient::new(mock2.clone(), four_endpoints());
+        let e = c2.check_watch_server("https://filters.example", net).await.unwrap_err().to_string();
+        assert!(e.contains("answered 404"), "{e}");
+        // a tip but no address route — refused
+        let mock3 = Arc::new(MockHttp::new());
+        mock3.add_response("own.example/api/blocks/tip/height", ok_body("969300"));
+        mock3.add_response("own.example/api/address/", Ok(HttpResponse { status: 404, body: String::new() }));
+        let c3 = IndependentClient::new(mock3.clone(), four_endpoints());
+        assert!(c3.check_watch_server(OWN, net).await.unwrap_err().to_string().contains("address route"));
+        // a page, not a height — refused; http and junk refused before any request
+        let mock4 = Arc::new(MockHttp::new());
+        mock4.add_response("own.example", ok_body("<html></html>"));
+        let c4 = IndependentClient::new(mock4.clone(), four_endpoints());
+        assert!(c4.check_watch_server(OWN, net).await.unwrap_err().to_string().contains("block height"));
+        for bad in ["http://own.example/api", "own.example", ""] {
+            assert!(c4.check_watch_server(bad, net).await.is_err(), "{bad}");
+        }
+        assert_eq!(mock4.get_calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

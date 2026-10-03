@@ -82,6 +82,10 @@ pub struct OnchainUtxo {
     /// Recomputed by the scan whenever the coin is found again (a rebuild loses nothing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sp_tweak: Option<String>,
+    /// v304 (S54): the silent-payment label the coin was paid to — Some(m ≥ 1) a labelled address, Some(0) the
+    /// change label (another wallet on the same words), None the plain address or not a silent payment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sp_label: Option<u32>,
 }
 
 /// v281 (S50, coin control): a user's mark on one coin. Frozen = never picked by a send,
@@ -121,12 +125,38 @@ pub struct CoinMarks {
     /// steps are tx_store::CAP_STEPS). Here so it rides the backup and survives a rescan.
     #[serde(default)]
     pub tx_keep_cap: u32,
+    /// v304 (S54, DP 2026-10-02 13:50): the silent-payment labels this wallet made (or found coins under) — number,
+    /// name, hidden. Here so they ride the backup blob (sealed) and survive a rescan. The number is derived from the
+    /// words (never stored as a secret); the name exists only here.
+    #[serde(default)]
+    pub sp_labels: Vec<SpLabel>,
+    /// v304: a restore from the 12 words alone (no backup came with it) cannot know which labels were handed out, so
+    /// it checks all ten (SP_LABEL_MAX) — and keeps checking them, since a label given out before the phone was lost
+    /// can still be paid. A backup restore brings the real list (this flag false) and checks only those.
+    #[serde(default)]
+    pub sp_labels_unknown: bool,
 }
+
+/// v304: one silent-payment label. `name` empty = never named here (a coin found under it after a words-only
+/// restore) — the page shows "Label m". Hidden = off the Receive pills; still checked, payments still tagged.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SpLabel {
+    pub m: u32,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub hidden: bool,
+    #[serde(default)]
+    pub created_ms: u64,
+}
+
+/// v304: the cap on a label name, in code points.
+pub const SP_LABEL_NAME_MAX_CHARS: usize = 40;
 
 fn default_true() -> bool { true }
 
 impl Default for CoinMarks {
-    fn default() -> Self { Self { marks: Default::default(), sp_enabled: true, sp_sends: Default::default(), tx_keep_cap: 0 } }
+    fn default() -> Self { Self { marks: Default::default(), sp_enabled: true, sp_sends: Default::default(), tx_keep_cap: 0, sp_labels: Vec::new(), sp_labels_unknown: false } }
 }
 
 /// v281: the cap on a coin note, in code points (the address note's and the Push Key
@@ -218,6 +248,73 @@ impl CoinMarks {
     pub fn frozen_count(&self) -> usize {
         self.marks.values().filter(|m| m.frozen).count()
     }
+
+    // ── v304 (S54): silent-payment labels ──
+
+    /// The labels the scan checks: always the change label (0); every label made or found here; and, after a
+    /// words-only restore, all ten.
+    pub fn sp_scan_labels(&self) -> Vec<u32> {
+        let mut v: Vec<u32> = vec![0];
+        if self.sp_labels_unknown {
+            v.extend(1..=crate::silent_payment::SP_LABEL_MAX);
+        }
+        v.extend(self.sp_labels.iter().map(|l| l.m));
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+    pub fn sp_label(&self, m: u32) -> Option<&SpLabel> {
+        self.sp_labels.iter().find(|l| l.m == m)
+    }
+    /// Make a new label: the next number after the highest made or found (labels are never reused while known),
+    /// at most SP_LABEL_MAX. Returns its number.
+    pub fn sp_label_create(&mut self, name: &str, now_ms: u64) -> LijResult<u32> {
+        let name = clean_label_name(name);
+        if name.is_empty() {
+            return Err(LijError::Node("a label needs a name".into()));
+        }
+        let next = self.sp_labels.iter().map(|l| l.m).max().unwrap_or(0) + 1;
+        if next > crate::silent_payment::SP_LABEL_MAX {
+            return Err(LijError::Node(format!("all {} labels are used", crate::silent_payment::SP_LABEL_MAX)));
+        }
+        self.sp_labels.push(SpLabel { m: next, name, hidden: false, created_ms: now_ms });
+        Ok(next)
+    }
+    /// Rename and/or hide (no delete — a label handed out can still be paid; hidden labels are still checked).
+    pub fn sp_label_update(&mut self, m: u32, name: Option<&str>, hidden: Option<bool>) -> LijResult<SpLabel> {
+        let l = self.sp_labels.iter_mut().find(|l| l.m == m).ok_or_else(|| LijError::Node(format!("no label {m}")))?;
+        if let Some(n) = name {
+            let n = clean_label_name(n);
+            if n.is_empty() {
+                return Err(LijError::Node("a label needs a name".into()));
+            }
+            l.name = n;
+        }
+        if let Some(h) = hidden {
+            l.hidden = h;
+        }
+        Ok(l.clone())
+    }
+    /// A coin found under label m (m ≥ 1) that this wallet has no entry for (a words-only restore): keep the number
+    /// with no name, so it shows as "Label m" and the scan keeps checking it. Returns true when added.
+    pub fn sp_label_ensure(&mut self, m: u32, now_ms: u64) -> bool {
+        if m == 0 || self.sp_labels.iter().any(|l| l.m == m) {
+            return false;
+        }
+        self.sp_labels.push(SpLabel { m, name: String::new(), hidden: false, created_ms: now_ms });
+        self.sp_labels.sort_by_key(|l| l.m);
+        true
+    }
+}
+
+/// v304: a label name — the note's cleaning, cut at SP_LABEL_NAME_MAX_CHARS code points.
+pub fn clean_label_name(raw: &str) -> String {
+    let c = clean_note(raw);
+    let mut out: String = c.chars().take(SP_LABEL_NAME_MAX_CHARS).collect();
+    while out.ends_with(' ') {
+        out.pop();
+    }
+    out
 }
 
 /// v281: persist the marks (JSON, encrypted at rest through the ENCRYPTED_KEYS wrapper).
@@ -251,6 +348,9 @@ pub struct CoinRow {
     pub tag: String,
     pub frozen: bool,
     pub note: String,
+    /// v304: the silent-payment label the coin was paid to (see OnchainUtxo::sp_label).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sp_label: Option<u32>,
 }
 
 /// v281: the tag for a coin, from the chain and the ledger's records.
@@ -283,6 +383,7 @@ impl CoinRow {
             tag: coin_tag(view, u).to_string(),
             frozen: m.map(|m| m.frozen).unwrap_or(false),
             note: m.map(|m| m.note.clone()).unwrap_or_default(),
+            sp_label: u.sp_label,
         }
     }
 }
@@ -326,6 +427,9 @@ pub struct OnchainHistoryEntry {
     /// say "silent payment" on the row without matching coins itself.
     #[serde(default)]
     pub silent_payment_sats: u64,
+    /// v304 (S54): the labels (m ≥ 1) this transaction paid — the face names them from the marks ("Donations").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sp_labels: Vec<u32>,
 }
 
 /// A transaction we originated (on-chain send, channel funding, sweep) and
@@ -378,6 +482,10 @@ pub struct PendingTx {
     /// sign it when spent pre-confirmation, since change addresses rotate.
     #[serde(default)]
     pub change_index: u32,
+    /// v305 (S54): every recipient of a send to several, in output order (address, sats) — the fee bump rebuilds
+    /// all of them. Empty on a one-recipient send (dest_addr / dest_sats carry it, as before).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dests: Vec<(String, u64)>,
 }
 
 /// The persisted on-chain view: where we've scanned to, the UTXO set, and
@@ -772,6 +880,7 @@ pub fn apply_txs(view: &mut Tier2View, scripts: &WalletScripts, txs: &[Transacti
                 let pend = view.pending_spends.remove(&format!("{txid}:{vout}"));
                 view.utxos.push(OnchainUtxo {
                     sp_tweak: None,
+                    sp_label: None,
                     chain,
                     index,
                     txid: txid.clone(),
@@ -952,6 +1061,7 @@ pub(crate) fn unconfirmed_change_utxos(
         }
         out.push(OnchainUtxo {
             sp_tweak: None,
+            sp_label: None,
             chain: 1,
             index: p.change_index,
             txid,
@@ -1548,7 +1658,12 @@ pub fn derive_history(view: &Tier2View) -> Vec<OnchainHistoryEntry> {
     let mut recv: HashMap<String, (u32, u64)> = HashMap::new();
     let mut spent: HashMap<String, (u32, u64)> = HashMap::new();
     let mut sp_sats: HashMap<String, u64> = HashMap::new();   // v289: silent-payment sats per txid
+    let mut sp_labs: HashMap<String, Vec<u32>> = HashMap::new();   // v304: the labels paid, per txid
     for u in &view.utxos {
+        if let Some(m) = u.sp_label.filter(|m| *m > 0) {
+            let e = sp_labs.entry(u.txid.clone()).or_default();
+            if !e.contains(&m) { e.push(m); e.sort_unstable(); }
+        }
         let r = recv.entry(u.txid.clone()).or_insert((u.height, 0));
         r.1 = r.1.saturating_add(u.value_sats);
         if u.chain == crate::tier2::CHAIN_SP {
@@ -1589,7 +1704,8 @@ pub fn derive_history(view: &Tier2View) -> Vec<OnchainHistoryEntry> {
         };
         let time = view.block_times.get(&height).copied().unwrap_or(0);   // v259
         let silent_payment_sats = sp_sats.get(&txid).copied().unwrap_or(0);   // v289
-        out.push(OnchainHistoryEntry { txid, height, direction, delta_sats: delta, kind, time, silent_payment_sats });
+        let sp_labels = sp_labs.remove(&txid).unwrap_or_default();   // v304
+        out.push(OnchainHistoryEntry { txid, height, direction, delta_sats: delta, kind, time, silent_payment_sats, sp_labels });
     }
     // v256: height newest first, then txid — same height never swaps between refreshes.
     out.sort_by(|a, b| b.height.cmp(&a.height).then_with(|| a.txid.cmp(&b.txid)));
@@ -1980,6 +2096,7 @@ mod tests {
                 dest_sats: None,
                 fee_sats: None,
                 fee_rate_sat_per_kw: None,
+                dests: Vec::new(),
                 change_outpoint: None,
                 change_value_sats: 0,
                 change_index: 0,
@@ -2150,7 +2267,7 @@ mod tests {
         }
     }
     fn coin(chain: u32, txid: &str, vout: u32, value: u64, spent_txid: Option<&str>) -> OnchainUtxo {
-        OnchainUtxo { chain, index: 0, txid: txid.into(), vout, value_sats: value, height: 1, spent_height: spent_txid.map(|_| 2), spent_txid: spent_txid.map(|s| s.to_string()), sp_tweak: if chain == 352 { Some("00".repeat(32)) } else { None } }
+        OnchainUtxo { chain, index: 0, txid: txid.into(), vout, value_sats: value, height: 1, spent_height: spent_txid.map(|_| 2), spent_txid: spent_txid.map(|s| s.to_string()), sp_tweak: if chain == 352 { Some("00".repeat(32)) } else { None }, sp_label: None }
     }
 
     #[test]
@@ -2185,9 +2302,59 @@ mod tests {
         // the scan's unconfirmed silent payment (mempool leg) is ours too
         let mut v2 = Tier2View::default();
         let mut sc = crate::sp_scan::SpScan::default();
-        sc.pending.push(crate::sp_scan::SpPending { txid: "U".into(), vout: 0, value_sats: 1_234, t_k: "00".repeat(32), k: 0, seen_ms: 0 });
+        sc.pending.push(crate::sp_scan::SpPending { txid: "U".into(), vout: 0, value_sats: 1_234, t_k: "00".repeat(32), k: 0, seen_ms: 0, label: None });
         v2.sp = Some(sc);
         let u = etx("U", vec![("theirs", 2_000, "Z", 0)], vec![("sp-taproot-2", 1_234), ("theirchange", 600)]);
         assert_eq!(tx_ownership(&v2, &u, &net).pick, Some(0));
+    }
+
+    // ── v304 (S54): silent-payment labels in the marks ──
+    #[test]
+    fn v304_labels_are_made_in_order_renamed_hidden_never_deleted_and_capped_at_ten() {
+        let mut m = CoinMarks::default();
+        assert_eq!(m.sp_scan_labels(), vec![0], "a new wallet checks the change label only");
+        assert_eq!(m.sp_label_create("  Donations\u{200B} ", 1).unwrap(), 1);
+        assert_eq!(m.sp_label_create("Rent from Bob", 2).unwrap(), 2);
+        assert!(m.sp_label_create("   ", 3).is_err(), "a label needs a name");
+        assert_eq!(m.sp_label(1).unwrap().name, "Donations", "cleaned like a note");
+        assert_eq!(m.sp_scan_labels(), vec![0, 1, 2]);
+        let l = m.sp_label_update(2, Some("Rent"), Some(true)).unwrap();
+        assert_eq!((l.name.as_str(), l.hidden), ("Rent", true));
+        assert_eq!(m.sp_scan_labels(), vec![0, 1, 2], "a hidden label is still checked");
+        assert!(m.sp_label_update(9, Some("x"), None).is_err());
+        assert_eq!(m.sp_label_create("Shop", 4).unwrap(), 3, "never reuses a number");
+        for i in 4..=10 { assert_eq!(m.sp_label_create(&format!("L{i}"), 5).unwrap(), i); }
+        assert!(m.sp_label_create("eleven", 6).is_err(), "ten at most");
+        assert_eq!(clean_label_name(&"x".repeat(60)).chars().count(), SP_LABEL_NAME_MAX_CHARS);
+    }
+
+    #[test]
+    fn v304_a_words_only_restore_checks_all_ten_and_keeps_found_numbers() {
+        let mut m = CoinMarks { sp_labels_unknown: true, ..Default::default() };
+        assert_eq!(m.sp_scan_labels(), (0..=10).collect::<Vec<u32>>());
+        assert!(m.sp_label_ensure(3, 7));
+        assert!(!m.sp_label_ensure(3, 8) && !m.sp_label_ensure(0, 8), "once; never the change label");
+        assert_eq!((m.sp_label(3).unwrap().name.as_str(), m.sp_label(3).unwrap().hidden), ("", false), "shown as Label 3 until named");
+        assert_eq!(m.sp_label_create("New one", 9).unwrap(), 4, "after the highest found");
+        assert_eq!(m.sp_scan_labels(), (0..=10).collect::<Vec<u32>>(), "still all ten — a label handed out before can still be paid");
+    }
+
+    #[test]
+    fn v304_old_marks_parse_and_labels_ride_the_record() {
+        let old: CoinMarks = serde_json::from_str(r#"{"marks":{},"sp_enabled":true}"#).unwrap();
+        assert!(old.sp_labels.is_empty() && !old.sp_labels_unknown, "a v303 record: no labels, and known to have none");
+        let mut m = CoinMarks::default();
+        m.sp_label_create("Donations", 1).unwrap();
+        m.sp_label_update(1, None, Some(true)).unwrap();
+        let back: CoinMarks = serde_json::from_slice(&serde_json::to_vec(&m).unwrap()).unwrap();
+        assert_eq!(back.sp_labels, m.sp_labels);
+        // a coin keeps its label; an old coin record parses with none
+        let u: OnchainUtxo = serde_json::from_str(r#"{"chain":352,"index":0,"txid":"aa","vout":1,"value_sats":5,"height":9,"spent_height":null,"sp_tweak":"00"}"#).unwrap();
+        assert_eq!(u.sp_label, None);
+        let mut u2 = u.clone();
+        u2.sp_label = Some(1);
+        let j = serde_json::to_string(&u2).unwrap();
+        assert!(j.contains("\"sp_label\":1"));
+        assert!(!serde_json::to_string(&u).unwrap().contains("sp_label"), "nothing written for a coin without one");
     }
 }

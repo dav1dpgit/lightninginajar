@@ -11,7 +11,7 @@
 // v873 (S51, DP): /pkg/ is served CACHE-FIRST on an exact-version hit (the pair is ?v= keyed) — the network only
 // for a version this cache does not hold; the install copies an exact-version engine file from an earlier
 // build's cache instead of re-fetching it. Everything else stays network-first as described above.
-const CACHE = 'lij-offline-v905';  // v468 RITUAL: bump with EVERY page build — a changed sw.js re-runs install, refreshing the precached shell (the SW sat unchanged since v400, freezing iOS's offline-served index at v400-era)
+const CACHE = 'lij-offline-v923';  // v468 RITUAL: bump with EVERY page build — a changed sw.js re-runs install, refreshing the precached shell (the SW sat unchanged since v400, freezing iOS's offline-served index at v400-era)
 // v687 (S45, DP): UPDATES DIAL. The mode lives in a settings cache that
 // survives CACHE bumps, so a freshly installed sw.js can read it in its own
 // install event. Under 'ask' the new build precaches, describes itself (page
@@ -40,8 +40,8 @@ const PRECACHE = [
   '/wallet/index.html',
   '/styles.css?v=328',
   '/wood-hinoki.jpg?v=1',   // v623: hinoki wood-motif plane image \u2014 a future buster flip updates the page token, the tile, and this line together (parity law)   // v579: styles buster flip — precache moves in lockstep (the parity lesson generalized)
-  '/pkg/lij_wasm.js?v=301',   // v567 (S37 ROOT-CAUSE): precache pinned at v214 since S34 while the page moved to v218 (S36 flips v215-218 never updated this list) — with the v472 exact-or-nothing /pkg law, OFFLINE ENGINE LOAD was impossible on every device. The sanity pass now asserts page-buster == precache version, permanently.
-  '/pkg/lij_wasm_bg.wasm?v=301',
+  '/pkg/lij_wasm.js?v=305',   // v567 (S37 ROOT-CAUSE): precache pinned at v214 since S34 while the page moved to v218 (S36 flips v215-218 never updated this list) — with the v472 exact-or-nothing /pkg law, OFFLINE ENGINE LOAD was impossible on every device. The sanity pass now asserts page-buster == precache version, permanently.
+  '/pkg/lij_wasm_bg.wasm?v=305',
   '/fonts/geist-sans-400.woff2',
   '/fonts/geist-sans-500.woff2',
   '/fonts/geist-mono-400.woff2',
@@ -112,6 +112,35 @@ self.addEventListener('activate', (e) => {
 // wallet's own hold-dial choice), never the v400-era hardcoded "3 minutes"; an
 // older adapter payload without hold_s gets honest wording with NO invented
 // number. Never say "jar" (lock-screen context has no brand surround).
+// v914 (S54, DP 2026-10-02 11:17 "make sure the push alert is accurate to the actual time it will be held"): THE WORDS,
+// in one place. Adapter 0.88.1 sends the window actually held (hold_s, rounded down) and when it ends (until_ms), or
+// neither when nothing is held. Never more time than is left: an hour or more → the clock time it ends (seconds dropped,
+// so never later than the end; still true while the alert waits in the tray); under an hour → the whole minutes left
+// and the clock time; under a minute → now; after the end → it may have gone back. A phone clock more than 2 minutes
+// behind the provider's → the window alone. An older provider (hold_s only) → its hours and minutes, rounded down.
+function lijWakeWords(data, nowMs) {
+  const dur = (ms) => {
+    const m = Math.floor(ms / 60000);
+    if (m < 60) return m + ' minute' + (m === 1 ? '' : 's');
+    const h = Math.floor(m / 60), mm = m % 60;
+    return h + ' hour' + (h === 1 ? '' : 's') + (mm ? ' ' + mm + ' minute' + (mm === 1 ? '' : 's') : '');
+  };
+  const clock = (t) => { try { return new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch (err) { return ''; } };
+  const s = Number(data && data.hold_s), u = Number(data && data.until_ms);
+  const haveS = Number.isFinite(s) && s > 0;
+  if (Number.isFinite(u) && u > 0) {
+    const rem = u - nowMs;
+    if (!(haveS && rem > s * 1000 + 120000)) {
+      if (rem <= 0) return 'Open the LiJ app \u2014 this payment may already have gone back to the sender.';
+      if (rem < 60000) return 'Open the LiJ app now to receive it.';
+      const c = clock(u);
+      if (rem >= 3600000 && c) return 'Open the LiJ app by ' + c + ' to receive it.';
+      return 'Open the LiJ app within ' + dur(rem) + (c ? ' (by ' + c + ')' : '') + ' to receive it.';
+    }
+  }
+  if (haveS) return (s < 60) ? 'Open the LiJ app now to receive it.' : 'Open the LiJ app within ' + dur(s * 1000) + ' to receive it.';
+  return 'Open the LiJ app to receive it.';
+}
 self.addEventListener('push', (e) => {
   let data = {};
   try { data = e.data ? e.data.json() : {}; } catch (err) {}
@@ -130,15 +159,7 @@ self.addEventListener('push', (e) => {
         title = 'Payment arriving';
         body = 'A payment is arriving in your open wallet now.';
       } else {
-        const s = Number(data.hold_s);
-        if (Number.isFinite(s) && s > 0) {
-          const w = (s >= 3600 && s % 3600 === 0)
-            ? (s / 3600) + ' hour' + (s === 3600 ? '' : 's')
-            : Math.max(1, Math.round(s / 60)) + ' minute' + (Math.round(s / 60) === 1 ? '' : 's');
-          body = 'Open the LiJ app within ' + w + ' to receive it.';
-        } else {
-          body = 'Open the LiJ app to receive it.';
-        }
+        body = lijWakeWords(data, Date.now());   // v914 (S54): the time actually held, never more
       }
     } else {
       body = 'Open the LiJ app.';

@@ -468,7 +468,7 @@ mod coin_control_tests {
     use super::*;
 
     fn coin(txid: &str, vout: u32, value: u64) -> tier2_wallet::OnchainUtxo {
-        tier2_wallet::OnchainUtxo { chain: 0, index: 0, txid: txid.into(), vout, value_sats: value, height: 1, spent_height: None, spent_txid: None, sp_tweak: None }
+        tier2_wallet::OnchainUtxo { chain: 0, index: 0, txid: txid.into(), vout, value_sats: value, height: 1, spent_height: None, spent_txid: None, sp_tweak: None, sp_label: None }
     }
 
     #[test]
