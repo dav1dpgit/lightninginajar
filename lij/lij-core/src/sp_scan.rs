@@ -93,6 +93,9 @@ pub struct SpPending {
     /// v304: the label it was paid to (see OnchainUtxo::sp_label).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<u32>,
+    /// v307: a payment to an address a silent payment made before (found by its key, not by the BIP-352 sum).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reused: bool,
 }
 
 // ── the box's answers ──
@@ -184,6 +187,23 @@ pub fn coin_scripts<C: bitcoin::secp256k1::Verification>(secp: &Secp256k1<C>, ke
                 }
             }
         }
+    }
+    out
+}
+
+/// v307 (S54, DP 2026-10-03 23:09): every silent-payment address this wallet has been paid at — the coins found, spent
+/// or not — as (script, tweak, label, k), one per script. A second payment to one of them comes in another transaction,
+/// so BIP-352's sum over that transaction's inputs never gives the address again; it is found by the script itself and
+/// spent with the same key (the stored tweak already includes the label).
+pub fn known_coin_scripts<C: bitcoin::secp256k1::Verification>(secp: &Secp256k1<C>, keys: &SpKeys, view: &Tier2View) -> Vec<(ScriptBuf, [u8; 32], Option<u32>, u32)> {
+    let mut out: Vec<(ScriptBuf, [u8; 32], Option<u32>, u32)> = Vec::new();
+    for u in view.utxos.iter().filter(|u| u.chain == CHAIN_SP) {
+        let Some(t) = u.sp_tweak.as_deref().and_then(|h| hex::decode(h).ok()) else { continue };
+        if t.len() != 32 { continue; }
+        let mut tk = [0u8; 32];
+        tk.copy_from_slice(&t);
+        if out.iter().any(|k| k.1 == tk) { continue; }
+        if let Ok(sc) = keys.script_for(secp, &tk) { out.push((sc, tk, u.sp_label, u.index)); }
     }
     out
 }
@@ -327,7 +347,10 @@ async fn scan_batch(
     // batch was tested first, against the coins held at the batch's start: a coin found in a batch and spent later in
     // the SAME batch (a catch-up — a restore, a rescan, a resumed scan: up to 100 blocks at a time) never had its
     // spend read, and the balance kept a coin that was gone. Same fetches, same order.
-    let mut own = coin_scripts(&secp, keys, view);
+    // v307 (S54, DP 23:09): the scripts of EVERY silent-payment coin found — spent or not — so a second payment to one of
+    // those addresses is seen, and the unspent ones' spends as before (until v307: the unspent coins' scripts only)
+    let mut known = known_coin_scripts(&secp, keys, view);
+    let mut own: Vec<ScriptBuf> = known.iter().map(|k| k.0.clone()).collect();
     let mut n = 0usize;
     // v293 (S51, DP — O1): the screen's turn is a TIME budget (tier2_sync::YIELD_BUDGET_MS), checked before every
     // block and between groups of tweaks — not "every 8 blocks", which on an iPhone X was 1–6 s of frozen screen
@@ -370,9 +393,24 @@ async fn scan_batch(
             let txid = c.txid.to_string();
             if let Some(sp) = view.sp.as_mut() { sp.pending.retain(|p| !(p.txid == txid && p.vout == c.vout)); }
         }
-        if new > 0 {
+        // v307: an output paying an address a silent payment made before — the same key spends it
+        for c in &found { if !known.iter().any(|k| k.0 == c.script) { known.push((c.script.clone(), c.t_k, c.label, c.k)); } }
+        let mut again = 0;
+        for tx in &block.txdata {
+            let txid = tx.compute_txid();
+            for (vout, o) in tx.output.iter().enumerate() {
+                let vout = vout as u32;
+                let Some(k) = known.iter().find(|k| k.0 == o.script_pubkey).cloned() else { continue };
+                if found.iter().any(|c| c.txid == txid && c.vout == vout) { continue; }
+                let f = crate::silent_payment::SpFound { txid, vout, value_sats: o.value.to_sat(), t_k: k.1, k: k.3, script: k.0.clone(), labelled_change: k.2 == Some(0), label: k.2 };
+                if add_coin(view, &f, height) { again += 1; }
+                let ts = txid.to_string();
+                if let Some(sp) = view.sp.as_mut() { sp.pending.retain(|p| !(p.txid == ts && p.vout == vout)); }
+            }
+        }
+        if new > 0 || again > 0 {
             apply_txs(view, &scripts, &block.txdata, height);   // v297: a coin paid and spent inside this one block
-            log::info!("[sp] {new} silent payment(s) found in block {height}");
+            log::info!("[sp] {new} silent payment(s) found in block {height}{}", if again > 0 { format!(" · {again} more to an address paid before (v307)") } else { String::new() });
         }
         crate::tier2_wallet::capture_own_txs(view, &block.txdata, height);   // v298: kept whole for the drill-down
         n += 1;
@@ -439,6 +477,13 @@ pub async fn mempool(http: &Arc<dyn EsploraHttp>, base: &str, root_key: &RootKey
     let secp = Secp256k1::new();
     let labels = keys.label_set(&crate::tier2_wallet::load_marks(storage).unwrap_or_default().sp_scan_labels());   // v304
     let resp: SpMempoolResp = get_json(http, &format!("{base}/sp/mempool?since={}", sp.mempool_seq)).await?;
+    // v307: the x-only keys of every address a silent payment made before — a second payment to one shows here too
+    let known_keys: Vec<([u8; 32], [u8; 32], Option<u32>, u32)> = known_coin_scripts(&secp, &keys, view).into_iter().filter_map(|(sc, t, l, k)| {
+        let b = sc.as_bytes();
+        if b.len() != 34 { return None; }
+        let mut x = [0u8; 32]; x.copy_from_slice(&b[2..34]);
+        Some((x, t, l, k))
+    }).collect();
     let mut found = 0usize;
     let mut changed = false;
     let gone: std::collections::HashSet<&String> = resp.gone.iter().collect();
@@ -456,10 +501,22 @@ pub async fn mempool(http: &Arc<dyn EsploraHttp>, base: &str, root_key: &RootKey
                 || view.sp.as_ref().map(|s| s.pending.iter().any(|p| p.txid == e.txid && p.vout == f.vout)).unwrap_or(false);
             if already { continue; }
             if let Some(s) = view.sp.as_mut() {
-                s.pending.push(SpPending { txid: e.txid.clone(), vout: f.vout, value_sats: f.value_sats, t_k: tweak_hex(&f.t_k), k: f.k, seen_ms: now_ms, label: f.label });
+                s.pending.push(SpPending { txid: e.txid.clone(), vout: f.vout, value_sats: f.value_sats, t_k: tweak_hex(&f.t_k), k: f.k, seen_ms: now_ms, label: f.label, reused: false });
             }
             found += 1; changed = true;
             log::info!("[sp] silent payment in the mempool: {}:{} {} sats", &e.txid[..12], f.vout, f.value_sats);
+        }
+        // v307: an output to an address a silent payment made before (its key, not the sum)
+        for (vout, key, value) in &outs {
+            let Some(k) = known_keys.iter().find(|k| &k.0 == key) else { continue };
+            let already = view.utxos.iter().any(|u| u.txid == e.txid && u.vout == *vout)
+                || view.sp.as_ref().map(|s| s.pending.iter().any(|p| p.txid == e.txid && p.vout == *vout)).unwrap_or(false);
+            if already { continue; }
+            if let Some(s) = view.sp.as_mut() {
+                s.pending.push(SpPending { txid: e.txid.clone(), vout: *vout, value_sats: *value, t_k: tweak_hex(&k.1), k: k.3, seen_ms: now_ms, label: k.2, reused: true });
+            }
+            found += 1; changed = true;
+            log::info!("[sp] a payment in the mempool to an address paid before: {}:{} {} sats", &e.txid[..12], vout, value);
         }
     }
     if let Some(s) = view.sp.as_mut() {
@@ -783,6 +840,73 @@ mod tests {
         crate::tier2_wallet::rollback(&mut view, 100);
         let sp = view.sp.as_ref().unwrap();
         assert_eq!((sp.scanned_to, sp.scanned_hash.is_empty(), view.utxos.len()), (100, true, 0));
+    }
+
+    #[tokio::test]
+    async fn v307_a_second_payment_to_a_found_silent_payment_address_is_found_even_after_the_first_was_spent() {
+        let (http, mut blocks, paid, _) = build_world(false);
+        let secp = Secp256k1::new();
+        let keys = SpKeys::from_root(&root()).unwrap();
+        // 103: someone pays the bc1p address of the 101 payment again (copied from an explorer) — another transaction,
+        // other inputs; the first coin was spent in 102
+        let a3 = SecretKey::from_slice(&[4u8; 32]).unwrap();
+        let a3_pub = PublicKey::from_secret_key(&secp, &a3);
+        let a3_spk = ScriptBuf::new_p2wpkh(&bitcoin::PublicKey::new(a3_pub).wpubkey_hash().unwrap());
+        let op3 = OutPoint { txid: Txid::from_str(&"c7".repeat(32)).unwrap(), vout: 2 };
+        let again_tx = Transaction {
+            version: bitcoin::transaction::Version::TWO, lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![TxIn { previous_output: op3, script_sig: ScriptBuf::new(), sequence: bitcoin::Sequence::MAX, witness: Witness::from_slice(&[vec![0u8; 71], a3_pub.serialize().to_vec()]) }],
+            output: vec![TxOut { value: bitcoin::Amount::from_sat(21_000), script_pubkey: paid.clone() }, TxOut { value: bitcoin::Amount::from_sat(9_000), script_pubkey: a3_spk.clone() }],
+        };
+        let mut prevouts: HashMap<OutPoint, ScriptBuf> = HashMap::new();
+        prevouts.insert(op3, a3_spk.clone());
+        let b103 = mine(blocks[1].block.block_hash(), vec![coinbase(103), again_tx.clone()], 1_700_001_200);
+        let f103 = basic_filter(&b103, &prevouts);
+        let fh103 = crate::tier2_sync::compute_filter_header(&f103, &blocks[1].fh);
+        let tweak3 = tweak_from_inputs(&secp, &[a3_pub], &[op3]).unwrap();
+        blocks.push(Served { height: 103, block: b103, filter: f103, fh: fh103, tweaks: vec![hex::encode(tweak3.serialize())] });
+        serve(&http, &blocks, false);
+        http.put("/sp/info", 200, serde_json::json!({"format": "spcommit-v1", "start_height": 101, "indexed_to": 103, "tip": 103, "mempool_seq": 5}).to_string());
+        // the mempool: a third payment to the same address, with a tweak that is not this wallet's (no sum matches)
+        let decoy = PublicKey::from_secret_key(&secp, &SecretKey::from_slice(&[5u8; 32]).unwrap());
+        let mut xk = [0u8; 32]; xk.copy_from_slice(&paid.as_bytes()[2..34]);
+        let txid4 = Txid::from_str(&"d8".repeat(32)).unwrap();
+        http.put("/sp/mempool?since=0", 200, serde_json::json!({"seq": 7, "tweaks": [{"seq": 7, "txid": txid4.to_string(), "tweak": hex::encode(decoy.serialize()), "outputs": [{"vout": 1, "key": hex::encode(xk), "value": 4444}]}], "gone": []}).to_string());
+        let http: Arc<dyn EsploraHttp> = http;
+        let storage = crate::storage::native_storage::MemoryStorage::new();
+        let mut view = Tier2View::default();
+        view.cursor.birthday = 90;
+        view.cursor.scanned_to = 101;   // the scan opens at 101 (the walk's top then), as a wallet's does
+        view.cursor.last_hash = Some(blocks[0].block.block_hash().to_string());
+        view.cursor.last_filter_header = Some(bitcoin::hashes::sha256d::Hash::from_byte_array(blocks[0].fh).to_string());
+        refresh_info(&http, "http://box", &mut view).await.unwrap();
+        view.cursor.scanned_to = 103;   // then the walk reads to 103: one batch, 101..103, block by block
+        view.cursor.last_hash = Some(blocks[2].block.block_hash().to_string());
+        view.cursor.last_filter_header = Some(bitcoin::hashes::sha256d::Hash::from_byte_array(blocks[2].fh).to_string());
+        let (batches, note) = scan(&http, "http://box", &root(), &mut view, &storage, 100, 0).await.unwrap();
+        assert_eq!(batches, 1, "{note}");
+        assert_eq!(view.utxos.len(), 2, "{:?}", view.utxos);
+        let (first, second) = (&view.utxos[0], &view.utxos[1]);
+        assert_eq!((first.value_sats, first.spent_height), (184_000, Some(102)), "the first: found by the sum, spent in 102");
+        assert_eq!((second.chain, second.vout, second.value_sats, second.height, second.spent_height), (CHAIN_SP, 0, 21_000, 103, None), "the second payment to the same address: found by its script, after the first was spent");
+        assert_eq!(second.sp_tweak, first.sp_tweak, "the same key spends it");
+        let mut t = [0u8; 32]; t.copy_from_slice(&hex::decode(second.sp_tweak.as_deref().unwrap()).unwrap());
+        assert_eq!(keys.script_for(&secp, &t).unwrap(), paid);
+        // the lines: the first payment is not marked, the second is
+        let rows = crate::tier2_wallet::derive_history(&view);
+        let r101 = rows.iter().find(|h| h.txid == blocks[0].block.txdata[1].compute_txid().to_string()).unwrap();
+        let r103 = rows.iter().find(|h| h.txid == again_tx.compute_txid().to_string()).unwrap();
+        assert_eq!((r101.lines[0].sp, r101.lines[0].reused), (true, false));
+        assert_eq!((r103.lines[0].sp, r103.lines[0].reused, r103.lines[0].value_sats, r103.delta_sats), (true, true, 21_000, 21_000));
+        assert_eq!(summary(&view, true).coins, 1);
+        let tweak_hex2 = second.sp_tweak.clone().unwrap();
+        // the mempool: the third payment to the address, pending and marked
+        let n = mempool(&http, "http://box", &root(), &mut view, &storage, 1_700_002_000_000).await.unwrap();
+        assert_eq!(n, 1);
+        let p = &view.sp.as_ref().unwrap().pending[0];
+        assert_eq!((p.vout, p.value_sats, p.reused, p.t_k.as_str()), (1, 4_444, true, tweak_hex2.as_str()));
+        // a wallet that has found no silent payment watches nothing extra
+        assert!(known_coin_scripts(&secp, &keys, &Tier2View::default()).is_empty());
     }
 
     #[tokio::test]

@@ -11,7 +11,7 @@
 // v873 (S51, DP): /pkg/ is served CACHE-FIRST on an exact-version hit (the pair is ?v= keyed) — the network only
 // for a version this cache does not hold; the install copies an exact-version engine file from an earlier
 // build's cache instead of re-fetching it. Everything else stays network-first as described above.
-const CACHE = 'lij-offline-v923';  // v468 RITUAL: bump with EVERY page build — a changed sw.js re-runs install, refreshing the precached shell (the SW sat unchanged since v400, freezing iOS's offline-served index at v400-era)
+const CACHE = 'lij-offline-v934';  // v468 RITUAL: bump with EVERY page build — a changed sw.js re-runs install, refreshing the precached shell (the SW sat unchanged since v400, freezing iOS's offline-served index at v400-era)
 // v687 (S45, DP): UPDATES DIAL. The mode lives in a settings cache that
 // survives CACHE bumps, so a freshly installed sw.js can read it in its own
 // install event. Under 'ask' the new build precaches, describes itself (page
@@ -40,8 +40,8 @@ const PRECACHE = [
   '/wallet/index.html',
   '/styles.css?v=328',
   '/wood-hinoki.jpg?v=1',   // v623: hinoki wood-motif plane image \u2014 a future buster flip updates the page token, the tile, and this line together (parity law)   // v579: styles buster flip — precache moves in lockstep (the parity lesson generalized)
-  '/pkg/lij_wasm.js?v=305',   // v567 (S37 ROOT-CAUSE): precache pinned at v214 since S34 while the page moved to v218 (S36 flips v215-218 never updated this list) — with the v472 exact-or-nothing /pkg law, OFFLINE ENGINE LOAD was impossible on every device. The sanity pass now asserts page-buster == precache version, permanently.
-  '/pkg/lij_wasm_bg.wasm?v=305',
+  '/pkg/lij_wasm.js?v=308',   // v567 (S37 ROOT-CAUSE): precache pinned at v214 since S34 while the page moved to v218 (S36 flips v215-218 never updated this list) — with the v472 exact-or-nothing /pkg law, OFFLINE ENGINE LOAD was impossible on every device. The sanity pass now asserts page-buster == precache version, permanently.
+  '/pkg/lij_wasm_bg.wasm?v=308',
   '/fonts/geist-sans-400.woff2',
   '/fonts/geist-sans-500.woff2',
   '/fonts/geist-mono-400.woff2',
@@ -50,6 +50,17 @@ const PRECACHE = [
   '/vendor/qr-scanner-worker.min.js',
   '/vendor/bc-ur.min.js'
 ];
+
+// v934 (S54, DP 2026-10-04 10:41 — the Push Key link: "This site can't be reached … ERR_FAILED"): the host answers
+// /wallet/index.html with a redirect to /wallet/, so its stored copy carried the redirect mark — and a browser refuses a
+// redirected response as the answer to a page load (Chrome ERR_FAILED; Safari "Response served by service worker has
+// redirections"). Every response is stored, and every cached answer served, without the mark: the same bytes, status
+// and headers in a fresh Response. A response that was not redirected passes through untouched.
+async function unredirected(r) {
+  if (!r || !r.redirected) return r;
+  const body = await r.blob();
+  return new Response(body, { status: r.status, statusText: r.statusText, headers: r.headers });
+}
 
 self.addEventListener('install', (e) => {
   e.waitUntil((async () => {
@@ -64,7 +75,7 @@ self.addEventListener('install', (e) => {
       return fetch(new Request(u, { cache: 'reload' })).then(async (r) => {
         if (r && r.ok) {
           try { fetched[u] = await r.clone().arrayBuffer(); } catch (e) {}
-          return c.put(u, r);
+          return c.put(u, await unredirected(r));   // v934: never store the redirect mark
         }
       }).catch(() => {});
     }));
@@ -217,7 +228,7 @@ self.addEventListener('fetch', (e) => {
         const hit = (await c.match(req))
           || (isPkgA ? null : (await c.match(req, { ignoreSearch: true })))
           || (req.mode === 'navigate' ? ((await c.match('/wallet/index.html', { ignoreSearch: true })) || (await c.match('/wallet/', { ignoreSearch: true }))) : null);
-        if (hit) return hit;
+        if (hit) return await unredirected(hit);   // v934
       }
     }
     // v472: /pkg is EXACT-VERSION ONLY — the glue js and the wasm binary are
@@ -242,7 +253,7 @@ self.addEventListener('fetch', (e) => {
       const shell = (await c.match(req, { ignoreSearch: true }))
         || (await c.match('/wallet/index.html', { ignoreSearch: true }))
         || (await c.match('/wallet/', { ignoreSearch: true }));
-      if (shell) return shell;
+      if (shell) return await unredirected(shell);   // v934: a cache an older worker filled may still carry the mark
     }
     let fallback = (await c.match(req)) || (isPkg ? null : (await c.match(req, { ignoreSearch: true })));
     if (!fallback && req.mode === 'navigate') {
@@ -251,7 +262,7 @@ self.addEventListener('fetch', (e) => {
     }
     const netReq = isPkg ? new Request(req, { cache: 'reload' }) : req;  // v486: /pkg always revalidates at origin — the laundering loop dies here
     const netP = fetch(netReq).then((net) => {
-      if (net && net.ok) c.put(req, net.clone()).catch(() => {});
+      if (net && net.ok) unredirected(net.clone()).then((x) => c.put(req, x)).catch(() => {});   // v934
       return net;
     });
     if (!fallback) return netP;
@@ -259,6 +270,6 @@ self.addEventListener('fetch', (e) => {
     const timer = new Promise((res) => setTimeout(() => res(null), bound569));
     const net = await Promise.race([netP.catch(() => null), timer]);
     if (net) return net;
-    return fallback;
+    return await unredirected(fallback);   // v934
   })());
 });

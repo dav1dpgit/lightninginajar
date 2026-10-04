@@ -75,6 +75,14 @@ pub(crate) fn estimate_fee(n_in: usize, n_out: usize, fee_rate_sat_per_kw: u32) 
 
 /// v240: `extra_vbytes` covers outputs larger than P2WPKH — a silent-payment
 /// destination is a P2TR output, 43 vB instead of 31.
+/// v308 (S54, DP 2026-10-04 00:03 "Go."): what is left after the recipients and the fee — the change, or, under the
+/// 294-sat output minimum (DUST_THRESHOLD_SATS: Bitcoin does not relay a smaller output), part of the fee. Returns
+/// (fee paid, change output, leftover added to the fee). One rule for the builder (plan_send) and the quote (coin_quote).
+pub(crate) fn settle_change(total_in: u64, paid: u64, fee: u64) -> (u64, u64, u64) {
+    let left = total_in.saturating_sub(paid).saturating_sub(fee);
+    if left < DUST_THRESHOLD_SATS { (fee.saturating_add(left), 0, left) } else { (fee, left, 0) }
+}
+
 pub(crate) fn estimate_fee_with(n_in: usize, n_out: usize, extra_vbytes: u64, fee_rate_sat_per_kw: u32) -> u64 {
     let vsize = 11 + 68 * n_in as u64 + 31 * n_out as u64 + extra_vbytes;
     let sat_per_vb = (((fee_rate_sat_per_kw as u64) + 249) / 250).max(1);
@@ -561,7 +569,13 @@ pub struct CoinQuote {
     /// but under max(1,000 sats, five times what one input costs to spend at this rate).
     pub spend: Vec<(String, u32)>,
     pub spend_sats: u64,
+    /// v308: the change OUTPUT the send would make — 0 when the leftover is under the dust floor (see folded_sats).
     pub change_sats: Option<u64>,
+    /// v308 (S54, DP 2026-10-04 00:03): the fee the send pays for `spend` — exactly what goes out, any leftover under the
+    /// dust floor included. `fee_sats` is NOT this when no coins are chosen: it is what every coin would need.
+    pub send_fee_sats: Option<u64>,
+    /// v308: the leftover too small to keep as change, added to the fee (0 = none).
+    pub folded_sats: u64,
     pub tiny_change: bool,
     pub tiny_below_sats: u64,
     pub dust_sats: u64,
@@ -645,6 +659,8 @@ pub fn coin_quote(
     let mut spend: Vec<(String, u32)> = Vec::new();
     let mut spend_sats = 0u64;
     let mut change_sats: Option<u64> = None;
+    let mut send_fee_sats: Option<u64> = None;
+    let mut folded_sats = 0u64;
     if let Some(a) = amount_sats {
         if problem.is_none() {
             let set: Option<Vec<&SpendableUtxo>> = match pins {
@@ -659,7 +675,10 @@ pub fn coin_quote(
                 spend_sats = set.iter().map(|u| u.value_sats).sum();
                 spend = set.iter().map(|u| (u.txid.clone(), u.vout)).collect();
                 let fee = estimate_fee_inputs(&set, 2, extra_vb, fee_rate_sat_per_kw);   // v284: the set's real sizes — what the send pays
-                change_sats = Some(spend_sats.saturating_sub(a).saturating_sub(fee));
+                let (paid_fee, change, folded) = settle_change(spend_sats, a, fee);   // v308: the builder's own rule
+                change_sats = Some(change);
+                send_fee_sats = Some(paid_fee);
+                folded_sats = folded;
             }
         }
     }
@@ -681,6 +700,8 @@ pub fn coin_quote(
         spend,
         spend_sats,
         change_sats,
+        send_fee_sats,
+        folded_sats,
         tiny_change,
         tiny_below_sats,
         dust_sats: DUST_THRESHOLD_SATS,
@@ -781,6 +802,8 @@ struct Plan<'a> {
     /// Includes change too small to keep (folded in).
     fee_sats: u64,
     change_sats: u64,
+    /// v308: that change too small to keep, added to the fee (0 = none).
+    folded_sats: u64,
     total_in: u64,
 }
 
@@ -843,7 +866,7 @@ fn plan_send<'a>(
         }
         let mut amounts: Vec<u64> = recipients[..n_dest - 1].iter().filter_map(|r| r.amount_sats).collect();
         amounts.push(total_in - fixed - fee_sats);
-        return Ok(Plan { dests, selected, amounts, fee_sats, change_sats: 0, total_in });
+        return Ok(Plan { dests, selected, amounts, fee_sats, change_sats: 0, folded_sats: 0, total_in });
     }
     // exact amounts: DP's pick rule (coin_select::pick) or the chosen set; change back to m/84
     let selected: Vec<&SpendableUtxo> = match chosen {
@@ -876,17 +899,13 @@ fn plan_send<'a>(
         }
     };
     let total_in: u64 = selected.iter().map(|u| u.value_sats).sum();
-    let mut fee_sats = estimate_fee_inputs(&selected, n_dest + 1, extra_vb, fee_rate_sat_per_kw);   // v284: real input sizes
+    let fee_sats = estimate_fee_inputs(&selected, n_dest + 1, extra_vb, fee_rate_sat_per_kw);   // v284: real input sizes
     if total_in < fixed + fee_sats {
         return Err(LijError::Node(format!("insufficient funds: have {total_in} sats, need {} (amount {fixed} + fee {fee_sats})", fixed + fee_sats)));
     }
-    let mut change_sats = total_in - fixed - fee_sats;
-    if change_sats < DUST_THRESHOLD_SATS {
-        fee_sats += change_sats;   // too small to keep: it goes to the fee
-        change_sats = 0;
-    }
+    let (fee_sats, change_sats, folded_sats) = settle_change(total_in, fixed, fee_sats);   // v308: too small to keep → the fee
     let amounts = recipients.iter().filter_map(|r| r.amount_sats).collect();
-    Ok(Plan { dests, selected, amounts, fee_sats, change_sats, total_in })
+    Ok(Plan { dests, selected, amounts, fee_sats, change_sats, folded_sats, total_in })
 }
 
 /// v305: the silent-payment inputs of a selection (each coin's key and outpoint; a silent-payment coin counts as a
@@ -1062,6 +1081,8 @@ pub struct MultiQuote {
     pub total_sats: u64,
     pub fee_sats: u64,
     pub change_sats: u64,
+    /// v308: the leftover too small to keep as change, inside fee_sats (0 = none).
+    pub folded_sats: u64,
     pub inputs: usize,
     pub spend: Vec<(String, u32)>,
     pub sat_per_vb: u64,
@@ -1092,6 +1113,7 @@ pub fn multi_quote(
             amounts: p.amounts,
             fee_sats: p.fee_sats,
             change_sats: p.change_sats,
+            folded_sats: p.folded_sats,
             inputs: p.selected.len(),
             spend: p.selected.iter().map(|u| (u.txid.clone(), u.vout)).collect(),
             sat_per_vb,
@@ -1632,9 +1654,9 @@ mod coin_control_tests {
         let q = coin_quote("", Network::Bitcoin, kw, &view, &[], &marks, None, Some(4_000), false);
         assert_eq!((q.spend, q.spend_sats, q.change_sats), (vec![("cc".to_string(), 0u32)], 5_000, Some(718)));
         assert!(q.tiny_change && q.tiny_below_sats == 1_000 && q.dust_sats == 294);
-        // 4,600: change 118 < dust → folded into the fee, not a coin → not tiny
+        // 4,600: change 118 < dust → folded into the fee, not a coin → not tiny (v308: no change output; the fee carries it)
         let q = coin_quote("", Network::Bitcoin, kw, &view, &[], &marks, None, Some(4_600), false);
-        assert_eq!((q.change_sats, q.tiny_change), (Some(118), false));
+        assert_eq!((q.change_sats, q.folded_sats, q.send_fee_sats, q.tiny_change), (Some(0), 118, Some(282 + 118), false));
         // 15,000: the 20k coin, change 4,718 → fine
         let q = coin_quote("", Network::Bitcoin, kw, &view, &[], &marks, None, Some(15_000), false);
         assert_eq!((q.spend_sats, q.change_sats, q.tiny_change), (20_000, Some(4_718), false));
@@ -1646,6 +1668,65 @@ mod coin_control_tests {
         // chosen coins that cover: the change is theirs
         let q = coin_quote("", Network::Bitcoin, kw, &view, &[], &marks, Some(&pins), Some(4_000), false);
         assert_eq!((q.spend_sats, q.change_sats), (5_000, Some(718)));
+    }
+
+    /// v308 (S54, DP 2026-10-04 00:03): DP's send 1fffda67… replayed — coins 1,501 and 5,555 and 62,015, 1,002 to an address
+    /// at 2 sat/vB. The pick is the 1,501 coin (1,002 + 282 = 1,284 covers); 217 is left, under 294 → the fee: 499, no
+    /// change. The quote says exactly that, and the builder pays exactly that. Before v308 the quote's only fee was what
+    /// EVERY coin would need.
+    #[test]
+    fn v308_the_quote_shows_the_fee_the_send_pays_and_the_leftover_it_adds() {
+        let root = root305();
+        let mut view = Tier2View::default();
+        let mut a = coin(&"a1".repeat(32), 0, 0, 1_501); a.index = 1;
+        let mut b = coin(&"b2".repeat(32), 0, 0, 5_555); b.index = 2;
+        let mut c = coin(&"c3".repeat(32), 1, 0, 62_015); c.index = 3;
+        view.utxos = vec![a, b, c];
+        let kw = 2 * 250;
+        let marks = CoinMarks::default();
+        let q = coin_quote(BC1_EX, Network::Bitcoin, kw, &view, &[], &marks, None, Some(1_002), false);
+        assert_eq!(q.spend, vec![("a1".repeat(32), 0u32)], "the smallest coin that covers");
+        assert_eq!((q.send_fee_sats, q.folded_sats, q.change_sats), (Some(499), 217, Some(0)));
+        assert_eq!(q.fee_sats, Some((11 + 68 * 3 + 31 * 2) * 2), "fee_sats keeps its meaning: every coin, two outputs");
+        assert!(!q.tiny_change);
+        let built = build_send_tx(&root, Network::Bitcoin, &[rcpt(BC1_EX, Some(1_002))], kw, 7, &view, &[], &marks, None).unwrap();
+        assert_eq!((built.fee_sats, built.change_sats, built.tx.output.len()), (499, 0, 1), "what goes out is what the quote said");
+        // DP's second send 32dd5e31…: the 5,555 coin, change kept, the fee exactly 282, nothing folded
+        let q = coin_quote(BC1_EX, Network::Bitcoin, kw, &view, &[], &marks, None, Some(3_519), false);
+        assert_eq!((q.spend_sats, q.send_fee_sats, q.folded_sats, q.change_sats), (5_555, Some(282), 0, Some(5_555 - 3_519 - 282)));
+        let built = build_send_tx(&root, Network::Bitcoin, &[rcpt(BC1_EX, Some(3_519))], kw, 7, &view, &[], &marks, None).unwrap();
+        assert_eq!((built.fee_sats, built.change_sats), (282, 1_754));
+        // chosen coins: the same rule — the 1,501 coin chosen for 1,100 leaves 119 → the fee 401
+        let pins = vec![("a1".repeat(32), 0u32)];
+        let q = coin_quote(BC1_EX, Network::Bitcoin, kw, &view, &[], &marks, Some(&pins), Some(1_100), false);
+        assert_eq!((q.send_fee_sats, q.folded_sats, q.change_sats), (Some(401), 119, Some(0)));
+        // no amount: nothing to settle
+        let q = coin_quote(BC1_EX, Network::Bitcoin, kw, &view, &[], &marks, None, None, false);
+        assert_eq!((q.send_fee_sats, q.folded_sats), (None, 0));
+    }
+
+    #[test]
+    fn v308_the_several_recipients_quote_names_the_leftover_too() {
+        let mut view = Tier2View::default();
+        let mut a = coin(&"a1".repeat(32), 0, 0, 2_000); a.index = 1;
+        view.utxos = vec![a];
+        let kw = 2 * 250;
+        // 700 + 600 = 1,300; fee for 1 in, 3 out = (11 + 68 + 93) × 2 = 344; left 356 → kept as change
+        let q = multi_quote(&[rcpt(BC1_EX, Some(700)), rcpt(BC1_EX, Some(600))], Network::Bitcoin, kw, &view, &[], &CoinMarks::default(), None);
+        assert_eq!((q.fee_sats, q.change_sats, q.folded_sats), (344, 356, 0));
+        // 800 + 600 = 1,400; left 256 → the fee: 600, no change
+        let q = multi_quote(&[rcpt(BC1_EX, Some(800)), rcpt(BC1_EX, Some(600))], Network::Bitcoin, kw, &view, &[], &CoinMarks::default(), None);
+        assert_eq!((q.fee_sats, q.change_sats, q.folded_sats), (600, 0, 256));
+        assert_eq!(q.total_sats + q.fee_sats, 2_000);
+    }
+
+    #[test]
+    fn v308_settle_change_is_one_rule() {
+        assert_eq!(settle_change(1_501, 1_002, 282), (499, 0, 217));
+        assert_eq!(settle_change(5_555, 3_519, 282), (282, 1_754, 0));
+        assert_eq!(settle_change(1_578, 1_002, 282), (282, 294, 0), "294 itself is kept");
+        assert_eq!(settle_change(1_577, 1_002, 282), (575, 0, 293));
+        assert_eq!(settle_change(1_284, 1_002, 282), (282, 0, 0), "nothing left, nothing folded");
     }
 
     #[test]

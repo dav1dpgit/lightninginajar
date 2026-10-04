@@ -96,7 +96,10 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v305".to_string()  // v305 (S54, DP 2026-10-02 13:50 "Go ahead" — SEVERAL RECIPIENTS IN ONE SEND): one builder for every on-chain send (onchain_send::build_send_tx — plan_send → the outputs → the one signer; build_and_send / _all / _pinned are its one-recipient case, unchanged in what they do): up to 20 recipients (MAX_RECIPIENTS), each an address or an sp1 with an amount, or — the LAST only — no amount = everything left after the others and the fee (DP's Max rule); the recipients in order at vout 0 …, the change after them; DP's coin pick for the total (+ the fee for n + 1 outputs) or exactly the chosen coins; a recipient below the 294-sat output minimum refused when there are several. Silent payments: silent_payment::derive_output_scripts — one group per scan key, k = 0, 1 … in recipient order (two payments to one wallet, or to two of its labels, are two outputs it finds with one scan); the input arithmetic once. PendingTx.dests (every recipient, in order) → the RBF bump rebuilds every output from the same inputs (same k, same scripts); change at vout n. wasm: send_onchain_multi(req), onchain_multi_quote(req) (the builder's own plan: the amounts — the Max on the last —, the fee, the change, the coins, or the refusal in plain words). Gate: the BIP's SENDING vectors with several recipients (same recipient twice, several wallets, a plain + a labelled address, the change label) + v305_* (exact amounts and change last, the silent payment found by its receiver, k0/k1 to one wallet, Max on the last with no change and with chosen coins, the refusals, one recipient unchanged, the bump's re-derivation). 325 green.
+    "phase11-v308".to_string()  // v308 (S54, DP 2026-10-03 23:44 "This transaction did not have any change, but I did not use MAX … What happened with that first one? Can you track it from the code?" — 2026-10-04 00:03 "Go."): the send was right; the quote was not. With no coins chosen, coin_quote's fee_sats is what EVERY coin would need (650 at 2 sat/vB on DP's wallet) and Review showed it, while the send paid the picked coin's fee (282); and a leftover under 294 sats goes to the fee in silence (1fffda67…: 1,501 − 1,002 − 282 = 217 → fee 499, no change). Now one rule for what is left (onchain_send::settle_change) is shared by the builder and the quote; coin_quote reports send_fee_sats (exactly what the send pays, any leftover included) and folded_sats; change_sats is the change output itself (0 when folded); multi_quote reports folded_sats. fee_sats keeps its meaning. Tests v308_the_quote_shows_the_fee_the_send_pays_and_the_leftover_it_adds (DP's two sends replayed), v308_the_several_recipients_quote_names_the_leftover_too, v308_settle_change_is_one_rule.
+    // "phase11-v307".to_string()  // v307 (S54, DP 2026-10-03 23:07 "What happens if someone sends a second subsequent payment to the address that was derived from a Silent Payment? Will it be seen?" — 23:09 "Yes, go ahead. Good coverage."): it was not — BIP-352's sum over a new transaction's inputs never gives that address again, and the scan watched the UNSPENT coins' scripts only, for their spends. Now the scan watches the script of every silent-payment coin it has found, spent or not (sp_scan::known_coin_scripts): an output paying one is a coin, spent with the same key (its stored tweak); the mempool leg checks the same keys (SpPending.reused); derive_history marks the line `reused` (a coin with the same tweak and label as an earlier one). Test v307_a_second_payment_to_a_found_silent_payment_address_is_found_even_after_the_first_was_spent.
+    // "phase11-v306".to_string()  // v306 (S54, DP 2026-10-03 13:59 "Agreed" + 15:30 "It is a go to implement fully" — THE PAYMENT LINES: send = one line per transaction; receive = one line per address (or silent-payment label) per transaction; tap = the parts): the history keeps ONE row per transaction and a received row (Received, Onchain) carries `lines` — one per own address (chain, index) or sp1 label, each with its parts (vout, sats) in output order (tier2_wallet::recv_lines in derive_history); the sync names each ordinary line's address from the wallet's own scripts (name_line_addresses). A send to several keeps every recipient AS TYPED by txid (CoinMarks.send_dests — the marks ride the backup blob; the fee bump carries them to the replacement); tx_details answers "recipients" [{dest, value, sp}] (the record, else the pending send's dests). Tests v306_*.
+    // "phase11-v305".to_string()  // v305 (S54, DP 2026-10-02 13:50 "Go ahead" — SEVERAL RECIPIENTS IN ONE SEND): one builder for every on-chain send (onchain_send::build_send_tx — plan_send → the outputs → the one signer; build_and_send / _all / _pinned are its one-recipient case, unchanged in what they do): up to 20 recipients (MAX_RECIPIENTS), each an address or an sp1 with an amount, or — the LAST only — no amount = everything left after the others and the fee (DP's Max rule); the recipients in order at vout 0 …, the change after them; DP's coin pick for the total (+ the fee for n + 1 outputs) or exactly the chosen coins; a recipient below the 294-sat output minimum refused when there are several. Silent payments: silent_payment::derive_output_scripts — one group per scan key, k = 0, 1 … in recipient order (two payments to one wallet, or to two of its labels, are two outputs it finds with one scan); the input arithmetic once. PendingTx.dests (every recipient, in order) → the RBF bump rebuilds every output from the same inputs (same k, same scripts); change at vout n. wasm: send_onchain_multi(req), onchain_multi_quote(req) (the builder's own plan: the amounts — the Max on the last —, the fee, the change, the coins, or the refusal in plain words). Gate: the BIP's SENDING vectors with several recipients (same recipient twice, several wallets, a plain + a labelled address, the change label) + v305_* (exact amounts and change last, the silent payment found by its receiver, k0/k1 to one wallet, Max on the last with no change and with chosen coins, the refusals, one recipient unchanged, the bump's re-derivation). 325 green.
     // "phase11-v304".to_string()  // v304 (S54, DP 2026-10-02 13:50 "Go ahead" — SILENT-PAYMENT LABELS): a label m (1..=10, SP_LABEL_MAX) is the BIP-352 labelled address B_m = B_spend + hash("BIP0352/Label", b_scan ‖ m)·G with the same scan key (SpKeys::label_tweak / label_address; m = 0, the change label, is never handed out). The scan checks the change label, every label made or found, and — after a restore from the words with no backup behind it (wallet.rs sets CoinMarks.sp_labels_unknown) — all ten: one more candidate per tweak per label at the filter stage. A coin found under a label carries it (OnchainUtxo.sp_label; its stored t already includes the label, so the spend, the RBF bump and the Black start kit sweep are unchanged); the derived history row lists the labels paid (sp_labels); a number found with no entry is kept nameless ("Label m"). The names, hidden flags and the unknown flag live in the marks record (sealed, rides the backup blob and survives a rescan); the Black start kit carries number + name (silent_payment_labels). FIXED: the change label was added to the even-y point of x(P_k) — wrong for half of all tweaks; a label is now added to the full point (the BIP's "label with odd parity"). wasm: sp_labels(), sp_label_create(name), sp_label_update({m,name?,hidden?}). Gate: the BIP's RECEIVING vectors (testdata/bip352_receive_vectors.json, 28 cases bar K_max: labels even/odd parity, a large label number, several outputs to a labelled address, the change label) + v304_* tests.
     // "phase11-v303".to_string()  // v303 (S54, DP 2026-10-02 10:11 "Fix all of these … Go."): bolt11_facts(bolt11) — a BOLT11 invoice's payee (the n field, else recovered from the signature), amount, payment hash, network and expiry, signature-checked by lightning-invoice (lij_core::invoice_facts); the page checks the chit's funding invoice with it before paying (amount = the chit's, payee = the provider). A free function: no wallet state, no lock. Tests v303_reads_payee_amount_hash_and_expiry, v303_amountless_and_refusals.
     // "phase11-v302".to_string()  // v302 (S54, DP 2026-10-01 22:34 "wire it in so it is robust and any fail has fallbacks" + 22:47 "Correct and agreed" to the "Only my server" switch): THE ADDRESS WATCHER IS WIRED. Until v302 the row saved a server the receive watch never read (since v118, 2026-06-13). watch_address_inbound(address, own_base, own_only) → IndependentClient::fetch_address_utxos_watch_via: the user's own Esplora first (cleaned by the filter-base rule: https, a host, optional port and path); if it does not answer (refusal, 404, unreadable, unreachable) the same check asks the public explorers in turn, and the own server rests 60 s (OWN_WATCH_REST_MS) so a dead server cannot cost every check its timeout; an answer ends the rest; a newly saved server is asked at once. own_only = no fallback (the check is an error, no explorer asked). A 404 is now "did not answer" everywhere in the watch (Blockstream and btcscan.org answer an unused address 200 [] — read 2026-10-01; the project's block-filter server answers the path 404 because it has no address route, and the old rule read that as "nothing paid"). watch_report() = how the last check went (answered_by own|public|"", own_error, own_resting); check_watch_server(base) = the row's Save check (/blocks/tip/height is a height, /address/<a never-funded probe>/utxo answers a list). Old pages call with one argument → no own server, as before. Tests v302_* (10).
@@ -229,7 +232,12 @@ fn t2_note_servers(base: &str, sp_base: &str) {
 /// v298 (S52, DP #2 and #3): a send this wallet has just broadcast — its raw bytes into the tx store (the drill-down
 /// reads them while it is unconfirmed and after), and, when it was typed to an sp1 address, that address into the
 /// marks by txid (the chain shows only the one-time taproot output the sp1 address made).
-fn t2_note_send(storage: &dyn lij_core::storage::LijStorage, txid: &str, raw_hex: &str, dest: Option<&str>) {
+fn t2_note_send(storage: &dyn lij_core::storage::LijStorage, txid: &str, raw_hex: &str, dest: Option<&str>, dests: &[(String, u64)]) {
+    if dests.len() > 1 {   // v306: a send to several — every recipient as typed, for the drill-down after the block
+        let mut m = lij_core::tier2_wallet::load_marks(storage).unwrap_or_default();
+        m.send_dests.insert(txid.to_string(), dests.to_vec());
+        if let Err(e) = lij_core::tier2_wallet::save_marks(storage, &m) { log::warn!("[tier2] v306 recipients record ({txid}): {e}"); }
+    }
     if !raw_hex.is_empty() {
         if let Err(e) = lij_core::tx_store::put(storage, &[(txid.to_string(), 0, raw_hex.to_string())]) {
             log::warn!("[tier2] v298 tx store (send {txid}): {e}");
@@ -1129,7 +1137,12 @@ impl LijWalletHandle {
             }
 
             let marks = lij_core::tier2_wallet::load_marks(storage.as_ref()).unwrap_or_default();   // v281: freezes and notes onto the rows
-            let json = lij_core::tier2_wallet::summary(&view, &pending, tip.height, &marks)
+            let mut sum = lij_core::tier2_wallet::summary(&view, &pending, tip.height, &marks);
+            // v306: each received line's address, named from the wallet's own scripts (cached per width)
+            if let Ok(sc) = t2_scripts(&root_key, network, view.net_width).await {
+                lij_core::tier2_wallet::name_line_addresses(&mut sum.history, &sc, network);
+            }
+            let json = sum
                 .to_json()
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
             let json = json.replacen(
@@ -1260,7 +1273,7 @@ impl LijWalletHandle {
                 ) {
                     log::error!("record pending on-chain send failed: {e}");
                 }
-                t2_note_send(storage.as_ref(), &result.txid, &result.raw_hex, Some(dest.as_str()));   // v298
+                t2_note_send(storage.as_ref(), &result.txid, &result.raw_hex, Some(dest.as_str()), &[]);   // v298
             }
 
             let json = result
@@ -1334,7 +1347,7 @@ impl LijWalletHandle {
                 ) {
                     log::error!("record pending on-chain send-all failed: {e}");
                 }
-                t2_note_send(storage.as_ref(), &result.txid, &result.raw_hex, Some(dest.as_str()));   // v298
+                t2_note_send(storage.as_ref(), &result.txid, &result.raw_hex, Some(dest.as_str()), &[]);   // v298
             }
             let json = result
                 .to_json()
@@ -1411,7 +1424,7 @@ impl LijWalletHandle {
                 ) {
                     log::error!("record pending on-chain chosen-coin send failed: {e}");
                 }
-                t2_note_send(storage.as_ref(), &result.txid, &result.raw_hex, Some(r.dest.as_str()));   // v298
+                t2_note_send(storage.as_ref(), &result.txid, &result.raw_hex, Some(r.dest.as_str()), &[]);   // v298
             }
             let json = result
                 .to_json()
@@ -1493,7 +1506,8 @@ impl LijWalletHandle {
                 }
                 // v298: kept whole; the first sp1 recipient (if any) noted for the drill-down
                 let sp1 = result.recipients.iter().map(|p| p.dest.clone()).find(|d| { let l = d.to_ascii_lowercase(); l.starts_with("sp1") || l.starts_with("tsp1") });
-                t2_note_send(storage.as_ref(), &result.txid, &result.raw_hex, sp1.as_deref());
+                let all: Vec<(String, u64)> = result.recipients.iter().map(|p| (p.dest.clone(), p.amount_sats)).collect();   // v306
+                t2_note_send(storage.as_ref(), &result.txid, &result.raw_hex, sp1.as_deref(), &all);
             }
             let json = result.to_json().map_err(|e| JsValue::from_str(&e.to_string()))?;
             Ok(JsValue::from_str(&json))
@@ -1946,7 +1960,7 @@ impl LijWalletHandle {
             let dests_keep = prev.dests.clone();   // v305: every recipient rides the replacement's record
             {
                 let storage2: Arc<dyn lij_core::storage::LijStorage> = t2_storage(&root_key);   // v256
-                t2_note_send(storage2.as_ref(), &result.txid, &result.raw_hex, dest_addr_keep.as_deref());   // v298: the replacement, kept whole; its sp1 too
+                t2_note_send(storage2.as_ref(), &result.txid, &result.raw_hex, dest_addr_keep.as_deref(), &dests_keep);   // v298: the replacement, kept whole; its sp1 too · v306: its recipients
                 let mut list = lij_core::tier2_wallet::load_pending(storage2.as_ref());
                 list.retain(|p| p.txid != old_txid);
                 list.push(lij_core::tier2_wallet::PendingTx {
@@ -2270,6 +2284,13 @@ impl LijWalletHandle {
             let is_sp1 = |d: &str| { let l = d.trim().to_ascii_lowercase(); l.starts_with("sp1") || l.starts_with("tsp1") };
             let sp_address: Option<String> = marks.sp_sends.get(&txid).cloned()
                 .or_else(|| pend.as_ref().and_then(|p| p.dest_addr.clone()).filter(|d| is_sp1(d)));
+            // v306: a send to several — every recipient as typed (the record, else the pending send's)
+            let recipients: Vec<serde_json::Value> = marks.send_dests.get(&txid).cloned()
+                .or_else(|| pend.as_ref().map(|p| p.dests.clone()).filter(|d| !d.is_empty()))
+                .unwrap_or_default()
+                .iter()
+                .map(|(d, v)| serde_json::json!({ "dest": d, "value": v, "sp": is_sp1(d) }))
+                .collect();
             let ledger_h = lij_core::tier2_wallet::ledger_height_of(&view, &txid);
             let mut source = "ledger";
             // v300: a kept transaction comes without its signatures, its full weight beside it
@@ -2302,7 +2323,7 @@ impl LijWalletHandle {
                         let out = serde_json::json!({
                             "txid": txid, "fee_sats": p.fee_sats.unwrap_or(0), "vsize": 0, "sat_vb": 0.0,
                             "confirmed": false, "height": null, "time": null, "our_in": 0, "our_out": 0,
-                            "address": dest, "address_type": "", "outputs": [], "source": "pending-record", "sp_address": sp_address,
+                            "address": dest, "address_type": "", "outputs": [], "source": "pending-record", "sp_address": sp_address, "recipients": recipients,
                         });
                         return Ok(JsValue::from_str(&out.to_string()));
                     }
@@ -2343,7 +2364,7 @@ impl LijWalletHandle {
                 "txid": etx.txid, "fee_sats": fee, "vsize": vsize, "sat_vb": (sat_vb * 10.0).round() / 10.0,
                 "confirmed": etx.confirmed, "height": etx.block_height, "time": etx.block_time,
                 "our_in": our_in, "our_out": our_out, "address": address, "address_type": address_type, "outputs": outs,
-                "source": source, "sp_address": sp_address,
+                "source": source, "sp_address": sp_address, "recipients": recipients,
             });
             Ok(JsValue::from_str(&out.to_string()))
         })

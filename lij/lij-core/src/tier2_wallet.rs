@@ -120,6 +120,11 @@ pub struct CoinMarks {
     /// sent it. Kept here (the marks ride the backup blob), not in the pending list that is dropped at confirmation.
     #[serde(default)]
     pub sp_sends: std::collections::BTreeMap<String, String>,
+    /// v306 (S54, DP 2026-10-03 — the sender's details list every recipient): a send to several, by txid — every
+    /// recipient AS TYPED (an sp1 stays an sp1), in output order, with its sats. The pending record keeps them only until
+    /// the block; these ride the backup blob. A fee bump carries them to the replacement's txid.
+    #[serde(default)]
+    pub send_dests: std::collections::BTreeMap<String, Vec<(String, u64)>>,
     /// v300 (S52, DP 00:25 "if a wallet approaches 1000 transactions, some notification … delete old data or expand
     /// the size"): the user's ceiling for the kept transactions (0 = the default, tx_store::TX_STORE_CAP; the larger
     /// steps are tx_store::CAP_STEPS). Here so it rides the backup and survives a rescan.
@@ -156,7 +161,7 @@ pub const SP_LABEL_NAME_MAX_CHARS: usize = 40;
 fn default_true() -> bool { true }
 
 impl Default for CoinMarks {
-    fn default() -> Self { Self { marks: Default::default(), sp_enabled: true, sp_sends: Default::default(), tx_keep_cap: 0, sp_labels: Vec::new(), sp_labels_unknown: false } }
+    fn default() -> Self { Self { marks: Default::default(), sp_enabled: true, sp_sends: Default::default(), send_dests: Default::default(), tx_keep_cap: 0, sp_labels: Vec::new(), sp_labels_unknown: false } }
 }
 
 /// v281: the cap on a coin note, in code points (the address note's and the Push Key
@@ -430,6 +435,73 @@ pub struct OnchainHistoryEntry {
     /// v304 (S54): the labels (m ≥ 1) this transaction paid — the face names them from the marks ("Donations").
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sp_labels: Vec<u32>,
+    /// v306 (S54, DP 2026-10-03 13:59 — RECEIVE = ONE LINE PER ADDRESS (OR SP LABEL) PER TRANSACTION): on a received
+    /// transaction (direction Received, kind Onchain) its lines — one per own address (chain, index) or per
+    /// silent-payment label — each with the parts that paid it, in output order. The row stays one per transaction;
+    /// the page draws the lines. Empty on a send, a self-move, a channel open or close.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lines: Vec<RecvLine>,
+}
+
+/// v306: one received line — an own address (`chain`, `index`; `address` named by the sync from the wallet's scripts,
+/// see name_line_addresses) or a silent-payment label (`sp`; `sp_label` None = the plain sp1 address, Some(m) = label
+/// m), its total and its parts (vout, sats) in output order.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecvLine {
+    pub chain: u32,
+    #[serde(default)]
+    pub index: u32,
+    #[serde(default)]
+    pub sp: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sp_label: Option<u32>,
+    pub value_sats: u64,
+    pub parts: Vec<(u32, u64)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    /// v307: a silent-payment line paying an address a silent payment made before (the same tweak as an earlier coin).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reused: bool,
+}
+
+/// v306: a received transaction's coins → its lines (one per own address or sp1 label), in output order.
+fn recv_lines(coins: &[&OnchainUtxo], reused: &std::collections::HashSet<(String, u32)>) -> Vec<RecvLine> {
+    let mut sorted: Vec<&OnchainUtxo> = coins.to_vec();
+    sorted.sort_by_key(|u| u.vout);
+    let mut lines: Vec<RecvLine> = Vec::new();
+    for u in sorted {
+        let sp = u.chain == crate::tier2::CHAIN_SP;
+        let at = lines.iter().position(|l| if sp { l.sp && l.sp_label == u.sp_label } else { !l.sp && l.chain == u.chain && l.index == u.index });
+        let i = match at {
+            Some(i) => i,
+            None => {
+                lines.push(RecvLine { chain: u.chain, index: if sp { 0 } else { u.index }, sp, sp_label: if sp { u.sp_label } else { None }, value_sats: 0, parts: Vec::new(), address: None, reused: false });
+                lines.len() - 1
+            }
+        };
+        lines[i].value_sats = lines[i].value_sats.saturating_add(u.value_sats);
+        lines[i].parts.push((u.vout, u.value_sats));
+        if reused.contains(&(u.txid.clone(), u.vout)) { lines[i].reused = true; }   // v307
+    }
+    lines
+}
+
+/// v306: the sync names each ordinary line's address from the wallet's own scripts (the (chain, index) the scan matched
+/// the coin to). A line whose key is outside the scripts at hand keeps no address (the page shows the parts' outputs).
+pub fn name_line_addresses(history: &mut [OnchainHistoryEntry], scripts: &crate::tier2::WalletScripts, network: bitcoin::Network) {
+    let mut want: std::collections::HashMap<(u32, u32), Option<String>> = std::collections::HashMap::new();
+    for h in history.iter() { for l in &h.lines { if !l.sp { want.insert((l.chain, l.index), None); } } }
+    if want.is_empty() { return; }
+    for e in &scripts.entries {
+        if let Some(slot) = want.get_mut(&(e.chain, e.index)) {
+            if slot.is_none() { *slot = bitcoin::Address::from_script(&e.script_pubkey, network).ok().map(|a| a.to_string()); }
+        }
+    }
+    for h in history.iter_mut() {
+        for l in h.lines.iter_mut() {
+            if !l.sp { if let Some(Some(a)) = want.get(&(l.chain, l.index)) { l.address = Some(a.clone()); } }
+        }
+    }
 }
 
 /// A transaction we originated (on-chain send, channel funding, sweep) and
@@ -1659,7 +1731,24 @@ pub fn derive_history(view: &Tier2View) -> Vec<OnchainHistoryEntry> {
     let mut spent: HashMap<String, (u32, u64)> = HashMap::new();
     let mut sp_sats: HashMap<String, u64> = HashMap::new();   // v289: silent-payment sats per txid
     let mut sp_labs: HashMap<String, Vec<u32>> = HashMap::new();   // v304: the labels paid, per txid
+    let mut coins_of: HashMap<String, Vec<&OnchainUtxo>> = HashMap::new();   // v306: each transaction's coins → its lines
+    // v307: a silent-payment coin with the same tweak (and label) as an earlier one pays the same address again
+    let reused: std::collections::HashSet<(String, u32)> = {
+        let mut first: HashMap<(String, Option<u32>), (u32, String, u32)> = HashMap::new();
+        for u in view.utxos.iter().filter(|u| u.chain == crate::tier2::CHAIN_SP) {
+            let Some(t) = u.sp_tweak.clone() else { continue };
+            let here = (u.height, u.txid.clone(), u.vout);
+            let e = first.entry((t, u.sp_label)).or_insert_with(|| here.clone());
+            if here < *e { *e = here; }
+        }
+        view.utxos.iter().filter(|u| u.chain == crate::tier2::CHAIN_SP).filter_map(|u| {
+            let t = u.sp_tweak.clone()?;
+            let f = first.get(&(t, u.sp_label))?;
+            if (u.height, u.txid.clone(), u.vout) != *f { Some((u.txid.clone(), u.vout)) } else { None }
+        }).collect()
+    };
     for u in &view.utxos {
+        coins_of.entry(u.txid.clone()).or_default().push(u);
         if let Some(m) = u.sp_label.filter(|m| *m > 0) {
             let e = sp_labs.entry(u.txid.clone()).or_default();
             if !e.contains(&m) { e.push(m); e.sort_unstable(); }
@@ -1705,7 +1794,11 @@ pub fn derive_history(view: &Tier2View) -> Vec<OnchainHistoryEntry> {
         let time = view.block_times.get(&height).copied().unwrap_or(0);   // v259
         let silent_payment_sats = sp_sats.get(&txid).copied().unwrap_or(0);   // v289
         let sp_labels = sp_labs.remove(&txid).unwrap_or_default();   // v304
-        out.push(OnchainHistoryEntry { txid, height, direction, delta_sats: delta, kind, time, silent_payment_sats, sp_labels });
+        // v306: a received transaction's lines — one per own address or sp1 label
+        let lines = if direction == TxDirection::Received && kind == TxKind::Onchain {
+            coins_of.get(&txid).map(|c| recv_lines(c, &reused)).unwrap_or_default()
+        } else { Vec::new() };
+        out.push(OnchainHistoryEntry { txid, height, direction, delta_sats: delta, kind, time, silent_payment_sats, sp_labels, lines });
     }
     // v256: height newest first, then txid — same height never swaps between refreshes.
     out.sort_by(|a, b| b.height.cmp(&a.height).then_with(|| a.txid.cmp(&b.txid)));
@@ -1857,6 +1950,88 @@ mod tests {
                 .parse().unwrap();
         let root = crate::key::RootKey::from_mnemonic(&mnemonic, Network::Bitcoin).unwrap();
         WalletScripts::build(&root, Network::Bitcoin, DEFAULT_GAP).unwrap()
+    }
+
+    fn c306(txid: &str, vout: u32, chain: u32, index: u32, value: u64, sp_label: Option<u32>) -> OnchainUtxo {
+        OnchainUtxo { chain, index, txid: txid.to_string(), vout, value_sats: value, height: 969_101, spent_height: None, spent_txid: None, sp_tweak: if chain == crate::tier2::CHAIN_SP { Some("07".repeat(32)) } else { None }, sp_label }
+    }
+
+    #[test]
+    fn v306_a_received_transaction_is_one_line_per_address_or_label() {
+        use crate::tier2::CHAIN_SP;
+        let t = "c3".repeat(32); let r2 = "e5".repeat(32);
+        let mut view = Tier2View::default();
+        // DP's test (2026-10-02 18:21): three parts to one address, one to the sp1 label 1 — and a later payment to the address
+        view.utxos = vec![
+            c306(&t, 2, CHAIN_RECEIVE, 7, 3_333, None), c306(&t, 0, CHAIN_RECEIVE, 7, 1_111, None), c306(&t, 1, CHAIN_RECEIVE, 7, 2_222, None),
+            c306(&t, 3, CHAIN_SP, 4, 5_000, Some(1)),
+            c306(&r2, 0, CHAIN_RECEIVE, 7, 2_000, None),
+        ];
+        let rows = derive_history(&view);
+        assert_eq!(rows.len(), 2, "still one row per transaction");
+        let rt = rows.iter().find(|h| h.txid == t).unwrap();
+        assert_eq!(rt.delta_sats, 11_666);
+        assert_eq!(rt.lines.len(), 2);
+        assert_eq!((rt.lines[0].sp, rt.lines[0].chain, rt.lines[0].index, rt.lines[0].value_sats), (false, CHAIN_RECEIVE, 7, 6_666));
+        assert_eq!(rt.lines[0].parts, vec![(0, 1_111), (1, 2_222), (2, 3_333)], "the parts in output order");
+        assert_eq!((rt.lines[1].sp, rt.lines[1].sp_label, rt.lines[1].index, rt.lines[1].value_sats, rt.lines[1].parts.clone()), (true, Some(1), 0, 5_000, vec![(3, 5_000)]));
+        assert_eq!(rt.lines.iter().map(|l| l.value_sats).sum::<u64>() as i64, rt.delta_sats, "the lines add up to the row");
+        let r = rows.iter().find(|h| h.txid == r2).unwrap();
+        assert_eq!((r.lines.len(), r.lines[0].index, r.lines[0].value_sats), (1, 7, 2_000), "a later payment to the same address: its own row, its own line");
+        // two of the wallet's addresses in one transaction → two lines; the plain sp1 and a label → two lines
+        let u = "d4".repeat(32);
+        view.utxos = vec![c306(&u, 0, CHAIN_RECEIVE, 3, 1_000, None), c306(&u, 1, CHAIN_RECEIVE, 4, 2_000, None), c306(&u, 2, CHAIN_SP, 0, 300, None), c306(&u, 3, CHAIN_SP, 1, 400, Some(2))];
+        let rows = derive_history(&view);
+        assert_eq!(rows[0].lines.iter().map(|l| (l.sp, l.index, l.sp_label, l.value_sats)).collect::<Vec<_>>(), vec![(false, 3, None, 1_000), (false, 4, None, 2_000), (true, 0, None, 300), (true, 0, Some(2), 400)]);
+    }
+
+    #[test]
+    fn v306_sends_self_moves_and_closes_carry_no_lines() {
+        let a = "a1".repeat(32); let b = "b2".repeat(32);
+        let mut view = Tier2View::default();
+        let mut spent = c306(&a, 0, CHAIN_RECEIVE, 1, 50_000, None);
+        spent.spent_height = Some(969_200); spent.spent_txid = Some(b.clone());
+        view.utxos = vec![spent, c306(&b, 1, crate::tier2::CHAIN_CHANGE, 0, 30_000, None)];
+        let rows = derive_history(&view);
+        let rb = rows.iter().find(|h| h.txid == b).unwrap();
+        assert!(rb.lines.is_empty(), "a send (here a self-move with change): no received lines");
+        let ra = rows.iter().find(|h| h.txid == a).unwrap();
+        assert_eq!(ra.lines.len(), 1, "the original receive keeps its line after the coin is spent");
+        view.close_hints.insert(a.clone(), true);
+        let rows = derive_history(&view);
+        assert!(rows.iter().find(|h| h.txid == a).unwrap().lines.is_empty(), "a channel close: no lines");
+    }
+
+    #[test]
+    fn v306_the_sync_names_each_lines_address_from_the_wallets_scripts() {
+        let s = scripts();
+        let e = s.entries.iter().find(|e| e.chain == CHAIN_RECEIVE && e.index == 7).unwrap();
+        let want = bitcoin::Address::from_script(&e.script_pubkey, Network::Bitcoin).unwrap().to_string();
+        let t = "c3".repeat(32);
+        let mut view = Tier2View::default();
+        view.utxos = vec![c306(&t, 0, CHAIN_RECEIVE, 7, 1_111, None), c306(&t, 1, crate::tier2::CHAIN_SP, 0, 5_000, Some(1))];
+        let mut rows = derive_history(&view);
+        name_line_addresses(&mut rows, &s, Network::Bitcoin);
+        assert_eq!(rows[0].lines[0].address.as_deref(), Some(want.as_str()));
+        assert!(want.starts_with("bc1q"));
+        assert_eq!(rows[0].lines[1].address, None, "an sp1 line is named by its label, not an address");
+        // the JSON the page reads
+        let j = serde_json::to_value(&rows[0]).unwrap();
+        assert_eq!(j["lines"][0]["parts"], serde_json::json!([[0, 1111]]));
+        assert_eq!(j["lines"][1]["sp_label"], serde_json::json!(1));
+        // a row from before v306 (no lines) still reads
+        let old: OnchainHistoryEntry = serde_json::from_str(r#"{"txid":"ab","height":1,"direction":"Received","delta_sats":5}"#).unwrap();
+        assert!(old.lines.is_empty());
+    }
+
+    #[test]
+    fn v306_marks_keep_every_recipient_of_a_send_and_old_marks_still_read() {
+        let mut m = CoinMarks::default();
+        m.send_dests.insert("c3".repeat(32), vec![("bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".into(), 1_111), ("sp1qqgste7k9".into(), 5_000)]);
+        let back: CoinMarks = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(back.send_dests, m.send_dests);
+        let old: CoinMarks = serde_json::from_str(r#"{"marks":{},"sp_enabled":true,"sp_sends":{}}"#).unwrap();
+        assert!(old.send_dests.is_empty());
     }
 
     #[test]
@@ -2302,7 +2477,7 @@ mod tests {
         // the scan's unconfirmed silent payment (mempool leg) is ours too
         let mut v2 = Tier2View::default();
         let mut sc = crate::sp_scan::SpScan::default();
-        sc.pending.push(crate::sp_scan::SpPending { txid: "U".into(), vout: 0, value_sats: 1_234, t_k: "00".repeat(32), k: 0, seen_ms: 0, label: None });
+        sc.pending.push(crate::sp_scan::SpPending { txid: "U".into(), vout: 0, value_sats: 1_234, t_k: "00".repeat(32), k: 0, seen_ms: 0, label: None, reused: false });
         v2.sp = Some(sc);
         let u = etx("U", vec![("theirs", 2_000, "Z", 0)], vec![("sp-taproot-2", 1_234), ("theirchange", 600)]);
         assert_eq!(tx_ownership(&v2, &u, &net).pick, Some(0));
