@@ -53,8 +53,8 @@ The page's Content-Security-Policy (`lij-pwa/frontend/_headers`, `/wallet/*` blo
 |---|---|
 | `lij-pwa/frontend/pkg/lij_wasm_bg.wasm` (engine phase11-v308) | `341f6870c364d9ba56fc81ad702b0ea694ccb775b7182f16be953ac5fd25808c` |
 | `lij-pwa/frontend/pkg/lij_wasm.js` | `1b9be174a328140da6069b58f8e052a10a936a3bf9fbef1f2156f9b80e0b98ee` |
-| `lij-pwa/frontend/wallet/index.html` (page phase11-v934) | `d04022823dc37bb71a5840b18f8582174dc57308ca37b6ce7c02e5bf1dacc44c` |
-| `lij-pwa/frontend/wallet/sw.js` | `a786627d9d4e0e7e965a9aa3dcc5122e732ea5b7889716364141fd70161a947f` |
+| `lij-pwa/frontend/wallet/index.html` (page phase11-v938) | `2f9b816ceddf6ab4b516e201f554ab9822d4954012f49d97371fbdc459dd5a5f` |
+| `lij-pwa/frontend/wallet/sw.js` | `1bfc36095e222d61e51b6218a286bdbfe00d018e7cf12fa24287669adeb9371e` |
 | `lij-pwa/frontend/recover/index.html` (Black start page, build v903) | `d1a596ebf61b56f776507dd8d2948f4fdb8f22cebcc2dd23192241c6f6274326` |
 
 ## From engine v292 (2026-09-29): the multiply path — libsecp256k1 on its 64-bit limbs
