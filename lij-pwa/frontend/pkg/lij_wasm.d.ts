@@ -130,6 +130,12 @@ export class LijWalletHandle {
      */
     cloud_backup_info(): Promise<any>;
     /**
+     * v310 (S57, DP 2026-10-07 "Go with … 1"): the cloud copy's number and date only — {"found":true,"version":v,
+     * "saved_at_ms":t} or {"found":false}; REJECTS when the service gave no answer (or has no /backup/meta). The page
+     * compares the number with this phone's before the first connection to the provider; nothing is pulled or written.
+     */
+    cloud_backup_meta(): Promise<any>;
+    /**
      * v281 (S50, coin control): mark one coin. `req` is JSON {"txid","vout", "frozen"?:
      * bool, "note"?: string} — a field left out is left alone; a note is cleaned and
      * capped at 120 code points in the engine. Answers the coin's mark as stored (JSON
@@ -1010,6 +1016,7 @@ export interface InitOutput {
     readonly lijwallethandle_close_event_log: (a: number) => [number, number];
     readonly lijwallethandle_close_values_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_cloud_backup_info: (a: number) => any;
+    readonly lijwallethandle_cloud_backup_meta: (a: number) => any;
     readonly lijwallethandle_coin_mark: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_connect_to_peer: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly lijwallethandle_coop_cpfp: (a: number, b: number, c: number, d: number) => any;
@@ -1142,8 +1149,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_156: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_157: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_158: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

@@ -608,6 +608,16 @@ impl LijWallet {
         }
     }
 
+    /// v310: the cloud copy's number and date only (worker 0.9.0 /backup/meta), read with the running wallet's own key;
+    /// nothing written, nothing decrypted. Ok(Some((version, saved_at_ms))) / Ok(None) = no copy / Err = no answer.
+    pub async fn cloud_backup_meta(
+        backup_client: &KvBackupClient,
+        signer: &crate::key::RootKey,
+    ) -> LijResult<Option<(u64, u64)>> {
+        let portable_pubkey = signer.portable_pubkey_hex()?;
+        backup_client.meta(&portable_pubkey, signer).await
+    }
+
     /// v309: the pieces cloud_backup_info needs, taken under the lock so the pull runs unlocked.
     pub fn backup_client_and_signer(&self) -> (KvBackupClient, std::sync::Arc<crate::key::RootKey>) {
         (self.backup_client.clone(), self.node.portable_signer_arc())

@@ -673,6 +673,38 @@ pub enum MppDecision {
     ExceedsTotal { sendable_msat: u64 },
 }
 
+
+/// The single keys every backup (cloud copy, device file) carries besides the channel manager, the monitors and the
+/// sweeper's state. v311 (S57, DP 2026-10-07 "Agreed", the recovery recheck item 4): the closed-channel log joins them —
+/// a restore while a cooperative close is still unconfirmed must carry its coop hold (lij_coop_hold reads the log), or
+/// LDK may broadcast its commitment over the cooperative close (the 2026-09-03 incident); the closed history and the
+/// saved cooperative-close transaction come along too. Older copies without it still load (the key is simply absent).
+pub const BUNDLE_SINGLE_KEYS: [&str; 12] = [
+    crate::tier2_wallet::VIEW_KEY,
+    crate::tier2_wallet::PENDING_KEY,
+    crate::tier2_wallet::MARKS_KEY,   // v281 (S50, coin control): freezes and notes ride the blob too
+    crate::persisted_counter::KEY_NEXT_CHANNEL_INDEX,
+    crate::persisted_counter::KEY_COUNTER_UPWARD_RATCHET,
+    KEY_LNURLP_PREIMAGES,
+    KEY_LNURLP_NEXT_INDEX,   // v229
+    KEY_PUSH_OUT,            // v280: the pushes made, accepted, and the next index ride too
+    KEY_PUSH_NEXT_INDEX,
+    KEY_PUSH_IN,
+    crate::nwc::NWC_KEY,     // v286 (S50, NWC): the connections (service secrets, encrypted at rest) and limits ride too
+    crate::closed_channel_log::KEY_CLOSED_CHANNELS,   // v311: the closed-channel log and its coop hold
+];
+
+#[cfg(test)]
+mod v311_bundle_tests {
+    #[test]
+    fn v311_the_closed_channel_log_rides_every_backup() {
+        assert!(super::BUNDLE_SINGLE_KEYS.contains(&crate::closed_channel_log::KEY_CLOSED_CHANNELS),
+            "a restore during an unconfirmed cooperative close needs the coop hold the closed-channel log carries");
+        let mut seen = std::collections::HashSet::new();
+        for k in super::BUNDLE_SINGLE_KEYS.iter() { assert!(seen.insert(*k), "key {k} listed twice"); }
+    }
+}
+
 impl LijNode {
     pub async fn new(
         root_key: RootKey,
@@ -6616,19 +6648,7 @@ impl LijNode {
         // but NOT the preimages, so every payment to its static address
         // arrived as PaymentClaimable it could not claim and hung until LDK's
         // own expiry. The key restores through the same generic inject path.
-        for key in [
-            crate::tier2_wallet::VIEW_KEY,
-            crate::tier2_wallet::PENDING_KEY,
-            crate::tier2_wallet::MARKS_KEY,   // v281 (S50, coin control): freezes and notes ride the blob too
-            crate::persisted_counter::KEY_NEXT_CHANNEL_INDEX,
-            crate::persisted_counter::KEY_COUNTER_UPWARD_RATCHET,
-            KEY_LNURLP_PREIMAGES,
-            KEY_LNURLP_NEXT_INDEX,   // v229
-            KEY_PUSH_OUT,            // v280: the pushes made, accepted, and the next index ride too
-            KEY_PUSH_NEXT_INDEX,
-            KEY_PUSH_IN,
-            crate::nwc::NWC_KEY,     // v286 (S50, NWC): the connections (service secrets, encrypted at rest) and limits ride too
-        ] {
+        for key in BUNDLE_SINGLE_KEYS {
             if let Some(v) = self.storage.get(key)? {
                 bundle.insert(key.to_string(), hex::encode(&v));
             }

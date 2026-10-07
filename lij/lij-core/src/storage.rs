@@ -87,6 +87,23 @@ pub fn backup_version_commit(storage: &dyn LijStorage, version: u64) -> LijResul
     Ok(())
 }
 
+/// v310: the worker's /backup/meta answer — {"found":true,"version":v,"saved_at_ms":t} → Some((v, t)); {"found":false}
+/// → None; anything else is not an answer (an error, so the caller starts as it always has).
+pub fn parse_backup_meta(text: &str) -> LijResult<Option<(u64, u64)>> {
+    let v: serde_json::Value = serde_json::from_str(text)
+        .map_err(|e| LijError::Backup(format!("meta parse: {e}")))?;
+    match v.get("found").and_then(|f| f.as_bool()) {
+        Some(true) => {
+            let version = v.get("version").and_then(|x| x.as_u64())
+                .ok_or_else(|| LijError::Backup("meta: no version".into()))?;
+            let saved = v.get("saved_at_ms").and_then(|x| x.as_u64()).unwrap_or(0);
+            Ok(Some((version, saved)))
+        }
+        Some(false) => Ok(None),
+        None => Err(LijError::Backup(format!("meta: not an answer: {}", text.chars().take(80).collect::<String>()))),
+    }
+}
+
 /// The cloud's number out of a refused upload's words ("Stale backup rejected: existing v220 >= incoming v101"),
 /// or None when the error is something else (no connection, a 500, …).
 pub fn parse_stale_refusal(err: &str) -> Option<u64> {
@@ -386,6 +403,30 @@ impl KvBackupClient {
             return Err(LijError::Backup(format!("forget refused: {resp}")));
         }
         Ok(v.get("existed").and_then(|e| e.as_bool()).unwrap_or(false))
+    }
+
+    /// v310 (S57, DP 2026-10-07 "Go with … 1"): the cloud copy's NUMBER AND DATE only (worker 0.9.0 /backup/meta) —
+    /// the wallet compares them with its own before it connects to its provider, without pulling the whole sealed
+    /// copy (~1.4 MB) at every unlock. Same signed challenge as pull ("backup-read"). Ok(Some((version, saved_at_ms)))
+    /// / Ok(None) = the service holds no copy / Err = no answer, or a worker without the route (its 404).
+    pub async fn meta(
+        &self,
+        pubkey_hex: &str,
+        signer: &dyn BackupSigner,
+    ) -> LijResult<Option<(u64, u64)>> {
+        let nonce = self.get_challenge(pubkey_hex).await?;
+        let digest = backup_digest(BACKUP_ACTION_READ, &nonce, pubkey_hex)?;
+        let signature = signer.sign_backup(&digest)?;
+        let envelope = serde_json::json!({
+            "pubkey_hex": pubkey_hex,
+            "nonce": nonce,
+            "signature": signature,
+        });
+        let url = format!("{}/backup/meta", self.config.worker_url);
+        match http_post_json_opt(&url, &envelope.to_string()).await? {
+            Some(text) => parse_backup_meta(&text),
+            None => Err(LijError::Backup("meta: the backup service has no /backup/meta (404)".into())),
+        }
     }
 
     pub async fn pull(
@@ -722,6 +763,25 @@ impl Default for RecoveryConfig {
 //   Body: { "name", "pubkey", "endpoint", "operator_sig" }
 //   Action: validates sig, KV.put(`lsp:{pubkey}`, body)
 //   Returns: { "ok": true }
+
+#[cfg(test)]
+mod v310_backup_meta_tests {
+    use super::*;
+
+    #[test]
+    fn v310_meta_reads_the_number_and_the_date() {
+        assert_eq!(parse_backup_meta(r#"{"found":true,"version":7,"saved_at_ms":1791307311302}"#).unwrap(), Some((7, 1791307311302)));
+        assert_eq!(parse_backup_meta(r#"{"found":true,"version":3,"saved_at_ms":0}"#).unwrap(), Some((3, 0)), "a copy saved before v309 has no date");
+    }
+
+    #[test]
+    fn v310_no_copy_is_none_and_a_non_answer_is_an_error() {
+        assert_eq!(parse_backup_meta(r#"{"found":false}"#).unwrap(), None);
+        assert!(parse_backup_meta(r#"{"error":"Not found"}"#).is_err(), "a worker without the route is not 'no copy'");
+        assert!(parse_backup_meta("<html>").is_err());
+        assert!(parse_backup_meta(r#"{"found":true}"#).is_err(), "found without a number is not an answer");
+    }
+}
 
 #[cfg(test)]
 mod v309_backup_number_tests {
