@@ -31,8 +31,22 @@ export class LijWalletHandle {
      * the LSP relationship card on the Connection screen will render.
      */
     active_lsp_json(): string | undefined;
+    /**
+     * v309 (S56, DP 2026-10-06 "Go"): the cloud copy for these words, pulled and written with the words alone — no
+     * node built, nothing running that could write over it. The restore screen's Continue and "Use the cloud copy"
+     * run it at the passphrase, the way a device file is loaded (v952). Resolves to
+     * {"channels":n,"version":v,"saved_at_ms":t}; REJECTS with "NO_COPY", "FETCH: …" (no answer — nothing was changed)
+     * or "CORRUPT: …" (the copy does not open — nothing was written).
+     */
+    static adopt_cloud_backup(mnemonic: string, config_json: string): Promise<any>;
     background_tick(tick_count: bigint): void;
     backup(): Promise<any>;
+    /**
+     * v309 (S56): the cloud's number when it refused this phone's copy as older; 0 = no refusal. The page shows it
+     * once and offers "Use the cloud copy" (adopt_cloud_backup at the next unlock) or "Replace the cloud copy with this
+     * phone" (backup_replace_cloud).
+     */
+    backup_conflict(): bigint;
     /**
      * Manually push the current encrypted wallet state to all enabled backup
      * sinks (scenario-A backup). Returns `{"ok":true}`. This is the "Back up
@@ -47,6 +61,11 @@ export class LijWalletHandle {
      * connection, service down) — the page treats that as a third outcome, never as "none".
      */
     static backup_probe(mnemonic: string, config_json: string): Promise<any>;
+    /**
+     * v309 (S56): the person's decision to replace a newer cloud copy with this phone's state — the cloud's number
+     * is taken as the phone's (the next copy is one above it) and one upload runs now.
+     */
+    backup_replace_cloud(): Promise<any>;
     /**
      * v275 (Black Start): the sealed, signed push — see node::black_start_bundle_json. Read-only.
      */
@@ -104,6 +123,12 @@ export class LijWalletHandle {
      * S24 Build 13: per-channel close values (see lij-core close_values_json).
      */
     close_values_json(): string;
+    /**
+     * v309 (S56): what the cloud holds for this wallet — {"found":true,"channels":n,"version":v,"saved_at_ms":t} or
+     * {"found":false}; REJECTS when the service gave no answer. Nothing is written. The warning before a device file
+     * is loaded compares the file's date and number with these.
+     */
+    cloud_backup_info(): Promise<any>;
     /**
      * v281 (S50, coin control): mark one coin. `req` is JSON {"txid","vout", "frozen"?:
      * bool, "note"?: string} — a field left out is left alone; a note is cleaned and
@@ -967,10 +992,13 @@ export interface InitOutput {
     readonly lij_init: () => void;
     readonly lijwallethandle_abandon_payment_by_id: (a: number, b: number, c: number) => [number, number];
     readonly lijwallethandle_active_lsp_json: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_adopt_cloud_backup: (a: number, b: number, c: number, d: number) => any;
     readonly lijwallethandle_background_tick: (a: number, b: bigint) => [number, number];
     readonly lijwallethandle_backup: (a: number) => any;
+    readonly lijwallethandle_backup_conflict: (a: number) => bigint;
     readonly lijwallethandle_backup_now: (a: number) => any;
     readonly lijwallethandle_backup_probe: (a: number, b: number, c: number, d: number) => any;
+    readonly lijwallethandle_backup_replace_cloud: (a: number) => any;
     readonly lijwallethandle_black_start_bundle_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_black_start_fingerprint_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_black_start_identity_json: (a: number) => [number, number, number, number];
@@ -981,6 +1009,7 @@ export interface InitOutput {
     readonly lijwallethandle_close_channel: (a: number, b: number, c: number) => [number, number];
     readonly lijwallethandle_close_event_log: (a: number) => [number, number];
     readonly lijwallethandle_close_values_json: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_cloud_backup_info: (a: number) => any;
     readonly lijwallethandle_coin_mark: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_connect_to_peer: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly lijwallethandle_coop_cpfp: (a: number, b: number, c: number, d: number) => any;
@@ -1113,8 +1142,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_152: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_153: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_156: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_157: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

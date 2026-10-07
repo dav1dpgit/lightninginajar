@@ -64,6 +64,24 @@ export class LijWalletHandle {
         return v1;
     }
     /**
+     * v309 (S56, DP 2026-10-06 "Go"): the cloud copy for these words, pulled and written with the words alone — no
+     * node built, nothing running that could write over it. The restore screen's Continue and "Use the cloud copy"
+     * run it at the passphrase, the way a device file is loaded (v952). Resolves to
+     * {"channels":n,"version":v,"saved_at_ms":t}; REJECTS with "NO_COPY", "FETCH: …" (no answer — nothing was changed)
+     * or "CORRUPT: …" (the copy does not open — nothing was written).
+     * @param {string} mnemonic
+     * @param {string} config_json
+     * @returns {Promise<any>}
+     */
+    static adopt_cloud_backup(mnemonic, config_json) {
+        const ptr0 = passStringToWasm0(mnemonic, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_adopt_cloud_backup(ptr0, len0, ptr1, len1);
+        return ret;
+    }
+    /**
      * @param {bigint} tick_count
      */
     background_tick(tick_count) {
@@ -78,6 +96,16 @@ export class LijWalletHandle {
     backup() {
         const ret = wasm.lijwallethandle_backup(this.__wbg_ptr);
         return ret;
+    }
+    /**
+     * v309 (S56): the cloud's number when it refused this phone's copy as older; 0 = no refusal. The page shows it
+     * once and offers "Use the cloud copy" (adopt_cloud_backup at the next unlock) or "Replace the cloud copy with this
+     * phone" (backup_replace_cloud).
+     * @returns {bigint}
+     */
+    backup_conflict() {
+        const ret = wasm.lijwallethandle_backup_conflict(this.__wbg_ptr);
+        return BigInt.asUintN(64, ret);
     }
     /**
      * Manually push the current encrypted wallet state to all enabled backup
@@ -105,6 +133,15 @@ export class LijWalletHandle {
         const ptr1 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
         const ret = wasm.lijwallethandle_backup_probe(ptr0, len0, ptr1, len1);
+        return ret;
+    }
+    /**
+     * v309 (S56): the person's decision to replace a newer cloud copy with this phone's state — the cloud's number
+     * is taken as the phone's (the next copy is one above it) and one upload runs now.
+     * @returns {Promise<any>}
+     */
+    backup_replace_cloud() {
+        const ret = wasm.lijwallethandle_backup_replace_cloud(this.__wbg_ptr);
         return ret;
     }
     /**
@@ -309,6 +346,16 @@ export class LijWalletHandle {
         } finally {
             wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
         }
+    }
+    /**
+     * v309 (S56): what the cloud holds for this wallet — {"found":true,"channels":n,"version":v,"saved_at_ms":t} or
+     * {"found":false}; REJECTS when the service gave no answer. Nothing is written. The warning before a device file
+     * is loaded compares the file's date and number with these.
+     * @returns {Promise<any>}
+     */
+    cloud_backup_info() {
+        const ret = wasm.lijwallethandle_cloud_backup_info(this.__wbg_ptr);
+        return ret;
     }
     /**
      * v281 (S50, coin control): mark one coin. `req` is JSON {"txid","vout", "frozen"?:
@@ -3394,7 +3441,7 @@ function __wbg_get_imports() {
             console.warn(arg0, arg1, arg2, arg3);
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1813, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1823, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed);
             return ret;
         },
@@ -3405,16 +3452,16 @@ function __wbg_get_imports() {
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("ErrorEvent")], shim_idx: 8, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_152);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_156);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 8, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_153);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_157);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 1513, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 1523, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f);
             return ret;
         },
@@ -3457,12 +3504,12 @@ function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_152(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_152(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_156(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_156(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_153(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_153(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_157(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_157(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed(arg0, arg1, arg2) {

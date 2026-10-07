@@ -539,6 +539,8 @@ pub struct LijNode {
     /// S21 item 2: flipped by the monitor persister on every monitor write so
     /// the tick persists the manager promptly (never trails a commitment).
     manager_dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// v309: the hash of the manager bytes last saved — the cloud copy is marked out of date only when they change
+    last_cm_hash: std::sync::Mutex<Option<[u8; 32]>>,
     /// S21 item 2: monotonic stamp shared with the monitor persister.
     persist_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// S21 item 2: set at load when stamps show the manager stale vs monitors.
@@ -765,6 +767,7 @@ impl LijNode {
             accepting_channels: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             backup_dirty: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             manager_dirty: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            last_cm_hash: std::sync::Mutex::new(None),
             persist_seq: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             persist_skew: std::sync::atomic::AtomicBool::new(false),
         };
@@ -1116,6 +1119,7 @@ impl LijNode {
             accepting_channels: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             backup_dirty,
             manager_dirty,
+            last_cm_hash: std::sync::Mutex::new(None),
             persist_seq,
             persist_skew: std::sync::atomic::AtomicBool::new(false),
         };
@@ -6634,31 +6638,22 @@ impl LijNode {
         let enc_key = self.root_key.encryption_key();
         let encrypted_data = persist::encrypt(&enc_key, &plaintext)
             .map_err(|e| LijError::Backup(format!("backup bundle encrypt: {e}")))?;
-        let version = self.next_backup_version()?;
+        // v309 (S56): the number is PEEKED here and committed only once the cloud accepted the copy (or the device
+        // file was written) — see storage::backup_version_commit; a refused upload no longer uses up a number
+        let version = crate::storage::backup_version_peek(self.storage.as_ref())?;
         let pubkey_hex = self.root_key.portable_pubkey_hex()?;
         Ok(Some(crate::storage::StateBlob {
             version,
             encrypted_data,
             nonce: Vec::new(), // persist::encrypt embeds its own AES-GCM nonce
             pubkey_hex,
+            saved_at_ms: crate::storage::now_ms(),
         }))
     }
 
-    /// Monotonic, persisted backup version so a stale push can never roll back a
-    /// newer one — the Worker rejects a version lower than what it holds.
-    fn next_backup_version(&self) -> LijResult<u64> {
-        let cur = match self.storage.get(crate::storage::KEY_BACKUP_VERSION)? {
-            Some(b) if b.len() == 8 => {
-                let mut a = [0u8; 8];
-                a.copy_from_slice(&b);
-                u64::from_be_bytes(a)
-            }
-            _ => 0,
-        };
-        let next = cur + 1;
-        self.storage
-            .set(crate::storage::KEY_BACKUP_VERSION, &next.to_be_bytes())?;
-        Ok(next)
+    /// v309 (S56): keep a copy's number once the cloud accepted it (or a device file carries it). Upward only.
+    pub fn commit_backup_version(&self, version: u64) -> LijResult<()> {
+        crate::storage::backup_version_commit(self.storage.as_ref(), version)
     }
 
     /// The portable-key signer used to authenticate backup pushes/reads.
@@ -6758,8 +6753,12 @@ impl LijNode {
             // S21 item 2: manager stamp for load-time skew detection.
             let s = self.persist_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             let _ = self.storage.set(persist::SEQ_CM_KEY, &s.to_be_bytes());
-            // AUTO-BACKUP: state changed -> flag for the next backup tick (debounced).
-            self.backup_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+            // AUTO-BACKUP: flag the next backup tick — v309 (S56, DP 2026-10-06): only when the manager's bytes
+            // CHANGED. This save runs every 10 s whether or not anything happened, and until v309 every save marked
+            // the cloud copy out of date — a full copy went up every 30 s the wallet was open (about 1.4 MB a time).
+            if cm_bytes_changed(&self.last_cm_hash, &buf) {
+                self.backup_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             log::debug!(
                 "ChannelManager persisted ({} bytes plaintext, {} bytes encrypted)",
                 buf.len(),
@@ -6849,6 +6848,31 @@ pub(crate) fn stream_behind_due(since: &std::sync::atomic::AtomicU64, behind: bo
     let s = since.load(Relaxed);
     if s == 0 { since.store(now.max(1), Relaxed); return false; }
     now.saturating_sub(s) >= 60_000
+}
+
+/// v309 (S56): did the channel manager's bytes change since the last save? The first save counts as a change (a
+/// restart must mark the copy once), a repeat of the same bytes does not.
+fn cm_bytes_changed(last: &std::sync::Mutex<Option<[u8; 32]>>, buf: &[u8]) -> bool {
+    use sha2::{Digest, Sha256};
+    let h: [u8; 32] = Sha256::digest(buf).into();
+    let mut g = match last.lock() { Ok(g) => g, Err(p) => p.into_inner() };
+    let changed = *g != Some(h);
+    *g = Some(h);
+    changed
+}
+
+#[cfg(test)]
+mod v309_backup_mark_tests {
+    use super::*;
+    #[test]
+    fn v309_the_cloud_copy_is_marked_out_of_date_only_when_the_manager_changed() {
+        let last = std::sync::Mutex::new(None);
+        assert!(cm_bytes_changed(&last, b"state-1"), "the first save after a start marks the copy");
+        assert!(!cm_bytes_changed(&last, b"state-1"), "the 10-second save of the same bytes does not");
+        assert!(!cm_bytes_changed(&last, b"state-1"));
+        assert!(cm_bytes_changed(&last, b"state-2"), "a payment changed the manager — marked");
+        assert!(!cm_bytes_changed(&last, b"state-2"));
+    }
 }
 
 #[cfg(test)]

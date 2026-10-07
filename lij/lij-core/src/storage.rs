@@ -37,6 +37,63 @@ pub struct StateBlob {
     pub encrypted_data: Vec<u8>,
     pub nonce: Vec<u8>,       // AES-GCM nonce, 12 bytes
     pub pubkey_hex: String,   // identifies which wallet this belongs to
+    /// v309 (S56, DP 2026-10-06 "with dates and times of both files"): when this copy was taken, unix
+    /// milliseconds. Plain, not encrypted — a date is what the warning before loading a file shows for the
+    /// file and for the cloud copy. 0 = taken by an older engine (date unknown).
+    #[serde(default)]
+    pub saved_at_ms: u64,
+}
+
+/// Unix time in milliseconds (the browser's clock on wasm).
+pub fn now_ms() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    { js_sys::Date::now() as u64 }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    }
+}
+
+// ── v309 (S56, DP 2026-10-06 "Go" on the cloud-copy guard): THE BACKUP NUMBER IS KEPT ONLY WHEN THE CLOUD ACCEPTS ──
+// Until v309 every snapshot wrote the next number to the phone before the upload was answered, and a refused upload
+// (the cloud holds a higher number) was simply tried again 30 s later with the next number — a phone that had loaded
+// an older backup file counted its way past the cloud's number in about an hour and replaced newer channel state with
+// older. Now the snapshot only PEEKS the next number; the number is COMMITTED after the sink accepted it (or a device
+// file was written with it); a refusal is read for the cloud's number and stops the uploads until the person decides.
+
+/// The number the next copy would carry (the stored number + 1); nothing is written.
+pub fn backup_version_peek(storage: &dyn LijStorage) -> LijResult<u64> {
+    Ok(backup_version_stored(storage)? + 1)
+}
+
+/// The number the phone holds (0 when it never held one).
+pub fn backup_version_stored(storage: &dyn LijStorage) -> LijResult<u64> {
+    Ok(match storage.get(KEY_BACKUP_VERSION)? {
+        Some(b) if b.len() == 8 => {
+            let mut a = [0u8; 8];
+            a.copy_from_slice(&b);
+            u64::from_be_bytes(a)
+        }
+        _ => 0,
+    })
+}
+
+/// Keep `version` as the phone's number — only upward (a lower number never rolls it back).
+pub fn backup_version_commit(storage: &dyn LijStorage, version: u64) -> LijResult<()> {
+    if version > backup_version_stored(storage)? {
+        storage.set(KEY_BACKUP_VERSION, &version.to_be_bytes())?;
+    }
+    Ok(())
+}
+
+/// The cloud's number out of a refused upload's words ("Stale backup rejected: existing v220 >= incoming v101"),
+/// or None when the error is something else (no connection, a 500, …).
+pub fn parse_stale_refusal(err: &str) -> Option<u64> {
+    if !err.contains("Stale backup rejected") { return None; }
+    let i = err.find("existing v")? + "existing v".len();
+    let digits: String = err[i..].chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse::<u64>().ok()
 }
 
 /// Signs backup challenges with the *portable* key — the BIP32 key whose pubkey
@@ -665,3 +722,44 @@ impl Default for RecoveryConfig {
 //   Body: { "name", "pubkey", "endpoint", "operator_sig" }
 //   Action: validates sig, KV.put(`lsp:{pubkey}`, body)
 //   Returns: { "ok": true }
+
+#[cfg(test)]
+mod v309_backup_number_tests {
+    use super::*;
+    use native_storage::MemoryStorage;
+
+    #[test]
+    fn v309_the_number_is_only_peeked_until_the_cloud_accepts_it() {
+        let s = MemoryStorage::new();
+        assert_eq!(backup_version_peek(&s).unwrap(), 1, "a phone that never held a number offers 1");
+        assert_eq!(backup_version_peek(&s).unwrap(), 1, "peeking writes nothing — a refused upload uses up no number");
+        backup_version_commit(&s, 1).unwrap();
+        assert_eq!(backup_version_peek(&s).unwrap(), 2, "after the cloud accepted 1, the next is 2");
+        backup_version_commit(&s, 1).unwrap();
+        assert_eq!(backup_version_stored(&s).unwrap(), 1, "a number not above the held one changes nothing");
+        backup_version_commit(&s, 220).unwrap();
+        assert_eq!(backup_version_peek(&s).unwrap(), 221, "the number may jump up (the cloud's number adopted on purpose)");
+    }
+
+    #[test]
+    fn v309_a_refusal_names_the_clouds_number_and_nothing_else_does() {
+        let w = "Backup POST HTTP 409 https://x/backup — {\"ok\":false,\"error\":\"Stale backup rejected: existing v220 >= incoming v101\"}";
+        assert_eq!(parse_stale_refusal(w), Some(220), "the Worker's own words, as the engine receives them");
+        assert_eq!(parse_stale_refusal("Backup POST fetch: TypeError: Failed to fetch"), None, "no connection is not a refusal");
+        assert_eq!(parse_stale_refusal("Backup POST HTTP 500 https://x/backup — boom"), None);
+        assert_eq!(parse_stale_refusal("Stale backup rejected: existing v >= incoming v1"), None, "no digits, no number");
+    }
+
+    #[test]
+    fn v309_an_older_copy_without_a_date_still_opens_and_a_new_one_carries_its_date() {
+        let old = r#"{"version":7,"encrypted_data":[1,2,3],"nonce":[],"pubkey_hex":"02ab"}"#;
+        let b: StateBlob = serde_json::from_str(old).expect("a copy taken by an older engine parses");
+        assert_eq!(b.saved_at_ms, 0, "date unknown");
+        let n = StateBlob { version: 8, encrypted_data: vec![9], nonce: vec![], pubkey_hex: "02ab".into(), saved_at_ms: 1_759_770_000_000 };
+        let j = serde_json::to_string(&n).unwrap();
+        assert!(j.contains("\"saved_at_ms\":1759770000000"), "the date rides the copy in plain sight: {j}");
+        let back: StateBlob = serde_json::from_str(&j).unwrap();
+        assert_eq!(back.saved_at_ms, 1_759_770_000_000);
+        assert!(now_ms() > 1_700_000_000_000);
+    }
+}

@@ -548,7 +548,7 @@ impl LijWallet {
     /// service looked and holds none; Err = no answer (no connection, service down). The page
     /// must never read an Err as "none": a fresh node written on that reading makes the copy
     /// be skipped for good on this device (local state present -> no pull).
-    pub async fn backup_probe(mnemonic_str: &str, config: &WalletConfig) -> LijResult<Option<(u32, u64)>> {
+    pub async fn backup_probe(mnemonic_str: &str, config: &WalletConfig) -> LijResult<Option<(u32, u64, u64)>> {
         let network = parse_bitcoin_network(&config.network)?;
         let mnemonic: bip39::Mnemonic = mnemonic_str
             .parse()
@@ -560,9 +560,57 @@ impl LijWallet {
         });
         let portable_pubkey = root_key.portable_pubkey_hex()?;
         match backup_client.pull(&portable_pubkey, &root_key).await? {
-            Some(blob) => Ok(Some((Self::count_state_blob(&root_key, &blob)?, blob.version))),
+            Some(blob) => Ok(Some((Self::count_state_blob(&root_key, &blob)?, blob.version, blob.saved_at_ms))),
             None => Ok(None),
         }
+    }
+
+    /// v309 (S56, DP 2026-10-06 "Go" — a restore downloads its copy BEFORE the wallet starts): the cloud copy for these
+    /// words, pulled and written into local storage with the words alone — no node built, nothing running that could
+    /// write over it (the restore screen's Continue; "Use the cloud copy" after a refused upload). The errors keep
+    /// their kind in front: "NO_COPY" (the service holds none), "FETCH: …" (no answer — nothing was changed),
+    /// "CORRUPT: …" (the copy does not open — nothing was written). Ok((channels, version, saved_at_ms)).
+    pub async fn adopt_cloud_backup(
+        mnemonic_str: &str,
+        config: &WalletConfig,
+        storage: &dyn LijStorage,
+    ) -> LijResult<(u32, u64, u64)> {
+        let network = parse_bitcoin_network(&config.network)?;
+        let mnemonic: bip39::Mnemonic = mnemonic_str
+            .parse()
+            .map_err(|e| LijError::Key(format!("Invalid mnemonic: {e}")))?;
+        let root_key = RootKey::from_mnemonic(&mnemonic, network)?;
+        let backup_client = KvBackupClient::new(StorageConfig {
+            worker_url: config.worker_url.clone(),
+            auth_token: config.backup_auth_token.clone(),
+        });
+        let portable_pubkey = root_key.portable_pubkey_hex()?;
+        let blob = match backup_client.pull(&portable_pubkey, &root_key).await {
+            Ok(Some(b)) => b,
+            Ok(None) => return Err(LijError::Backup("NO_COPY".into())),
+            Err(e) => return Err(LijError::Backup(format!("FETCH: {e}"))),
+        };
+        let n = Self::inject_state_blob(storage, &root_key, &blob)
+            .map_err(|e| LijError::Backup(format!("CORRUPT: {e}")))?;
+        Ok((n, blob.version, blob.saved_at_ms))
+    }
+
+    /// v309: what the cloud holds for THIS wallet, read with the running wallet's own key; nothing written.
+    /// Ok(Some((channels, version, saved_at_ms))) / Ok(None) = the service holds none / Err = no answer.
+    pub async fn cloud_backup_info(
+        backup_client: &KvBackupClient,
+        signer: &crate::key::RootKey,
+    ) -> LijResult<Option<(u32, u64, u64)>> {
+        let portable_pubkey = signer.portable_pubkey_hex()?;
+        match backup_client.pull(&portable_pubkey, signer).await? {
+            Some(blob) => Ok(Some((Self::count_state_blob(signer, &blob)?, blob.version, blob.saved_at_ms))),
+            None => Ok(None),
+        }
+    }
+
+    /// v309: the pieces cloud_backup_info needs, taken under the lock so the pull runs unlocked.
+    pub fn backup_client_and_signer(&self) -> (KvBackupClient, std::sync::Arc<crate::key::RootKey>) {
+        (self.backup_client.clone(), self.node.portable_signer_arc())
     }
 
     /// v268 (S48, DP): a device backup file opened with the words only — no node built, no

@@ -96,7 +96,8 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v308".to_string()  // v308 (S54, DP 2026-10-03 23:44 "This transaction did not have any change, but I did not use MAX … What happened with that first one? Can you track it from the code?" — 2026-10-04 00:03 "Go."): the send was right; the quote was not. With no coins chosen, coin_quote's fee_sats is what EVERY coin would need (650 at 2 sat/vB on DP's wallet) and Review showed it, while the send paid the picked coin's fee (282); and a leftover under 294 sats goes to the fee in silence (1fffda67…: 1,501 − 1,002 − 282 = 217 → fee 499, no change). Now one rule for what is left (onchain_send::settle_change) is shared by the builder and the quote; coin_quote reports send_fee_sats (exactly what the send pays, any leftover included) and folded_sats; change_sats is the change output itself (0 when folded); multi_quote reports folded_sats. fee_sats keeps its meaning. Tests v308_the_quote_shows_the_fee_the_send_pays_and_the_leftover_it_adds (DP's two sends replayed), v308_the_several_recipients_quote_names_the_leftover_too, v308_settle_change_is_one_rule.
+    "phase11-v309".to_string()  // v309 (S56, DP 2026-10-06 17:47 "Go" on the cloud-copy guard — after the SA tester's channels vanished on a file load): THE CLOUD COPY IS GUARDED. (1) A copy's number is committed on the phone only once the cloud ACCEPTED it (or a device file was written with it) — storage::backup_version_peek / _commit; until now every snapshot wrote the next number first and a refused upload was retried 30 s later with the next one, so a phone that had loaded an older backup file counted past the cloud's number in about an hour and replaced newer channel state with older. (2) A refusal ("Stale backup rejected: existing vN") is read for the cloud's number (parse_stale_refusal), kept in BACKUP_CONFLICT, and STOPS the uploads until the person decides: backup_conflict() for the page, backup_replace_cloud() to take the cloud's number and upload this phone's state on purpose. (3) The cloud copy can be taken BEFORE any wallet is built — adopt_cloud_backup(words, cfg): pull + inject, the errors kinded NO_COPY / FETCH / CORRUPT — the restore screen's Continue and "Use the cloud copy" run it at the passphrase, like a device file (v952). (4) cloud_backup_info() — what the cloud holds for the running wallet (channels, number, date), nothing written; backup_probe adds saved_at_ms. (5) StateBlob carries saved_at_ms, plain — the date a warning shows for a file and for the cloud copy. (6) The cloud copy is marked out of date only when the channel manager's bytes CHANGED (cm_bytes_changed) — the 10-second save had marked it every time, so a full copy went up every 30 s the wallet was open. Tests v309_the_number_is_only_peeked_until_the_cloud_accepts_it, v309_a_refusal_names_the_clouds_number_and_nothing_else_does, v309_an_older_copy_without_a_date_still_opens_and_a_new_one_carries_its_date, v309_the_cloud_copy_is_marked_out_of_date_only_when_the_manager_changed (337 green).
+    // "phase11-v308".to_string()  // v308 (S54, DP 2026-10-03 23:44 "This transaction did not have any change, but I did not use MAX … What happened with that first one? Can you track it from the code?" — 2026-10-04 00:03 "Go."): the send was right; the quote was not. With no coins chosen, coin_quote's fee_sats is what EVERY coin would need (650 at 2 sat/vB on DP's wallet) and Review showed it, while the send paid the picked coin's fee (282); and a leftover under 294 sats goes to the fee in silence (1fffda67…: 1,501 − 1,002 − 282 = 217 → fee 499, no change). Now one rule for what is left (onchain_send::settle_change) is shared by the builder and the quote; coin_quote reports send_fee_sats (exactly what the send pays, any leftover included) and folded_sats; change_sats is the change output itself (0 when folded); multi_quote reports folded_sats. fee_sats keeps its meaning. Tests v308_the_quote_shows_the_fee_the_send_pays_and_the_leftover_it_adds (DP's two sends replayed), v308_the_several_recipients_quote_names_the_leftover_too, v308_settle_change_is_one_rule.
     // "phase11-v307".to_string()  // v307 (S54, DP 2026-10-03 23:07 "What happens if someone sends a second subsequent payment to the address that was derived from a Silent Payment? Will it be seen?" — 23:09 "Yes, go ahead. Good coverage."): it was not — BIP-352's sum over a new transaction's inputs never gives that address again, and the scan watched the UNSPENT coins' scripts only, for their spends. Now the scan watches the script of every silent-payment coin it has found, spent or not (sp_scan::known_coin_scripts): an output paying one is a coin, spent with the same key (its stored tweak); the mempool leg checks the same keys (SpPending.reused); derive_history marks the line `reused` (a coin with the same tweak and label as an earlier one). Test v307_a_second_payment_to_a_found_silent_payment_address_is_found_even_after_the_first_was_spent.
     // "phase11-v306".to_string()  // v306 (S54, DP 2026-10-03 13:59 "Agreed" + 15:30 "It is a go to implement fully" — THE PAYMENT LINES: send = one line per transaction; receive = one line per address (or silent-payment label) per transaction; tap = the parts): the history keeps ONE row per transaction and a received row (Received, Onchain) carries `lines` — one per own address (chain, index) or sp1 label, each with its parts (vout, sats) in output order (tier2_wallet::recv_lines in derive_history); the sync names each ordinary line's address from the wallet's own scripts (name_line_addresses). A send to several keeps every recipient AS TYPED by txid (CoinMarks.send_dests — the marks ride the backup blob; the fee bump carries them to the replacement); tx_details answers "recipients" [{dest, value, sp}] (the record, else the pending send's dests). Tests v306_*.
     // "phase11-v305".to_string()  // v305 (S54, DP 2026-10-02 13:50 "Go ahead" — SEVERAL RECIPIENTS IN ONE SEND): one builder for every on-chain send (onchain_send::build_send_tx — plan_send → the outputs → the one signer; build_and_send / _all / _pinned are its one-recipient case, unchanged in what they do): up to 20 recipients (MAX_RECIPIENTS), each an address or an sp1 with an amount, or — the LAST only — no amount = everything left after the others and the fee (DP's Max rule); the recipients in order at vout 0 …, the change after them; DP's coin pick for the total (+ the fee for n + 1 outputs) or exactly the chosen coins; a recipient below the 294-sat output minimum refused when there are several. Silent payments: silent_payment::derive_output_scripts — one group per scan key, k = 0, 1 … in recipient order (two payments to one wallet, or to two of its labels, are two outputs it finds with one scan); the input arithmetic once. PendingTx.dests (every recipient, in order) → the RBF bump rebuilds every output from the same inputs (same k, same scripts); change at vout n. wasm: send_onchain_multi(req), onchain_multi_quote(req) (the builder's own plan: the amounts — the Max on the last —, the fee, the change, the coins, or the refusal in plain words). Gate: the BIP's SENDING vectors with several recipients (same recipient twice, several wallets, a plain + a labelled address, the change label) + v305_* (exact amounts and change last, the silent payment found by its receiver, k0/k1 to one wallet, Max on the last with no change and with chosen coins, the refusals, one recipient unchanged, the bump's re-derivation). 325 green.
@@ -204,6 +205,16 @@ pub fn set_broadcast_one(v: bool) {
 /// backup client at every entry — nothing leaves the device — independent of
 /// offline_start. Mirrors the OFFLINE_START pattern.
 pub static BACKUP_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// v309 (S56): the cloud's number when it refused this phone's copy as older (0 = no refusal). While set, the
+/// automatic uploads stop; the page shows it and the person decides (adopt the cloud copy, or replace it).
+pub static BACKUP_CONFLICT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// v309: one sink's answer read for a refusal — the cloud's number kept, the uploads stopped. true = refused as older.
+fn note_push_refusal(err: &str) -> bool {
+    match lij_core::storage::parse_stale_refusal(err) {
+        Some(n) => { BACKUP_CONFLICT.store(n, std::sync::atomic::Ordering::Relaxed); true }
+        None => false,
+    }
+}
 /// v302 (S54): the last receive-watch check's report (watch_report) — kept outside the wallet lock.
 static WATCH_REPORT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 /// v256 (S46, DP: "Encrypt it"): the tier-2 ledger and the pending list live encrypted
@@ -630,10 +641,31 @@ impl LijWalletHandle {
                 .await
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
             let json = match r {
-                Some((channels, version)) => format!("{{\"found\":true,\"channels\":{channels},\"version\":{version}}}"),
+                Some((channels, version, saved_at_ms)) => format!("{{\"found\":true,\"channels\":{channels},\"version\":{version},\"saved_at_ms\":{saved_at_ms}}}"),
                 None => "{\"found\":false}".to_string(),
             };
             Ok(JsValue::from_str(&json))
+        })
+    }
+
+    /// v309 (S56, DP 2026-10-06 "Go"): the cloud copy for these words, pulled and written with the words alone — no
+    /// node built, nothing running that could write over it. The restore screen's Continue and "Use the cloud copy"
+    /// run it at the passphrase, the way a device file is loaded (v952). Resolves to
+    /// {"channels":n,"version":v,"saved_at_ms":t}; REJECTS with "NO_COPY", "FETCH: …" (no answer — nothing was changed)
+    /// or "CORRUPT: …" (the copy does not open — nothing was written).
+    #[wasm_bindgen]
+    pub fn adopt_cloud_backup(mnemonic: &str, config_json: &str) -> js_sys::Promise {
+        let mnemonic = mnemonic.to_string();
+        let config_json = config_json.to_string();
+        future_to_promise(async move {
+            let config: WalletConfig = serde_json::from_str(&config_json)
+                .map_err(|e| JsValue::from_str(&format!("Invalid config: {e}")))?;
+            let storage = LocalStorage;
+            let (channels, version, saved_at_ms) = LijWallet::adopt_cloud_backup(&mnemonic, &config, &storage)
+                .await
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            BACKUP_CONFLICT.store(0, std::sync::atomic::Ordering::Relaxed);
+            Ok(JsValue::from_str(&format!("{{\"channels\":{channels},\"version\":{version},\"saved_at_ms\":{saved_at_ms}}}")))
         })
     }
 
@@ -713,8 +745,13 @@ impl LijWalletHandle {
             for sink in &sinks {
                 match sink.push(&blob, &*signer).await {
                     Ok(()) => ok += 1,
-                    Err(e) => last_err = Some(e.to_string()),
+                    Err(e) => { let s = e.to_string(); note_push_refusal(&s); last_err = Some(s); }
                 }
+            }
+            if ok > 0 {
+                // v309: the number is the phone's only once the cloud accepted it
+                let _ = lij_core::storage::backup_version_commit(&LocalStorage, blob.version);
+                BACKUP_CONFLICT.store(0, std::sync::atomic::Ordering::Relaxed);
             }
             if ok == 0 {
                 if let Some(e) = last_err {
@@ -722,6 +759,48 @@ impl LijWalletHandle {
                 }
             }
             Ok(JsValue::from_str(&format!("{{\"ok\":true,\"pushed\":{ok}}}")))
+        })
+    }
+
+    /// v309 (S56): the cloud's number when it refused this phone's copy as older; 0 = no refusal. The page shows it
+    /// once and offers "Use the cloud copy" (adopt_cloud_backup at the next unlock) or "Replace the cloud copy with this
+    /// phone" (backup_replace_cloud).
+    #[wasm_bindgen]
+    pub fn backup_conflict(&self) -> u64 {
+        BACKUP_CONFLICT.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// v309 (S56): the person's decision to replace a newer cloud copy with this phone's state — the cloud's number
+    /// is taken as the phone's (the next copy is one above it) and one upload runs now.
+    #[wasm_bindgen]
+    pub fn backup_replace_cloud(&self) -> js_sys::Promise {
+        let n = BACKUP_CONFLICT.load(std::sync::atomic::Ordering::Relaxed);
+        if n > 0 { let _ = lij_core::storage::backup_version_commit(&LocalStorage, n); }
+        BACKUP_CONFLICT.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.backup_now()
+    }
+
+    /// v309 (S56): what the cloud holds for this wallet — {"found":true,"channels":n,"version":v,"saved_at_ms":t} or
+    /// {"found":false}; REJECTS when the service gave no answer. Nothing is written. The warning before a device file
+    /// is loaded compares the file's date and number with these.
+    #[wasm_bindgen]
+    pub fn cloud_backup_info(&self) -> js_sys::Promise {
+        let inner = self.inner.clone();
+        future_to_promise(async move {
+            let (client, signer) = {
+                let wallet = inner
+                    .lock()
+                    .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                wallet.backup_client_and_signer()
+            };
+            let r = LijWallet::cloud_backup_info(&client, &*signer)
+                .await
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let json = match r {
+                Some((channels, version, saved_at_ms)) => format!("{{\"found\":true,\"channels\":{channels},\"version\":{version},\"saved_at_ms\":{saved_at_ms}}}"),
+                None => "{\"found\":false}".to_string(),
+            };
+            Ok(JsValue::from_str(&json))
         })
     }
 
@@ -772,6 +851,11 @@ impl LijWalletHandle {
             || BACKUP_OFF.load(std::sync::atomic::Ordering::Relaxed) {   // v209
             return js_sys::Promise::resolve(&JsValue::UNDEFINED);
         }
+        // v309: a refused upload (the cloud holds a newer copy) stops the automatic uploads until the person decides
+        let conflict = BACKUP_CONFLICT.load(std::sync::atomic::Ordering::Relaxed);
+        if conflict > 0 {
+            return js_sys::Promise::resolve(&JsValue::from_str(&format!("{{\"ok\":false,\"conflict\":{conflict}}}")));
+        }
         let inner = self.inner.clone();
         future_to_promise(async move {
             let prep = {
@@ -790,13 +874,23 @@ impl LijWalletHandle {
             // next tick; on success leave it as cleared at snapshot (a concurrent
             // state change during the push will already have re-dirtied it).
             let mut ok = 0u32;
+            let mut refused = false;
             for sink in &sinks {
                 match sink.push(&blob, &*signer).await {
                     Ok(()) => ok += 1,
-                    Err(_) => dirty.store(true, std::sync::atomic::Ordering::Relaxed),
+                    Err(e) => {
+                        // v309: a refusal as older is NOT retried — the person decides; anything else is retried next tick
+                        if note_push_refusal(&e.to_string()) { refused = true; }
+                        else { dirty.store(true, std::sync::atomic::Ordering::Relaxed); }
+                    }
                 }
             }
-            Ok(JsValue::from_str(&format!("{{\"ok\":true,\"pushed\":{ok}}}")))
+            if ok > 0 {
+                let _ = lij_core::storage::backup_version_commit(&LocalStorage, blob.version);   // v309: accepted — the number is the phone's now
+                BACKUP_CONFLICT.store(0, std::sync::atomic::Ordering::Relaxed);
+            }
+            let conflict = if refused { BACKUP_CONFLICT.load(std::sync::atomic::Ordering::Relaxed) } else { 0 };
+            Ok(JsValue::from_str(&format!("{{\"ok\":true,\"pushed\":{ok},\"conflict\":{conflict}}}")))
         })
     }
 
@@ -4017,8 +4111,10 @@ impl LijWalletHandle {
         let prep = wallet.prepare_backup_if_dirty()
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         match prep {
-            Some((blob, _signer, _sinks, _dirty)) => serde_json::to_string(&blob)
-                .map_err(|e| JsValue::from_str(&e.to_string())),
+            Some((blob, _signer, _sinks, _dirty)) => {
+                let _ = wallet.node().commit_backup_version(blob.version);   // v309: a device file carries this number — it is the phone's
+                serde_json::to_string(&blob).map_err(|e| JsValue::from_str(&e.to_string()))
+            }
             None => Err(JsValue::from_str("no backup state yet")),
         }
     }
