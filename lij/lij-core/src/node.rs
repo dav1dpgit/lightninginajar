@@ -6159,16 +6159,23 @@ impl LijNode {
         ids.sort();
         // v291: the unspent silent-payment coins are part of the fingerprint — a coin arriving or leaving makes a
         // push due, so "coins after the last Black start kit push" is at most one sync behind.
-        let mut sp: Vec<String> = {
+        // v318: the taproot coins (the kit's taproot leg) likewise — appended only when there are any, so a wallet
+        // without them keeps its fingerprint (no push falls due from the engine update alone)
+        let (mut sp, mut tr): (Vec<String>, Vec<String>) = {
             let t2_store = crate::tier2_wallet::encrypted(&*self.storage, self.root_key.encryption_key());
             crate::tier2_wallet::load_view(&t2_store)
-                .map(|v| v.utxos.iter().filter(|u| u.chain == crate::tier2::CHAIN_SP && u.spent_height.is_none()).map(|u| format!("{}:{}", u.txid, u.vout)).collect())
+                .map(|v| {
+                    let of = |pred: &dyn Fn(u32) -> bool| v.utxos.iter().filter(|u| pred(u.chain) && u.spent_height.is_none()).map(|u| format!("{}:{}", u.txid, u.vout)).collect::<Vec<String>>();
+                    (of(&|c| c == crate::tier2::CHAIN_SP), of(&|c| crate::tier2::bip86_branch(c).is_some()))
+                })
                 .unwrap_or_default()
         };
         sp.sort();
-        let joined = format!("{}:{}|sp{}:{}", ids.len(), ids.join(","), sp.len(), sp.join(","));
+        tr.sort();
+        let mut joined = format!("{}:{}|sp{}:{}", ids.len(), ids.join(","), sp.len(), sp.join(","));
+        if !tr.is_empty() { joined.push_str(&format!("|tr{}:{}", tr.len(), tr.join(","))); }
         let fp = sha256::Hash::hash(joined.as_bytes());
-        Ok(format!("{{\"fp\":\"{}\",\"channels\":{},\"silent_payments\":{}}}", hex::encode(fp.to_byte_array()), ids.len(), sp.len()))
+        Ok(format!("{{\"fp\":\"{}\",\"channels\":{},\"silent_payments\":{},\"taproot_coins\":{}}}", hex::encode(fp.to_byte_array()), ids.len(), sp.len(), tr.len()))
     }
 
     /// v275: the whole push, ready to send — the escape kit (v211) plus the LSP it was made under,
@@ -6416,6 +6423,31 @@ impl LijNode {
                 Err(e) => (Vec::new(), format!("coin ledger unreadable: {e}")),
             }
         };
+        // v318 (S57, DP 22:58): the taproot leg — one pre-signed sweep per unspent BIP86 coin (the Mix's exits), each to
+        // its own fresh m/84 address after the silent-payment coins' ones. /recover offers each; nothing moves untapped.
+        let (taproot_coins, tr_note) = {
+            let t2_store = crate::tier2_wallet::encrypted(&*self.storage, self.root_key.encryption_key());
+            let first = dest_index.saturating_add(1).saturating_add(silent_payments.len() as u32);
+            match crate::tier2_wallet::load_view(&t2_store) {
+                Ok(view) => match crate::onchain_send::tr_kit_sweeps(&self.root_key, &view, self.network, first, (10, 40)) {
+                    Ok(v) => (v, String::new()),
+                    Err(e) => (Vec::new(), format!("taproot sweeps not built: {e}")),
+                },
+                Err(e) => (Vec::new(), format!("coin ledger unreadable: {e}")),
+            }
+        };
+        // v318 (DP 23:10): each taproot coin says whether it is a Mix coin (its mark), so /recover can say so
+        let taproot_coins_marked: Vec<serde_json::Value> = {
+            let t2_store = crate::tier2_wallet::encrypted(&*self.storage, self.root_key.encryption_key());
+            let marks = crate::tier2_wallet::load_marks(&t2_store).unwrap_or_default();
+            let view = crate::tier2_wallet::load_view(&t2_store).ok();
+            taproot_coins.iter().map(|c| {
+                let mut v = serde_json::to_value(c).unwrap_or(serde_json::Value::Null);
+                let mix = view.as_ref().and_then(|vw| vw.utxos.iter().find(|u| u.txid == c.txid && u.vout == c.vout)).map(|u| marks.is_mix(u)).unwrap_or(false);
+                if let Some(o) = v.as_object_mut() { o.insert("mix".into(), serde_json::json!(mix)); }
+                v
+            }).collect()
+        };
         // v304 (S54, DP 13:50 "Go ahead" — the names ride the kit): the silent-payment labels this wallet made — number
         // and name — so a LiJ restored from the words and this kit keeps checking every label handed out and shows its
         // name. The coins' sweeps above need nothing new (a labelled coin's stored t already includes its label).
@@ -6435,6 +6467,8 @@ impl LijNode {
             "silent_payments": silent_payments,   // v291
             "silent_payments_note": sp_note,
             "silent_payment_labels": sp_labels,   // v304
+            "taproot_coins": taproot_coins_marked,   // v318
+            "taproot_coins_note": tr_note,
         });
         serde_json::to_string(&kit)
             .map_err(|e| LijError::Node(format!("escape export: serialize: {e}")))

@@ -131,6 +131,8 @@ pub struct SyncCursor {
 pub struct MatchedBlock {
     pub height: u32,
     pub block_hash: String,
+    /// v317: the wallet's BIP86 scripts in this block's filter (tier2::tr_hits) — a taproot spend's only trace.
+    pub tr_hits: Vec<(u32, u32)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -334,6 +336,7 @@ pub async fn sync_step(
             matched.push(MatchedBlock {
                 height: f.height,
                 block_hash: f.hash.clone(),
+                tr_hits: crate::tier2::tr_hits(&filter_bytes, &bh, scripts)?,   // v317
             });
         }
     }
@@ -420,7 +423,7 @@ pub async fn sync_step_down(
         let bh = BlockHash::from_str(&f.hash)
             .map_err(|e| LijError::Node(format!("filter block hash at {}: {e}", f.height)))?;
         if block_matches(&filter_bytes, &bh, scripts)? {
-            matched.push(MatchedBlock { height: f.height, block_hash: f.hash.clone() });
+            matched.push(MatchedBlock { height: f.height, block_hash: f.hash.clone(), tr_hits: crate::tier2::tr_hits(&filter_bytes, &bh, scripts)? });   // v317
         }
     }
     let bottom = hdrs.headers.first().ok_or_else(|| LijError::Node("down batch: empty".into()))?;

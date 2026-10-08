@@ -56,5 +56,7 @@ pub mod sweeper;
 pub mod registry_client;
 pub mod black_start;   // v275 (S48, DP): BLACK START BS1 — the sealed, signed escape kit (docs/black-start-standard.md)
 pub mod kit_merge;   // v313 (S57, DP 17:55): the Black start kit across copies (docs/design/black-start/kit-merge-r1.md)
+pub mod bip86;   // v314 (S57, DP 21:36 — joinstr-fit-r5, the wallet side, step 1): BIP86 taproot addresses for pool exits
+pub mod musig;   // v315 (S57, DP 21:53 "Go on 1 & 2" — joinstr-fit-r5 step 2): the wallet's MuSig2 signer (BIP-327), nonces once, in memory only
 pub mod cancelled_open;   // v277 (S48, DP): the cancelled-open sweep's honest proof (history + quorum + a two-hour floor)
 

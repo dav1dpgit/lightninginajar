@@ -78,6 +78,9 @@ pub fn to_local_outpoint(entry: &Value) -> Option<String> {
     None
 }
 
+/// v318: the kit's coin legs — each an array of single-coin sweeps, united across copies while the coin is unspent.
+pub const COIN_LEGS: [&str; 2] = ["silent_payments", "taproot_coins"];
+
 fn coin_key(c: &Value) -> String {
     format!("{}:{}", s(c, "txid"), c.get("vout").and_then(|v| v.as_u64()).unwrap_or(u64::MAX))
 }
@@ -114,8 +117,8 @@ fn best_held<'a>(
 pub fn plan(own: &Value, held: &[HeldKit]) -> Vec<String> {
     let owned: HashSet<String> = own.get("channels").and_then(|c| c.as_array())
         .map(|a| a.iter().map(|e| s(e, "funding_txo")).collect()).unwrap_or_default();
-    let own_coins: HashSet<String> = own.get("silent_payments").and_then(|c| c.as_array())
-        .map(|a| a.iter().map(coin_key).collect()).unwrap_or_default();
+    let own_coins: HashSet<String> = COIN_LEGS.iter().flat_map(|leg| own.get(*leg).and_then(|c| c.as_array()).cloned().unwrap_or_default())
+        .map(|c| coin_key(&c)).collect();
     let mut out: Vec<String> = Vec::new();
     let mut seen = HashSet::new();
     let mut add = |o: String, out: &mut Vec<String>| { if !o.is_empty() && seen.insert(o.clone()) { out.push(o); } };
@@ -126,10 +129,12 @@ pub fn plan(own: &Value, held: &[HeldKit]) -> Vec<String> {
             add(f, &mut out);
             if let Some(tl) = to_local_outpoint(e) { add(tl, &mut out); }
         }
-        for c in k.plain.get("silent_payments").and_then(|c| c.as_array()).map(|a| a.as_slice()).unwrap_or(&[]) {
-            let ck = coin_key(c);
-            if own_coins.contains(&ck) { continue; }
-            add(ck, &mut out);
+        for leg in COIN_LEGS {
+            for c in k.plain.get(leg).and_then(|c| c.as_array()).map(|a| a.as_slice()).unwrap_or(&[]) {
+                let ck = coin_key(c);
+                if own_coins.contains(&ck) { continue; }
+                add(ck, &mut out);
+            }
         }
     }
     out
@@ -206,33 +211,38 @@ pub fn merge(
     }
     extra.sort_by(|a, b| a.0.cmp(&b.0));
     channels.extend(extra.into_iter().map(|x| x.1));
-    // silent-payment coins
-    let mut coins: Vec<Value> = kit.get("silent_payments").and_then(|c| c.as_array()).cloned().unwrap_or_default();
-    let mut have: HashSet<String> = coins.iter().map(coin_key).collect();
+    // the coin legs (silent-payment coins; v318: taproot coins)
     let mut kits: Vec<&HeldKit> = held.iter().collect();
     kits.sort_by(|a, b| b.seq.cmp(&a.seq));
-    for k in kits {
-        for c in k.plain.get("silent_payments").and_then(|c| c.as_array()).map(|a| a.as_slice()).unwrap_or(&[]) {
-            let ck = coin_key(c);
-            if have.contains(&ck) { continue; }
-            have.insert(ck.clone());
-            if matches!(chain.get(&ck), Some(Fact::Spent(_))) { dropped += 1; continue; }
-            let mut cc = c.clone();
-            if let Some(o) = cc.as_object_mut() {
-                let since = c.get("carried_since").and_then(|x| x.as_u64()).unwrap_or(now_ms);
-                o.insert("carried".into(), json!(true));
-                o.insert("carried_since".into(), json!(since));
-                o.insert("carried_from_seq".into(), json!(k.seq));
+    let mut legs: Vec<(&str, Vec<Value>)> = Vec::new();
+    for leg in COIN_LEGS {
+        let mut coins: Vec<Value> = kit.get(leg).and_then(|c| c.as_array()).cloned().unwrap_or_default();
+        let mut have: HashSet<String> = coins.iter().map(coin_key).collect();
+        for k in kits.iter() {
+            for c in k.plain.get(leg).and_then(|c| c.as_array()).map(|a| a.as_slice()).unwrap_or(&[]) {
+                let ck = coin_key(c);
+                if have.contains(&ck) { continue; }
+                have.insert(ck.clone());
+                if matches!(chain.get(&ck), Some(Fact::Spent(_))) { dropped += 1; continue; }
+                let mut cc = c.clone();
+                if let Some(o) = cc.as_object_mut() {
+                    let since = c.get("carried_since").and_then(|x| x.as_u64()).unwrap_or(now_ms);
+                    o.insert("carried".into(), json!(true));
+                    o.insert("carried_since".into(), json!(since));
+                    o.insert("carried_from_seq".into(), json!(k.seq));
+                }
+                coins.push(cc);
+                carried_coins += 1;
             }
-            coins.push(cc);
-            carried_coins += 1;
         }
+        // a leg this copy's kit does not have and no held kit has stays absent (an older engine's kit is unchanged)
+        if !coins.is_empty() || kit.get(leg).is_some() { legs.push((leg, coins)); }
     }
     let max_held = held.iter().map(|k| k.seq).max().unwrap_or(0);
     let seq = now_ms.max(max_held.saturating_add(1));
     if let Some(o) = kit.as_object_mut() {
         o.insert("channels".into(), Value::Array(channels));
-        o.insert("silent_payments".into(), Value::Array(coins));
+        for (leg, coins) in legs { o.insert(leg.into(), Value::Array(coins)); }
         o.insert("seq".into(), json!(seq));
         o.insert("made_at".into(), json!(now_ms));
     }
@@ -247,19 +257,26 @@ pub fn merge(
     (kit, report)
 }
 
-/// Keep the sealed kit under the holder's cap: drop CARRIED silent-payment coins, the oldest (lowest height) first,
+/// Keep the sealed kit under the holder's cap: drop CARRIED coins (either leg), the oldest (lowest height) first,
 /// until the plaintext is at most `max_plain` bytes. Channels are never dropped. Returns how many coins went.
 pub fn trim_to_fit(kit: &mut Value, max_plain: usize) -> u64 {
     let mut n = 0u64;
     loop {
         let len = serde_json::to_string(kit).map(|x| x.len()).unwrap_or(0);
         if len <= max_plain { return n; }
-        let coins = match kit.get_mut("silent_payments").and_then(|c| c.as_array_mut()) { Some(c) => c, None => return n };
-        let pick = coins.iter().enumerate()
-            .filter(|(_, c)| c.get("carried").and_then(|x| x.as_bool()) == Some(true))
-            .min_by_key(|(_, c)| c.get("height").and_then(|h| h.as_u64()).unwrap_or(0))
-            .map(|(i, _)| i);
-        match pick { Some(i) => { coins.remove(i); n += 1; } None => return n }
+        // the oldest carried coin over both legs
+        let mut pick: Option<(&str, usize, u64)> = None;
+        for leg in COIN_LEGS {
+            for (i, c) in kit.get(leg).and_then(|c| c.as_array()).map(|a| a.as_slice()).unwrap_or(&[]).iter().enumerate() {
+                if c.get("carried").and_then(|x| x.as_bool()) != Some(true) { continue; }
+                let h = c.get("height").and_then(|h| h.as_u64()).unwrap_or(0);
+                if pick.map(|p| h < p.2).unwrap_or(true) { pick = Some((leg, i, h)); }
+            }
+        }
+        match pick {
+            Some((leg, i, _)) => { if let Some(a) = kit.get_mut(leg).and_then(|c| c.as_array_mut()) { a.remove(i); n += 1; } else { return n; } }
+            None => return n,
+        }
     }
 }
 
@@ -403,6 +420,31 @@ mod tests {
         let n = trim_to_fit(&mut kit, small);
         let keys2: Vec<String> = kit["silent_payments"].as_array().unwrap().iter().map(coin_key).collect();
         assert_eq!((n, keys2), (1, vec![format!("{}:0", tx('a')), format!("{}:1", tx('b'))]));
+    }
+
+    #[test]
+    fn v318_taproot_coins_are_united_like_silent_payment_coins_and_an_old_kit_is_unchanged() {
+        // this copy has no taproot leg (an older engine); a held kit has two coins, one spent since
+        let own = json!({ "channels": [], "silent_payments": [] });
+        let held = vec![HeldKit { seq: 5, plain: json!({ "taproot_coins": [
+            { "txid": tx('a'), "vout": 0, "height": 20 }, { "txid": tx('b'), "vout": 1, "height": 30 } ] }) }];
+        let p = plan(&own, &held);
+        assert_eq!(p, vec![format!("{}:0", tx('a')), format!("{}:1", tx('b'))], "the chain is asked about each");
+        let mut chain = HashMap::new();
+        chain.insert(format!("{}:1", tx('b')), Fact::Spent(Some(tx('c'))));
+        let (kit, rep) = merge(&own, &held, &chain, &|_| None, 1_000);
+        let keys: Vec<String> = kit["taproot_coins"].as_array().unwrap().iter().map(coin_key).collect();
+        assert_eq!(keys, vec![format!("{}:0", tx('a'))], "the unspent one is carried; the spent one dropped");
+        assert_eq!((rep["carried_coins"].as_u64(), rep["dropped"].as_u64()), (Some(1), Some(1)));
+        // no leg anywhere → the kit has none (an older kit's shape is kept)
+        let (kit2, _) = merge(&own, &[], &HashMap::new(), &|_| None, 1_000);
+        assert!(kit2.get("taproot_coins").is_none());
+        // trimming takes the oldest carried coin over both legs
+        let mut k = json!({ "channels": [], "silent_payments": [ { "txid": tx('s'), "vout": 0, "height": 25, "carried": true, "pad": "x".repeat(400) } ],
+            "taproot_coins": [ { "txid": tx('t'), "vout": 0, "height": 15, "carried": true, "pad": "y".repeat(400) } ] });
+        let full = serde_json::to_string(&k).unwrap().len();
+        assert_eq!(trim_to_fit(&mut k, full - 100), 1);
+        assert!(k["taproot_coins"].as_array().unwrap().is_empty() && k["silent_payments"].as_array().unwrap().len() == 1, "the older (taproot, 15) went first");
     }
 
     #[test]

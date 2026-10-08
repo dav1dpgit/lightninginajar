@@ -14,6 +14,12 @@ resolver = "2"
 # pristine so `cargo vendor` can regenerate vendor/ safely.
 [patch.crates-io]
 lightning = { path = "patches/lightning" }
+# v318 (S57, 2026-10-08 00:10 — FOUND by CI: the wasm build of libsecp256k1 0.11 stops at hsort_impl.h:30, "call to
+# undeclared library function 'memmove'": the crate's wasm sysroot (wasm/wasm-sysroot/string.h) declares memset, memcpy
+# and memcmp but not memmove, which the 0.11 C library's key sort uses). Upstream added exactly this declaration in
+# secp256k1-sys 0.12.0; musig2 0.4.1 needs 0.11, so this is 0.11.0 unchanged but for that one line (backported from 0.12.0
+# word for word). The 0.10 copy rust-bitcoin uses stays vendored and pristine (it never calls memmove).
+secp256k1-sys = { path = "patches/secp256k1-sys-0.11" }
 
 # ldk-0.2 (S46): the release profile the wasm is built with. wasm32-unknown-unknown cannot
 # unwind, so `panic = "abort"` changes no behaviour and drops the unwind tables; size-first

@@ -44,6 +44,10 @@ hex = "0.4"
 aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 hkdf = { version = "0.12", default-features = false }
 sha2 = { version = "0.10", default-features = false }
+# v315 (S57, DP 2026-10-07 21:53 "Go on 1 & 2" — joinstr-fit-r5 step 2): MuSig2 (BIP-327) for the Mix — the same crate and
+# version joinstr v2 signs with (crates.io checksum 183312a1…29f0, checked against the index); its default backend
+# (libsecp256k1 0.31, beside rust-bitcoin's 0.29); no `rand` feature — the engine supplies every nonce seed itself.
+musig2 = { version = "=0.4.1", default-features = false, features = ["secp256k1"] }
 argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]

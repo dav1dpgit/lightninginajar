@@ -140,6 +140,29 @@ pub struct CoinMarks {
     /// can still be paid. A backup restore brings the real list (this flag false) and checks only those.
     #[serde(default)]
     pub sp_labels_unknown: bool,
+    /// v318 (S57, DP 2026-10-07 23:10 "Leave it on the main coin branch, and can we mark them in the wallet and the
+    /// same information kept in the encrypted recovery blob?"): the m/86'/{coin}'/0'/0 indexes handed to a pool as an
+    /// exit address. A Mix coin sits on BIP86's ordinary receive branch, where a later "Receive to a taproot address"
+    /// would put plain coins too; this mark is what tells them apart. Marked when the index is handed out (before any
+    /// coin exists), here so it rides the backup blob (MARKS_KEY is sealed and in BUNDLE_SINGLE_KEYS) and survives a
+    /// rescan. A words-only restore has no marks: its taproot coins read as plain until a backup brings them.
+    #[serde(default)]
+    pub mix_exits: std::collections::BTreeSet<u32>,
+}
+
+impl CoinMarks {
+    /// v318: is this coin a Mix exit (paid to a marked m/86 receive index)?
+    pub fn is_mix(&self, u: &OnchainUtxo) -> bool {
+        u.chain == crate::tier2::CHAIN_BIP86 && self.mix_exits.contains(&u.index)
+    }
+}
+
+/// v318: the next m/86 receive index to hand out (a Mix exit now; a taproot receive later) — past every index the
+/// ledger has seen paid AND every index already handed to a pool, paid or not.
+pub fn next_tr_receive_index(view: &Tier2View, marks: &CoinMarks) -> u32 {
+    let seen = next_index_for_chain(view, &[], crate::tier2::CHAIN_BIP86);
+    let handed = marks.mix_exits.iter().next_back().map(|m| m + 1).unwrap_or(0);
+    seen.max(handed)
 }
 
 /// v304: one silent-payment label. `name` empty = never named here (a coin found under it after a words-only
@@ -161,7 +184,7 @@ pub const SP_LABEL_NAME_MAX_CHARS: usize = 40;
 fn default_true() -> bool { true }
 
 impl Default for CoinMarks {
-    fn default() -> Self { Self { marks: Default::default(), sp_enabled: true, sp_sends: Default::default(), send_dests: Default::default(), tx_keep_cap: 0, sp_labels: Vec::new(), sp_labels_unknown: false } }
+    fn default() -> Self { Self { marks: Default::default(), sp_enabled: true, sp_sends: Default::default(), send_dests: Default::default(), tx_keep_cap: 0, sp_labels: Vec::new(), sp_labels_unknown: false, mix_exits: Default::default() } }
 }
 
 /// v281: the cap on a coin note, in code points (the address note's and the Push Key
@@ -341,7 +364,8 @@ pub fn load_marks(storage: &dyn LijStorage) -> LijResult<CoinMarks> {
 /// v281 (S50, coin control): one row of the coin list as the page shows it — the coin
 /// record plus what the user marked and the kind the ledger knows. `tag` is one of
 /// `received` (chain 0), `change` (chain 1), `channel_return` (a close's payout, from the
-/// node's closing-txid record), `legacy` (chain 525); `silent_payment` joins with chain 352.
+/// node's closing-txid record), `legacy` (chain 525); `silent_payment` joins with chain 352;
+/// v316: `mix` with chain 86.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CoinRow {
     pub chain: u32,
@@ -358,12 +382,17 @@ pub struct CoinRow {
     pub sp_label: Option<u32>,
 }
 
-/// v281: the tag for a coin, from the chain and the ledger's records.
-pub fn coin_tag(view: &Tier2View, u: &OnchainUtxo) -> &'static str {
+/// v281: the tag for a coin, from the chain and the ledger's records. v318: and the marks — a BIP86 coin is `mix` when
+/// its receive index was handed to a pool (CoinMarks::mix_exits), else `received` (/0) or `change` (/1) like m/84.
+pub fn coin_tag(view: &Tier2View, marks: &CoinMarks, u: &OnchainUtxo) -> &'static str {
     if u.chain == CHAIN_LEGACY {
         "legacy"
     } else if u.chain == crate::tier2::CHAIN_SP {
         "silent_payment"
+    } else if marks.is_mix(u) {
+        "mix"
+    } else if u.chain == crate::tier2::CHAIN_BIP86_INTERNAL {
+        "change"
     } else if view.closing_txids.contains(&u.txid)
         || matches!(view.kinds.get(&u.txid), Some(TxKind::ChannelClose))
     {
@@ -385,7 +414,7 @@ impl CoinRow {
             vout: u.vout,
             value_sats: u.value_sats,
             height: u.height,
-            tag: coin_tag(view, u).to_string(),
+            tag: coin_tag(view, marks, u).to_string(),
             frozen: m.map(|m| m.frozen).unwrap_or(false),
             note: m.map(|m| m.note.clone()).unwrap_or_default(),
             sp_label: u.sp_label,
@@ -635,6 +664,12 @@ pub struct Tier2View {
     /// witness (every LiJ address is P2WPKH). Applied the moment the coin's block is read.
     #[serde(default)]
     pub pending_spends: std::collections::HashMap<String, (String, u32)>,
+    /// v317 (DP 2026-10-07 22:58 "Proceed with the scanner fix"): the taproot half of pending_spends. A key-path spend's
+    /// witness names no key, so a spend of a BIP86 coin the walk has not met yet is known only by its script in the
+    /// block's filter (tier2::tr_hits): one hint per (script, block). When the coin is met, the hinted block is read
+    /// again and the exact spending input found (resolve_tr_spends) — one extra block per spent coin, nothing asked.
+    #[serde(default)]
+    pub tr_hints: Vec<TrHint>,
     /// v257: the last sync call's result, for the face and the tapes.
     #[serde(default)]
     pub last_sync: Option<SyncNote>,
@@ -816,6 +851,16 @@ pub const VIEW_SCHEMA: u32 = 3;
 pub const NET_WIDTH: u32 = 2500;
 /// v256: a coin this close to the net's far edge widens the net and redoes the walk.
 pub const NET_WIDEN_MARGIN: u32 = 100;
+
+/// v317: the widen rule with each branch's own width (the BIP86 branches are TR_WIDTH_DIV-th as deep, and their margin
+/// shrinks with them) — a used index within the margin of its branch's far edge means the net must widen.
+pub fn net_is_hot(view: &Tier2View) -> bool {
+    view.used_next.iter().any(|(&chain, &u)| {
+        let w = crate::tier2::branch_width(chain, view.net_width);
+        let margin = if crate::tier2::bip86_branch(chain).is_some() { (NET_WIDEN_MARGIN / crate::tier2::TR_WIDTH_DIV).max(1) } else { NET_WIDEN_MARGIN };
+        u >= w.saturating_sub(margin)
+    })
+}
 /// v256: blocks re-walked by the daily tail verification.
 pub const TAIL_VERIFY_BLOCKS: u32 = 144;
 
@@ -855,6 +900,7 @@ pub fn rebuild_from_birthday(view: &mut Tier2View, now_ms: u64) {
     view.close_hints.clear();
     view.down = None;
     view.pending_spends.clear();
+    view.tr_hints.clear();   // v317
     view.block_times.clear();
     view.cursor.scanned_to = 0;
     view.cursor.last_hash = None;
@@ -872,6 +918,21 @@ pub fn rebuild_from_birthday(view: &mut Tier2View, now_ms: u64) {
         sp.scanned_filter_header.clear();
         sp.waiting_for_index = false;
     }
+}
+
+/// v317: a BIP86 script seen in a fetched block's filter (see Tier2View::tr_hints).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TrHint {
+    pub chain: u32,
+    pub index: u32,
+    pub height: u32,
+    pub hash: String,
+    /// an output of that block pays the script too (a receipt; a spend may still be there — read last)
+    #[serde(default)]
+    pub paid_here: bool,
+    /// the coins ("txid:vout") already looked for in this block
+    #[serde(default)]
+    pub checked: Vec<String>,
 }
 
 /// v251: the head-first cursor (see Tier2View::head).
@@ -1285,6 +1346,7 @@ pub fn rollback(view: &mut Tier2View, to_height: u32) {
         }
     }
     view.pending_spends.retain(|_, (_, h)| *h <= to_height);   // v257
+    view.tr_hints.retain(|h| h.height <= to_height);   // v317
     view.history.retain(|h| h.height <= to_height);
     view.cursor.scanned_to = to_height;
     view.cursor.last_hash = None;
@@ -1361,10 +1423,80 @@ pub async fn fetch_and_apply(
 
         view.block_times.insert(m.height, block.header.time);   // v259
         apply_txs(view, scripts, &block.txdata, m.height);
+        note_tr_hints(view, scripts, &block.txdata, m);   // v317
         tag_channel_closes(view, &block.txdata, close_txids);
         capture_own_txs(view, &block.txdata, m.height);   // v298: the wallet's own transactions, kept whole
     }
+    resolve_tr_spends(http, base, view).await?;   // v317: a BIP86 coin met now whose spend was seen above it
     Ok(())
+}
+
+/// v317: note each BIP86 script of `m`'s filter as a hint (once per script and block).
+pub fn note_tr_hints(view: &mut Tier2View, scripts: &WalletScripts, txs: &[Transaction], m: &crate::tier2_sync::MatchedBlock) {
+    for &(chain, index) in &m.tr_hits {
+        if view.tr_hints.iter().any(|h| h.chain == chain && h.index == index && h.height == m.height) { continue; }
+        let paid_here = txs.iter().any(|tx| tx.output.iter().any(|o| scripts.owner_of(&o.script_pubkey) == Some((chain, index))));
+        view.tr_hints.push(TrHint { chain, index, height: m.height, hash: m.block_hash.clone(), paid_here, checked: Vec::new() });
+    }
+}
+
+/// v317: the hinted blocks to read for each unspent BIP86 coin — (coin "txid:vout", hint position), a block above the
+/// coin not yet read for it; blocks that only spend before blocks that also pay.
+pub fn tr_spend_checks(view: &Tier2View) -> Vec<(String, usize)> {
+    let mut out: Vec<(bool, u32, String, usize)> = Vec::new();
+    for u in view.utxos.iter().filter(|u| u.spent_height.is_none() && crate::tier2::bip86_branch(u.chain).is_some()) {
+        let op = format!("{}:{}", u.txid, u.vout);
+        for (i, h) in view.tr_hints.iter().enumerate() {
+            if h.chain == u.chain && h.index == u.index && h.height > u.height && !h.checked.contains(&op) {
+                out.push((h.paid_here, h.height, op.clone(), i));
+            }
+        }
+    }
+    out.sort();
+    out.into_iter().map(|(_, _, op, i)| (op, i)).collect()
+}
+
+/// v317: mark a coin spent by the transaction in `txs` whose input spends it; true when found.
+pub fn apply_tr_spend(view: &mut Tier2View, op: &str, txs: &[Transaction], height: u32) -> bool {
+    let Some((txid, vout)) = op.rsplit_once(':') else { return false };
+    let Ok(vout) = vout.parse::<u32>() else { return false };
+    for tx in txs {
+        if tx.input.iter().any(|i| i.previous_output.vout == vout && i.previous_output.txid.to_string() == txid) {
+            let spender = tx.compute_txid().to_string();
+            for u in view.utxos.iter_mut().filter(|u| u.txid == txid && u.vout == vout && u.spent_height.is_none()) {
+                u.spent_height = Some(height);
+                u.spent_txid = Some(spender.clone());
+            }
+            return true;
+        }
+    }
+    false
+}
+
+/// v317: read the hinted blocks for every unspent BIP86 coin (tr_spend_checks) and mark the spends found. Each block
+/// is read once per call, bound to its hash as every block the walk reads.
+pub async fn resolve_tr_spends(http: &Arc<dyn EsploraHttp>, base: &str, view: &mut Tier2View) -> LijResult<u32> {
+    let checks = tr_spend_checks(view);
+    if checks.is_empty() { return Ok(0); }
+    let mut blocks: std::collections::HashMap<u32, Block> = std::collections::HashMap::new();
+    let mut found = 0u32;
+    for (op, i) in checks {
+        if !view.utxos.iter().any(|u| format!("{}:{}", u.txid, u.vout) == op && u.spent_height.is_none()) { continue; }   // found by an earlier hint
+        let (height, hash) = (view.tr_hints[i].height, view.tr_hints[i].hash.clone());
+        if !blocks.contains_key(&height) {
+            let b = fetch_block_bound(http, base, height, &hash).await?;
+            blocks.insert(height, b);
+        }
+        let txs = &blocks[&height].txdata;
+        let hit = apply_tr_spend(view, &op, txs, height);
+        view.tr_hints[i].checked.push(op.clone());
+        if hit {
+            found += 1;
+            capture_own_txs(view, txs, height);   // the spend is the wallet's own transaction
+            log::info!("[tier2] v317 a taproot coin {}… spent in block {height} (its filter named the script)", op.get(..12).unwrap_or(&op));
+        }
+    }
+    Ok(found)
 }
 
 /// v102: fetch the given block `heights` and return the transactions whose txid
@@ -1845,7 +1977,7 @@ pub async fn sync_down(
         let filter_bytes = hex::decode(&f.filter).map_err(|e| LijError::Node(format!("tip filter hex: {e}")))?;
         let bh = BlockHash::from_str(&f.hash).map_err(|e| LijError::Node(format!("tip hash: {e}")))?;
         if crate::tier2::block_matches(&filter_bytes, &bh, scripts)? {
-            fetch_and_apply(http, base, scripts, view, &[crate::tier2_sync::MatchedBlock { height: tip_height, block_hash: f.hash.clone() }], &close_txids).await?;
+            fetch_and_apply(http, base, scripts, view, &[crate::tier2_sync::MatchedBlock { height: tip_height, block_hash: f.hash.clone(), tr_hits: crate::tier2::tr_hits(&filter_bytes, &bh, scripts)? }], &close_txids).await?;
         }
         view.cursor.scanned_to = tip_height;
         view.cursor.last_hash = Some(f.hash.clone());
@@ -2531,5 +2663,81 @@ mod tests {
         let j = serde_json::to_string(&u2).unwrap();
         assert!(j.contains("\"sp_label\":1"));
         assert!(!serde_json::to_string(&u).unwrap().contains("sp_label"), "nothing written for a coin without one");
+    }
+}
+
+#[cfg(test)]
+mod v317_tests {
+    use super::*;
+
+    fn tr_coin(txid: &str, chain: u32, index: u32, height: u32) -> OnchainUtxo {
+        OnchainUtxo { chain, index, txid: txid.into(), vout: 0, value_sats: 100_000, height, spent_height: None, spent_txid: None, sp_tweak: None, sp_label: None }
+    }
+    fn hint(chain: u32, index: u32, height: u32, paid_here: bool) -> TrHint {
+        TrHint { chain, index, height, hash: format!("{height:064x}"), paid_here, checked: Vec::new() }
+    }
+
+    #[test]
+    fn v317_the_checks_read_only_blocks_above_the_coin_spends_first_and_once() {
+        let c = crate::tier2::CHAIN_BIP86_INTERNAL;
+        let mut view = Tier2View::default();
+        view.utxos = vec![tr_coin("aa", c, 3, 900), tr_coin("bb", c, 4, 900), tr_coin("cc", 0, 3, 900)];
+        view.tr_hints = vec![
+            hint(c, 3, 950, true),    // a later payment to the same address (read last)
+            hint(c, 3, 920, false),   // the spend
+            hint(c, 3, 890, false),   // below the coin: never read for it
+            hint(c, 9, 930, false),   // another script
+            hint(0, 3, 930, false),   // not a BIP86 chain: m/84 spends are found by the witness
+        ];
+        let checks = tr_spend_checks(&view);
+        assert_eq!(checks, vec![("aa:0".to_string(), 1), ("aa:0".to_string(), 0)]);
+        view.tr_hints[1].checked.push("aa:0".into());
+        assert_eq!(tr_spend_checks(&view), vec![("aa:0".to_string(), 0)], "a block is read once for a coin");
+        view.utxos[0].spent_height = Some(920);
+        assert!(tr_spend_checks(&view).is_empty(), "a spent coin needs no reading");
+    }
+
+    #[test]
+    fn v317_the_widen_rule_watches_each_branch_at_its_own_width() {
+        let mut view = Tier2View::default();
+        view.net_width = NET_WIDTH;
+        view.used_next.insert(0, 2_000);
+        view.used_next.insert(crate::tier2::CHAIN_BIP86_INTERNAL, 470);
+        assert!(!net_is_hot(&view), "470 of 500 on m/86 is inside the margin of 20; 2,000 of 2,500 on m/84");
+        view.used_next.insert(crate::tier2::CHAIN_BIP86_INTERNAL, 480);
+        assert!(net_is_hot(&view), "480 of 500 reaches it");
+        view.used_next.remove(&crate::tier2::CHAIN_BIP86_INTERNAL);
+        view.used_next.insert(1, 2_400);
+        assert!(net_is_hot(&view), "the m/84 rule is unchanged");
+    }
+
+    #[test]
+    fn v318_a_mix_coin_is_known_by_its_mark_not_its_branch() {
+        let mut view = Tier2View::default();
+        view.utxos = vec![tr_coin("aa", crate::tier2::CHAIN_BIP86, 4, 900), tr_coin("bb", crate::tier2::CHAIN_BIP86, 5, 900), tr_coin("cc", crate::tier2::CHAIN_BIP86_INTERNAL, 0, 900)];
+        let mut marks = CoinMarks::default();
+        marks.mix_exits.insert(4);
+        marks.mix_exits.insert(9);   // handed to a pool, not paid yet
+        assert_eq!(coin_tag(&view, &marks, &view.utxos[0]), "mix");
+        assert_eq!(coin_tag(&view, &marks, &view.utxos[1]), "received", "the same branch, not handed to a pool");
+        assert_eq!(coin_tag(&view, &marks, &view.utxos[2]), "change");
+        assert_eq!(next_tr_receive_index(&view, &marks), 10, "past the paid 5 and the handed-out 9");
+        // the marks ride the backup blob: they are in the sealed marks record, which the bundle carries
+        let back: CoinMarks = serde_json::from_slice(&serde_json::to_vec(&marks).unwrap()).unwrap();
+        assert_eq!(back.mix_exits, marks.mix_exits);
+        let old: CoinMarks = serde_json::from_str("{}").unwrap();
+        assert!(old.mix_exits.is_empty(), "an older record reads with no marks");
+        assert!(ENCRYPTED_KEYS.contains(&MARKS_KEY) && crate::node::BUNDLE_SINGLE_KEYS.contains(&MARKS_KEY));
+    }
+
+    #[test]
+    fn v317_a_rollback_and_a_rebuild_drop_the_hints_above() {
+        let c = crate::tier2::CHAIN_BIP86;
+        let mut view = Tier2View::default();
+        view.tr_hints = vec![hint(c, 1, 900, false), hint(c, 1, 960, false)];
+        rollback(&mut view, 950);
+        assert_eq!(view.tr_hints.iter().map(|h| h.height).collect::<Vec<_>>(), vec![900]);
+        rebuild_from_birthday(&mut view, 0);
+        assert!(view.tr_hints.is_empty());
     }
 }

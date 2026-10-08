@@ -1127,4 +1127,63 @@ mod tests {
         assert_eq!(view.utxos[0].chain, CHAIN_SP);
         assert_eq!(view.utxos[0].sp_tweak.as_deref(), Some("07".repeat(32).as_str()));
     }
+
+    // ── v317 (DP 2026-10-07 22:58 "Proceed with the scanner fix"): the m/84 walk's harness is this one; the case is the
+    // walk's, not the silent-payment scan's ──
+    #[tokio::test]
+    async fn v317_the_walk_finds_a_taproot_coin_spent_above_it() {
+        // a coin at the wallet's BIP86 address m/86'/0'/0'/1/3, paid in 101 and spent in 103. The walk reads newest
+        // first, so it meets the spend (103) before the coin (101) — and a key-path spend's witness names no key.
+        let secp = Secp256k1::new();
+        let r = root();
+        let (_, coin_spk) = crate::bip86::secret_and_script(&r, 1, 3).unwrap();
+        let a1 = SecretKey::from_slice(&[1u8; 32]).unwrap();
+        let a1_pub = PublicKey::from_secret_key(&secp, &a1);
+        let a1_spk = ScriptBuf::new_p2wpkh(&bitcoin::PublicKey::new(a1_pub).wpubkey_hash().unwrap());
+        let op1 = OutPoint { txid: Txid::from_str("f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16").unwrap(), vout: 0 };
+        let pay_tx = Transaction {
+            version: bitcoin::transaction::Version::TWO, lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![TxIn { previous_output: op1, script_sig: ScriptBuf::new(), sequence: bitcoin::Sequence::MAX, witness: Witness::from_slice(&[vec![0u8; 71], a1_pub.serialize().to_vec()]) }],
+            output: vec![TxOut { value: bitcoin::Amount::from_sat(90_000), script_pubkey: coin_spk.clone() }],
+        };
+        let coin_op = OutPoint { txid: pay_tx.compute_txid(), vout: 0 };
+        let spend_tx = Transaction {
+            version: bitcoin::transaction::Version::TWO, lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![TxIn { previous_output: coin_op, script_sig: ScriptBuf::new(), sequence: bitcoin::Sequence::MAX, witness: Witness::from_slice(&[vec![0u8; 64]]) }],
+            output: vec![TxOut { value: bitcoin::Amount::from_sat(89_000), script_pubkey: a1_spk.clone() }],
+        };
+        let mut prevouts: HashMap<OutPoint, ScriptBuf> = HashMap::new();
+        prevouts.insert(op1, a1_spk.clone());
+        prevouts.insert(coin_op, coin_spk.clone());
+        let genesis = BlockHash::from_str("0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206").unwrap();
+        let b101 = mine(genesis, vec![coinbase(101), pay_tx.clone()], 1_700_000_000);
+        let b102 = mine(b101.block_hash(), vec![coinbase(102)], 1_700_000_600);
+        let b103 = mine(b102.block_hash(), vec![coinbase(103), spend_tx.clone()], 1_700_001_200);
+        let (f101, f102, f103) = (basic_filter(&b101, &prevouts), basic_filter(&b102, &prevouts), basic_filter(&b103, &prevouts));
+        let fh101 = crate::tier2_sync::compute_filter_header(&f101, &[0u8; 32]);
+        let fh102 = crate::tier2_sync::compute_filter_header(&f102, &fh101);
+        let fh103 = crate::tier2_sync::compute_filter_header(&f103, &fh102);
+        let tip_hash = b103.block_hash().to_string();
+        let blocks = vec![
+            Served { height: 101, block: b101, filter: f101, fh: fh101, tweaks: vec![] },
+            Served { height: 102, block: b102, filter: f102, fh: fh102, tweaks: vec![] },
+            Served { height: 103, block: b103, filter: f103, fh: fh103, tweaks: vec![] },
+        ];
+        let http = Arc::new(MapHttp::new());
+        serve(&http, &blocks, false);
+        let http: Arc<dyn EsploraHttp> = http;
+        let storage = crate::storage::native_storage::MemoryStorage::new();
+        let scripts = crate::tier2::WalletScripts::build(&r, Network::Bitcoin, 50).unwrap();
+        let mut view = Tier2View::default();
+        view.cursor.birthday = 101;
+        let (_, note) = crate::tier2_wallet::sync_down(&http, "http://box", &scripts, &mut view, &storage, 103, &tip_hash, 10, 0).await.unwrap();
+        assert!(view.down.as_ref().map(|d| d.done).unwrap_or(false), "the walk reached the birthday: {note}");
+        let u = view.utxos.iter().find(|u| u.chain == crate::tier2::CHAIN_BIP86_INTERNAL).expect("the coin is found");
+        assert_eq!((u.index, u.value_sats, u.height), (3, 90_000, 101));
+        assert_eq!((u.spent_height, u.spent_txid.clone()), (Some(103), Some(spend_tx.compute_txid().to_string())), "and its spend above it, exactly");
+        assert_eq!(crate::tier2_wallet::balances(&view), (0, 0), "nothing reads as unspent");
+        assert!(view.pending_spends.is_empty(), "the witness named no key: the hint did it");
+        assert_eq!(view.tr_hints.len(), 2, "one hint where the coin was paid, one where it was spent: {:?}", view.tr_hints);
+        assert!(view.tr_hints.iter().any(|h| h.height == 103 && !h.paid_here && h.checked.len() == 1));
+    }
 }

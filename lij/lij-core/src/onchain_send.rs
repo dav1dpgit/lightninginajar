@@ -149,11 +149,38 @@ pub fn sp_kit_sweeps(
     first_dest_index: u32,
     rates_sat_vb: (u64, u64),
 ) -> LijResult<Vec<SpKitSweep>> {
+    kit_sweeps_where(root_key, view, network, first_dest_index, rates_sat_vb, &|u| u.chain == crate::tier2::CHAIN_SP && is_signable(u))
+}
+
+/// v318 (S57, DP 2026-10-07 22:58 "Add the ability to sweep coin-by-coin to the Black start kit so everything comes back
+/// to m/84. In the Black start kit the user can decide whether to sweep or not."): the same leg for the wallet's
+/// taproot coins (both BIP86 branches — today the Mix's exits). Any BIP86 wallet on the 12 words finds these as they
+/// are; the sweeps let one BIP84 wallet show everything. Each coin alone (never combined — a mixed coin beside another
+/// links them), to its own fresh m/84 address; /recover offers each one, nothing moves unless it is tapped.
+pub fn tr_kit_sweeps(
+    root_key: &RootKey,
+    view: &crate::tier2_wallet::Tier2View,
+    network: Network,
+    first_dest_index: u32,
+    rates_sat_vb: (u64, u64),
+) -> LijResult<Vec<SpKitSweep>> {
+    kit_sweeps_where(root_key, view, network, first_dest_index, rates_sat_vb, &|u| crate::tier2::bip86_branch(u.chain).is_some())
+}
+
+/// v318: one pre-signed sweep per unspent coin `pick` takes (v291's rule, any key-path coin the signer knows).
+fn kit_sweeps_where(
+    root_key: &RootKey,
+    view: &crate::tier2_wallet::Tier2View,
+    network: Network,
+    first_dest_index: u32,
+    rates_sat_vb: (u64, u64),
+    pick: &dyn Fn(&crate::tier2_wallet::OnchainUtxo) -> bool,
+) -> LijResult<Vec<SpKitSweep>> {
     let secp = Secp256k1::new();
     let mut coins: Vec<&crate::tier2_wallet::OnchainUtxo> = view
         .utxos
         .iter()
-        .filter(|u| u.chain == crate::tier2::CHAIN_SP && u.spent_height.is_none() && is_signable(u))
+        .filter(|u| u.spent_height.is_none() && pick(u))
         .collect();
     coins.sort_by(|a, b| a.txid.cmp(&b.txid).then(a.vout.cmp(&b.vout)));
     let receive_parent = root_key.shutdown_xpriv()?;   // m/84'/{coin}'/0'/0
@@ -206,7 +233,7 @@ pub fn sp_kit_sweeps(
 /// A spendable UTXO with everything needed to sign it.
 /// v285: shared with channel_open (a funding transaction signs through the same signer).
 pub(crate) struct SpendableUtxo {
-    pub(crate) chain: u32, // 0=receive, 1=change, 525=legacy, 352=silent payment (v284)
+    pub(crate) chain: u32, // 0=receive, 1=change, 525=legacy, 352=silent payment (v284), 86/87=BIP86 /0 and /1 (v316/v317)
     pub(crate) index: u32,
     pub(crate) txid: String,
     pub(crate) vout: u32,
@@ -234,16 +261,19 @@ pub(crate) fn sp_tweak_of(u: &crate::tier2_wallet::OnchainUtxo) -> Option<[u8; 3
 
 /// v285: is this ledger record a coin the wallet can sign for? Receive and change (m/84) always;
 /// a silent-payment coin (chain 352) when its t_k is on the record. Legacy (m/525) never here.
+/// v316: a BIP86 coin (chains 86/87 — today only Mix coins) is NOT here yet, though sign_inputs signs it: whether the
+/// automatic pick may put a mixed coin beside the wallet's other coins (which links them and undoes the mix) waits for
+/// DP's postmix rule (CoinMarks::is_mix tells a Mix coin from a plain taproot one).
 pub(crate) fn is_signable(u: &crate::tier2_wallet::OnchainUtxo) -> bool {
     u.chain == crate::tier2::CHAIN_RECEIVE
         || u.chain == crate::tier2::CHAIN_CHANGE
         || (u.chain == crate::tier2::CHAIN_SP && sp_tweak_of(u).is_some())
 }
 
-/// v284: an input's size in the fee estimate — a taproot key-path input (a silent-payment coin)
-/// is 57.5 vB, a P2WPKH input 68.
+/// v284: an input's size in the fee estimate — a taproot key-path input (a silent-payment coin;
+/// v316: a Mix coin) is 57.5 vB, a P2WPKH input 68.
 pub(crate) fn input_vbytes(chain: u32) -> u64 {
-    if chain == crate::tier2::CHAIN_SP { 58 } else { 68 }
+    if chain == crate::tier2::CHAIN_SP || crate::tier2::bip86_branch(chain).is_some() { 58 } else { 68 }
 }
 
 /// v284: the fee for exactly these inputs (their real sizes) and `n_out` outputs.
@@ -733,6 +763,11 @@ pub(crate) fn sign_inputs(
                 let k = sp_keys.as_ref().unwrap();
                 keys.push((k.spend_secret(secp, &t)?, k.script_for(secp, &t)?, true));
             }
+            // v316 (step 1b): a coin at a BIP86 address (a Mix coin) — the key-path secret and its P2TR script
+            _ if crate::tier2::bip86_branch(u.chain).is_some() => {
+                let (sk, spk) = crate::bip86::secret_and_script(root_key, crate::tier2::bip86_branch(u.chain).unwrap_or(0), u.index)?;
+                keys.push((sk, spk, true));
+            }
             _ => {
                 let sk = signing_secret(root_key, secp, u.chain, u.index)?;
                 let pk = bitcoin::PublicKey::new(sk.public_key(secp));
@@ -919,6 +954,7 @@ fn sp_inputs(root_key: &RootKey, secp: &Secp256k1<bitcoin::secp256k1::All>, sele
                 if sp_keys.is_none() { sp_keys = Some(crate::silent_payment::SpKeys::from_root(root_key)?); }
                 (sp_keys.as_ref().unwrap().spend_secret(secp, &t)?, true)
             }
+            _ if crate::tier2::bip86_branch(u.chain).is_some() => (crate::bip86::secret_and_script(root_key, crate::tier2::bip86_branch(u.chain).unwrap_or(0), u.index)?.0, true),   // v316
             _ => (signing_secret(root_key, secp, u.chain, u.index)?, false),
         };
         inputs.push(crate::silent_payment::SpInput {
@@ -1812,6 +1848,48 @@ mod coin_control_tests {
         assert_eq!((hi.input[0].previous_output, hi.output[0].value.to_sat()), (tx.input[0].previous_output, 46_000));
         // no SP coins → an empty kit leg
         assert!(sp_kit_sweeps(&root, &crate::tier2_wallet::Tier2View::default(), Network::Bitcoin, 7, (10, 40)).unwrap().is_empty());
+        // v318: and the taproot leg takes none of these coins
+        assert!(tr_kit_sweeps(&root, &view, Network::Bitcoin, 9, (10, 40)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn v318_the_kit_sweeps_each_taproot_coin_alone_to_its_own_bip84_address() {
+        use bitcoin::sighash::{Prevouts, TapSighashType};
+        let root = crate::key::RootKey::from_mnemonic(
+            &"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".parse().unwrap(),
+            Network::Bitcoin,
+        ).unwrap();
+        let secp = Secp256k1::new();
+        let mk = |txid: &str, chain: u32, index: u32, sats: u64| crate::tier2_wallet::OnchainUtxo { sp_tweak: None, chain, index, txid: txid.to_string(), vout: 0, value_sats: sats, height: 900_000, spent_height: None, spent_txid: None, sp_label: None };
+        let mut view = crate::tier2_wallet::Tier2View::default();
+        view.utxos = vec![
+            mk(&"bb".repeat(32), crate::tier2::CHAIN_BIP86_INTERNAL, 0, 100_000),   // BIP86 change 0: bc1p3qkhfews…
+            mk(&"aa".repeat(32), crate::tier2::CHAIN_BIP86, 1, 50_000),             // BIP86 receive 1: bc1p4qhjn9…
+            mk(&"cc".repeat(32), 0, 2, 70_000),                                     // an m/84 coin: not in this leg
+        ];
+        let mut spent = mk(&"dd".repeat(32), crate::tier2::CHAIN_BIP86, 2, 9_000); spent.spent_height = Some(900_001);
+        view.utxos.push(spent);
+        let kit = tr_kit_sweeps(&root, &view, Network::Bitcoin, 12, (10, 40)).unwrap();
+        assert_eq!(kit.iter().map(|k| (k.txid.clone(), k.destination_index)).collect::<Vec<_>>(), vec![("aa".repeat(32), 12), ("bb".repeat(32), 13)]);
+        // one input, one output, to the m/84 receive address at its index; the 100 vB rule as the silent-payment leg
+        let want_dest = |i: u32| {
+            let sk = signing_secret(&root, &secp, 0, i).unwrap();
+            Address::p2wpkh(&bitcoin::CompressedPublicKey(sk.public_key(&secp)), Network::Bitcoin).to_string()
+        };
+        assert_eq!((kit[0].destination.clone(), kit[1].destination.clone()), (want_dest(12), want_dest(13)));
+        assert_eq!((kit[0].sweep_fee_normal, kit[0].sweep_fee_high), (Some(1_000), Some(4_000)));
+        for (k, spk_addr, sats) in [(&kit[0], "bc1p4qhjn9zdvkux4e44uhx8tc55attvtyu358kutcqkudyccelu0was9fqzwh", 50_000u64), (&kit[1], "bc1p3qkhfews2uk44qtvauqyr2ttdsw7svhkl9nkm9s9c3x4ax5h60wqwruhk7", 100_000)] {
+            let tx: Transaction = bitcoin::consensus::deserialize(&hex::decode(k.sweep_hex_normal.as_ref().unwrap()).unwrap()).unwrap();
+            assert_eq!((tx.input.len(), tx.output.len(), tx.output[0].value.to_sat()), (1, 1, sats - 1_000));
+            let spk = Address::from_str(spk_addr).unwrap().assume_checked().script_pubkey();
+            let prevouts = vec![TxOut { value: bitcoin::Amount::from_sat(sats), script_pubkey: spk.clone() }];
+            let mut unsigned = tx.clone(); unsigned.input[0].witness = Witness::new();
+            let mut cache = SighashCache::new(&unsigned);
+            let sh = cache.taproot_key_spend_signature_hash(0, &Prevouts::All(&prevouts), TapSighashType::Default).unwrap();
+            let xonly = bitcoin::secp256k1::XOnlyPublicKey::from_slice(&spk.as_bytes()[2..34]).unwrap();
+            let sig = bitcoin::secp256k1::schnorr::Signature::from_slice(tx.input[0].witness.nth(0).unwrap()).unwrap();
+            secp.verify_schnorr(&sig, &Message::from_digest(sh.to_byte_array()), &xonly).expect("the taproot sweep verifies against the BIP86 output key");
+        }
     }
 
     #[test]
@@ -1867,5 +1945,63 @@ mod coin_control_tests {
         // and the spend key really is b_spend + t_k (even-y form): its x-only key is the script's
         let sk = keys.spend_secret(&secp, &t_k).unwrap();
         assert_eq!(sk.x_only_public_key(&secp).0, xonly);
+    }
+
+    #[test]
+    fn v316_sign_inputs_signs_a_mix_coin_on_the_bip86_key_path() {
+        // v316 (step 1b): a Mix coin at m/86'/0'/0'/0/1 (BIP86's own vector address) beside an ordinary m/84 coin;
+        // the Schnorr signature verifies against the address's output key, with every prevout committed.
+        use bitcoin::sighash::{Prevouts, TapSighashType};
+        let root = crate::key::RootKey::from_mnemonic(
+            &"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".parse().unwrap(),
+            Network::Bitcoin,
+        ).unwrap();
+        let secp = Secp256k1::new();
+        let mix_script = Address::from_str("bc1p4qhjn9zdvkux4e44uhx8tc55attvtyu358kutcqkudyccelu0was9fqzwh").unwrap().assume_checked().script_pubkey();
+        let mix = SpendableUtxo { chain: crate::tier2::CHAIN_BIP86, index: 1, txid: "33".repeat(32), vout: 2, value_sats: 100_000, sp_tweak: None };
+        let plain = SpendableUtxo { chain: 0, index: 3, txid: "22".repeat(32), vout: 0, value_sats: 10_000, sp_tweak: None };
+        let plain_sk = signing_secret(&root, &secp, 0, 3).unwrap();
+        let plain_pk = bitcoin::PublicKey::new(plain_sk.public_key(&secp));
+        let plain_script = ScriptBuf::new_p2wpkh(&bitcoin::CompressedPublicKey(plain_pk.inner).wpubkey_hash());
+        let selected = vec![&plain, &mix];
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: selected.iter().map(|u| TxIn {
+                previous_output: OutPoint { txid: Txid::from_str(&u.txid).unwrap(), vout: u.vout },
+                script_sig: ScriptBuf::new(), sequence: Sequence::ENABLE_RBF_NO_LOCKTIME, witness: Witness::new(),
+            }).collect(),
+            output: vec![TxOut { value: bitcoin::Amount::from_sat(109_000), script_pubkey: plain_script.clone() }],
+        };
+        let w = sign_inputs(&root, &secp, &tx, &selected).unwrap();
+        assert_eq!((w[0].len(), w[1].len()), (2, 1), "P2WPKH: signature + key; the Mix coin: one Schnorr signature");
+        assert_eq!(w[1].nth(0).unwrap().len(), 64, "SIGHASH_DEFAULT: no type byte");
+        let prevouts = vec![
+            TxOut { value: bitcoin::Amount::from_sat(10_000), script_pubkey: plain_script.clone() },
+            TxOut { value: bitcoin::Amount::from_sat(100_000), script_pubkey: mix_script.clone() },
+        ];
+        let mut cache = SighashCache::new(&tx);
+        let sh = cache.taproot_key_spend_signature_hash(1, &Prevouts::All(&prevouts), TapSighashType::Default).unwrap();
+        let xonly = bitcoin::secp256k1::XOnlyPublicKey::from_slice(&mix_script.as_bytes()[2..34]).unwrap();
+        let sig = bitcoin::secp256k1::schnorr::Signature::from_slice(w[1].nth(0).unwrap()).unwrap();
+        secp.verify_schnorr(&sig, &Message::from_digest(sh.to_byte_array()), &xonly).expect("the Mix coin's signature verifies against the BIP86 output key");
+        // its size in every fee figure is the taproot input's
+        assert_eq!(input_vbytes(crate::tier2::CHAIN_BIP86), 58);
+        // and toward a silent-payment address it counts as a taproot input whose key is the output key
+        let ins = sp_inputs(&root, &secp, &[&mix]).unwrap();
+        assert!(ins[0].taproot);
+        assert_eq!(ins[0].secret.x_only_public_key(&secp).0, xonly);
+    }
+
+    #[test]
+    fn v316_a_mix_coin_is_not_in_the_automatic_pick_until_dps_rule() {
+        let mut view = Tier2View::default();
+        view.utxos = vec![coin("aa", 0, 0, 50_000), coin("bb", 0, crate::tier2::CHAIN_BIP86, 100_000)];
+        assert!(!is_signable(&view.utxos[1]), "held: a mixed coin beside the others links them");
+        let got = gather_spendable(&view, &[], &std::collections::HashSet::new());
+        assert_eq!(got.iter().map(|u| u.txid.as_str()).collect::<Vec<_>>(), vec!["aa"]);
+        let mut marks = crate::tier2_wallet::CoinMarks::default();
+        marks.mix_exits.insert(0);
+        assert_eq!(crate::tier2_wallet::coin_tag(&view, &marks, &view.utxos[1]), "mix");
     }
 }
