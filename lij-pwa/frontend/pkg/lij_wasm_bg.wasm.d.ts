@@ -2,6 +2,7 @@
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
 export const __wbg_lijwallethandle_free: (a: number, b: number) => void;
+export const anchors_refused_json: () => [number, number];
 export const bip39_suggest: (a: number, b: number, c: number) => [number, number];
 export const bolt11_facts: (a: number, b: number) => [number, number, number, number];
 export const checksum_word_for_bits: (a: number, b: number, c: number, d: number) => [number, number, number, number];
@@ -20,8 +21,10 @@ export const lijwallethandle_backup_now: (a: number) => any;
 export const lijwallethandle_backup_probe: (a: number, b: number, c: number, d: number) => any;
 export const lijwallethandle_backup_replace_cloud: (a: number) => any;
 export const lijwallethandle_black_start_bundle_json: (a: number) => [number, number, number, number];
+export const lijwallethandle_black_start_bundle_merged_json: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const lijwallethandle_black_start_fingerprint_json: (a: number) => [number, number, number, number];
 export const lijwallethandle_black_start_identity_json: (a: number) => [number, number, number, number];
+export const lijwallethandle_black_start_merge_plan_json: (a: number, b: number, c: number) => [number, number, number, number];
 export const lijwallethandle_bump_onchain_send: (a: number, b: number, c: number, d: number) => any;
 export const lijwallethandle_chain_events_json: (a: number, b: number) => [number, number, number, number];
 export const lijwallethandle_check_watch_server: (a: number, b: number, c: number) => any;
@@ -163,8 +166,8 @@ export const rustsecp256k1_v0_10_0_default_error_callback_fn: (a: number, b: num
 export const wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
 export const wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
 export const wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a: (a: number, b: number, c: any) => void;
-export const wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_157: (a: number, b: number, c: any) => void;
-export const wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_158: (a: number, b: number, c: any) => void;
+export const wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_160: (a: number, b: number, c: any) => void;
+export const wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_161: (a: number, b: number, c: any) => void;
 export const wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

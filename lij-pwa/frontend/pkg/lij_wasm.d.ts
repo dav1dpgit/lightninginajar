@@ -71,6 +71,10 @@ export class LijWalletHandle {
      */
     black_start_bundle_json(): string;
     /**
+     * v313: the merged, sealed, signed push — see node::black_start_bundle_merged_json. Read-only.
+     */
+    black_start_bundle_merged_json(held_json: string, chain_json: string): string;
+    /**
      * v276 (Black Start): the kit's fingerprint — {"fp","channels"}; cheap, no signing. try_lock.
      */
     black_start_fingerprint_json(): string;
@@ -85,6 +89,11 @@ export class LijWalletHandle {
      * v275 (Black Start): the NIP-06 identity — {"npub","pubkey"}. try_lock — WALLET_BUSY.
      */
     black_start_identity_json(): string;
+    /**
+     * v313 (the kit across copies): which outpoints the chain must be asked about before a merge — see
+     * node::black_start_merge_plan_json. Read-only.
+     */
+    black_start_merge_plan_json(held_json: string): string;
     /**
      * v166 (#29-4b): RBF-replace one of OUR pending on-chain sends at a
      * higher fee. Same inputs, same destination; the delta comes out of the
@@ -830,6 +839,12 @@ export class LijWalletHandle {
 }
 
 /**
+ * v312 (S57, DP ruling (a)): the last inbound open refused because its channel type was anchors —
+ * {"at_ms": n, "funding_sats": n}; at_ms 0 = none since this page loaded.
+ */
+export function anchors_refused_json(): string;
+
+/**
  * Suggest BIP39 English words matching a prefix. Returns up to `max` matches,
  * lexicographically sorted (the wordlist is pre-sorted). Case-insensitive.
  * Returns empty vec for empty prefix or no matches.
@@ -988,6 +1003,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_lijwallethandle_free: (a: number, b: number) => void;
+    readonly anchors_refused_json: () => [number, number];
     readonly bip39_suggest: (a: number, b: number, c: number) => [number, number];
     readonly bolt11_facts: (a: number, b: number) => [number, number, number, number];
     readonly checksum_word_for_bits: (a: number, b: number, c: number, d: number) => [number, number, number, number];
@@ -1006,8 +1022,10 @@ export interface InitOutput {
     readonly lijwallethandle_backup_probe: (a: number, b: number, c: number, d: number) => any;
     readonly lijwallethandle_backup_replace_cloud: (a: number) => any;
     readonly lijwallethandle_black_start_bundle_json: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_black_start_bundle_merged_json: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly lijwallethandle_black_start_fingerprint_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_black_start_identity_json: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_black_start_merge_plan_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_bump_onchain_send: (a: number, b: number, c: number, d: number) => any;
     readonly lijwallethandle_chain_events_json: (a: number, b: number) => [number, number, number, number];
     readonly lijwallethandle_check_watch_server: (a: number, b: number, c: number) => any;
@@ -1149,8 +1167,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_157: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_158: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_160: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h03cfef1b9887284a_161: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

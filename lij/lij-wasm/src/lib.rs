@@ -96,7 +96,9 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v311".to_string()  // v311 (S57, DP 2026-10-07 16:03 "Agreed", the recovery recheck item 4): the closed-channel log rides every backup (cloud copy and device file) — node::BUNDLE_SINGLE_KEYS gains closed_channel_log::KEY_CLOSED_CHANNELS. A restore while a cooperative close was still unconfirmed lost the coop hold, so LDK could broadcast its commitment over the cooperative close (the 2026-09-03 incident); the closed history and the saved cooperative-close transaction were lost too. Older copies without the key still load. Test v311_the_closed_channel_log_rides_every_backup.
+    "phase11-v313".to_string()  // v313 (S57, DP 2026-10-07 17:55 on the recovery recheck item 1: "it's not just fewer channels, it is where anything is different. Let's not wear blinders. Write it well and thoughtfully — Go"): THE BLACK START KIT ACROSS COPIES — kit_merge (docs/design/black-start/kit-merge-r1.md): black_start_merge_plan_json / black_start_bundle_merged_json open the held kits with the kit key and merge them with this copy's kit entry by entry (carry a channel only a held kit has while its funding or delayed output is unspent; keep a held entry whose commitment number is higher than this copy's; unite silent-payment coins while unspent; seq = max(now, held + 1)); every kit entry carries its commitment_number; the patched LDK reader lij_commitment_obscure_factor
+    // "phase11-v312".to_string()  // v312 (S57, DP 2026-10-07 17:55, ruling (a): "If a new LSP arrives to the marketplace and that LSP requires ANCHORS, it knows upfront, the user is aware, and JIT channels fail in plain sight"): the wallet refuses an inbound open whose channel type is not static remote key without anchors (node::channel_type_words_recoverable); the last refusal is readable (anchors_refused_json) so the page says why
+    // "phase11-v311".to_string()  // v311 (S57, DP 2026-10-07 16:03 "Agreed", the recovery recheck item 4): the closed-channel log rides every backup (cloud copy and device file) — node::BUNDLE_SINGLE_KEYS gains closed_channel_log::KEY_CLOSED_CHANNELS. A restore while a cooperative close was still unconfirmed lost the coop hold, so LDK could broadcast its commitment over the cooperative close (the 2026-09-03 incident); the closed history and the saved cooperative-close transaction were lost too. Older copies without the key still load. Test v311_the_closed_channel_log_rides_every_backup.
     // "phase11-v310".to_string()  // v310 (S57, DP 2026-10-07 15:10 "Go with all other proposals (1, 3, etc.)"): cloud_backup_meta() — the cloud copy's number and date only (worker 0.9.0 POST /backup/meta, the same signed "backup-read" challenge), so the page can compare the cloud's number with this phone's before its first connection to the provider (Proposal 1) without pulling the whole sealed copy (~1.4 MB) at every unlock; storage::KvBackupClient::meta + parse_backup_meta (a worker without the route answers 404 = an error, never "no copy"); wallet::cloud_backup_meta. Tests v310_* ×2.
     // "phase11-v309".to_string()  // v309 (S56, DP 2026-10-06 17:47 "Go" on the cloud-copy guard — after the SA tester's channels vanished on a file load): THE CLOUD COPY IS GUARDED. (1) A copy's number is committed on the phone only once the cloud ACCEPTED it (or a device file was written with it) — storage::backup_version_peek / _commit; until now every snapshot wrote the next number first and a refused upload was retried 30 s later with the next one, so a phone that had loaded an older backup file counted past the cloud's number in about an hour and replaced newer channel state with older. (2) A refusal ("Stale backup rejected: existing vN") is read for the cloud's number (parse_stale_refusal), kept in BACKUP_CONFLICT, and STOPS the uploads until the person decides: backup_conflict() for the page, backup_replace_cloud() to take the cloud's number and upload this phone's state on purpose. (3) The cloud copy can be taken BEFORE any wallet is built — adopt_cloud_backup(words, cfg): pull + inject, the errors kinded NO_COPY / FETCH / CORRUPT — the restore screen's Continue and "Use the cloud copy" run it at the passphrase, like a device file (v952). (4) cloud_backup_info() — what the cloud holds for the running wallet (channels, number, date), nothing written; backup_probe adds saved_at_ms. (5) StateBlob carries saved_at_ms, plain — the date a warning shows for a file and for the cloud copy. (6) The cloud copy is marked out of date only when the channel manager's bytes CHANGED (cm_bytes_changed) — the 10-second save had marked it every time, so a full copy went up every 30 s the wallet was open. Tests v309_the_number_is_only_peeked_until_the_cloud_accepts_it, v309_a_refusal_names_the_clouds_number_and_nothing_else_does, v309_an_older_copy_without_a_date_still_opens_and_a_new_one_carries_its_date, v309_the_cloud_copy_is_marked_out_of_date_only_when_the_manager_changed (337 green).
     // "phase11-v308".to_string()  // v308 (S54, DP 2026-10-03 23:44 "This transaction did not have any change, but I did not use MAX … What happened with that first one? Can you track it from the code?" — 2026-10-04 00:03 "Go."): the send was right; the quote was not. With no coins chosen, coin_quote's fee_sats is what EVERY coin would need (650 at 2 sat/vB on DP's wallet) and Review showed it, while the send paid the picked coin's fee (282); and a leftover under 294 sats goes to the fee in silence (1fffda67…: 1,501 − 1,002 − 282 = 217 → fee 499, no change). Now one rule for what is left (onchain_send::settle_change) is shared by the builder and the quote; coin_quote reports send_fee_sats (exactly what the send pays, any leftover included) and folded_sats; change_sats is the change output itself (0 when folded); multi_quote reports folded_sats. fee_sats keeps its meaning. Tests v308_the_quote_shows_the_fee_the_send_pays_and_the_leftover_it_adds (DP's two sends replayed), v308_the_several_recipients_quote_names_the_leftover_too, v308_settle_change_is_one_rule.
@@ -4215,6 +4217,27 @@ impl LijWalletHandle {
     }
 
     #[wasm_bindgen]
+    /// v313 (the kit across copies): which outpoints the chain must be asked about before a merge — see
+    /// node::black_start_merge_plan_json. Read-only.
+    pub fn black_start_merge_plan_json(&self, held_json: String) -> Result<String, JsValue> {
+        let wallet = match self.inner.try_lock() {
+            Ok(w) => w,
+            Err(_) => return Err(JsValue::from_str("WALLET_BUSY")),
+        };
+        wallet.node().black_start_merge_plan_json(&held_json).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    #[wasm_bindgen]
+    /// v313: the merged, sealed, signed push — see node::black_start_bundle_merged_json. Read-only.
+    pub fn black_start_bundle_merged_json(&self, held_json: String, chain_json: String) -> Result<String, JsValue> {
+        let wallet = match self.inner.try_lock() {
+            Ok(w) => w,
+            Err(_) => return Err(JsValue::from_str("WALLET_BUSY")),
+        };
+        wallet.node().black_start_bundle_merged_json(&held_json, &chain_json).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    #[wasm_bindgen]
     pub fn escape_export(&self) -> Result<String, JsValue> {
         let wallet = match self.inner.try_lock() {
             Ok(w) => w,
@@ -5448,6 +5471,15 @@ pub fn set_lsp_reserve_ppm(ppm: u32) -> u32 {
 pub fn set_coop_cpfp_auto(on: bool) -> bool {
     lij_core::node::COOP_CPFP_AUTO.store(on, std::sync::atomic::Ordering::Relaxed);
     on
+}
+
+/// v312 (S57, DP ruling (a)): the last inbound open refused because its channel type was anchors —
+/// {"at_ms": n, "funding_sats": n}; at_ms 0 = none since this page loaded.
+#[wasm_bindgen]
+pub fn anchors_refused_json() -> String {
+    format!("{{\"at_ms\":{},\"funding_sats\":{}}}",
+        lij_core::node::ANCHORS_REFUSED_AT_MS.load(std::sync::atomic::Ordering::Relaxed),
+        lij_core::node::ANCHORS_REFUSED_SATS.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 #[wasm_bindgen]

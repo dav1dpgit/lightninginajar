@@ -90,6 +90,24 @@ outpoints: a coin arriving or leaving is a fresh push. The Black start switch of
 channels with Sweep this coin (normal / high) and Sweep all, which broadcasts them one at a time,
 20 seconds apart, each watched to confirmation.
 
+### 2.2 Across copies (BS1.1 — engine v313, page v966, adapter 0.94.0; DP 2026-10-07 17:55)
+
+DP: "it's not just fewer channels, it is where anything is different." A push is never blind. Before every push the
+wallet reads the kits it can reach (every holder and relay at the first push of a page session; its own provider and
+two others after that) and the engine merges them with this copy's kit, entry by entry
+(docs/design/black-start/kit-merge-r1.md has the full table):
+
+- every channel entry carries `commitment_number` (BOLT 3, plain; an older entry without it is decoded with the
+  channel's factor by a copy that knows the channel);
+- a channel only a held kit has is **carried** unchanged (`carried`, `carried_since`, `carried_from_seq`) while its
+  funding output is unspent, or spent by that entry's own CLOSE with the delayed output unspent; unknown keeps it;
+- a channel this copy holds at an older commitment number keeps the held entry (`kept_newer`,
+  `this_copy_commitment_number`): a revoked CLOSE never enters the kit; the wallet tells its person;
+- silent-payment coins only a held kit has are carried while unspent;
+- `seq` = max(the wallet's clock, the highest held seq + 1);
+- no holder answering at all = no push; "not found" everywhere = push;
+- over the cap, carried silent-payment coins go first (oldest first); channels never.
+
 ## 3. Holders — the adapter API
 
 Every LIJOX adapter is a holder. Manifest / getinfo capability: `"kit_holder": { "v": 1, "max_bytes": 65536 }`.
@@ -114,6 +132,13 @@ because Nostr requires it. One key signs both.
 
 **GET** `GET /v1/kit?npub=<hex>` → `{ "ok": true, "seq", "at", "pubkey", "kit" }` or 404. Open read:
 the record is ciphertext; presence reveals only that an npub has used LIJOX.
+
+**Writers (adapter 0.94.0, BS1.1).** A PUT may carry `w` — 16 hex, the writing install, random, outside the signed
+envelope (absent = the legacy writer). Beside the newest kit the holder keeps `others`: the newest kit of each of the
+last two OTHER writers — including a validly signed kit refused as `STALE` when it comes from another writer. GET adds
+`"w"` and `"others": [{ "seq", "at", "w", "kit" }]`; its earlier fields are unchanged. One device pushing again and
+again can never erase another device's last kit. The holder still reads nothing; it learns that more than one device
+writes for the npub.
 
 ## 4. Which holders — the 20
 
@@ -146,13 +171,17 @@ unspent silent-payment coins (§2.1).
 `lightninginajar.xyz/recover` (the same file in the public repo; also the wallet's Offline room):
 1. Enter the 12 words → seed → root → K and the NIP-06 key, in the browser (WebCrypto + a small
    inlined secp256k1). Nothing leaves the page but signed requests and, at the end, transactions.
-2. Fetch the directory; ask every entry `GET /v1/kit?npub=`; query the relays for kind 30078,
-   author npub, `#d lijox-kit-v1`. Keep the highest `seq` that decrypts.
-3. **The LSP first.** Read `lsp` from the kit. Try its adapter (`/v1/getinfo`). If it answers, stop:
+2. Fetch the directory; ask every entry `GET /v1/kit?npub=` (with its `others`, BS1.1); query the relays for kind
+   30078, author npub, `#d lijox-kit-v1`. Every kit that decrypts is merged (BS1.1, page v966): per channel the higher
+   `commitment_number` (an entry without one keeps the newer kit's), coins united; a channel from another copy's kit is
+   marked.
+3. **The LSP first.** Read `lsp` from the kit — and, from v966, each channel's own `counterparty` in the directory. Try
+   each adapter. If one answers, stop:
    tell the user their LSP is alive — restore the wallet normally (the cloud copy) or reconnect and
    let the LSP close; broadcasting a kit against a living LSP invites the penalty. The user may
    override only after that warning, in writing.
-4. Otherwise show each channel: the close, the sweep, the delay, the m/84 destination; broadcast
+4. Otherwise show each channel (a channel whose funding output another transaction already spent reads "Already
+   closed" and offers no close — v966): the close, the sweep, the delay, the m/84 destination; broadcast
    THE CLOSE through the public Esplora quorum; after `to_self_delay` confirmations broadcast THE
    COLLECT (normal or high feerate, the user's pick); funds land at the shown address, visible to
    any BIP84 wallet on the words (gap-limit caveat as documented).

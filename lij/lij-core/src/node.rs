@@ -307,6 +307,18 @@ pub static LSP_FEE_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 /// max_sendable_sats — covers a fee-policy move between quote and dispatch.
 /// Default 10; dial down to Zero (exact) is honest when the policy is pinned.
 pub static FEE_MARGIN_SATS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(10);
+/// v312 (S57, DP 2026-10-07 17:55, ruling (a)): this wallet takes only channels its 12 words can recover — static remote
+/// key, no anchors. The last refused inbound open (unix ms, its funding sats), read by the page (anchors_refused_json)
+/// so a receive that fails on it says why, in plain sight.
+pub static ANCHORS_REFUSED_AT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static ANCHORS_REFUSED_SATS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// v312: a channel type the wallet's recovery promise covers — static remote key and no anchors of either kind (the
+/// m/84 pin needs a plain to_remote; an anchors to_remote is a P2WSH with a CSV the 12 words alone cannot spend).
+pub fn channel_type_words_recoverable(ct: &lightning::types::features::ChannelTypeFeatures) -> bool {
+    ct.supports_static_remote_key()
+        && !ct.supports_anchors_zero_fee_htlc_tx()
+        && !ct.supports_anchors_nonzero_fee_htlc_tx()
+}
 
 /// The policy in force right now: live-seen values, else the unseen defaults.
 pub fn lsp_fee_policy_now() -> (u64, u64) {
@@ -702,6 +714,22 @@ mod v311_bundle_tests {
             "a restore during an unconfirmed cooperative close needs the coop hold the closed-channel log carries");
         let mut seen = std::collections::HashSet::new();
         for k in super::BUNDLE_SINGLE_KEYS.iter() { assert!(seen.insert(*k), "key {k} listed twice"); }
+    }
+}
+
+#[cfg(test)]
+mod v312_anchors_tests {
+    use lightning::types::features::ChannelTypeFeatures;
+    #[test]
+    fn v312_only_static_remote_key_without_anchors_is_taken() {
+        assert!(super::channel_type_words_recoverable(&ChannelTypeFeatures::only_static_remote_key()),
+            "a static-remote-key channel pays the wallet's m/84 on a close: taken");
+        assert!(!super::channel_type_words_recoverable(&ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()),
+            "zero-fee-HTLC anchors (stock LND's zero-conf JIT): refused");
+        let mut nonzero = ChannelTypeFeatures::only_static_remote_key();
+        nonzero.set_anchors_nonzero_fee_htlc_tx_required();
+        assert!(!super::channel_type_words_recoverable(&nonzero), "the older anchors kind: refused");
+        assert!(!super::channel_type_words_recoverable(&ChannelTypeFeatures::empty()), "legacy (no static remote key): refused");
     }
 }
 
@@ -2281,7 +2309,24 @@ impl LijNode {
                         .map(|pk| pk == &counterparty_hex.to_lowercase())
                         .unwrap_or(false);
 
-                    if is_active_lsp && !self.accepting_channels.load(std::sync::atomic::Ordering::Relaxed) {
+                    if is_active_lsp && !channel_type_words_recoverable(&channel_type) {
+                        // v312 (S57, DP 2026-10-07 17:55, ruling (a)): LiJ takes only channels its 12 words can recover.
+                        // An anchors open (a stock-LND provider's zero-conf JIT) is refused; the payer sees a failed
+                        // payment and this wallet's page says why (anchors_refused_json).
+                        log::warn!(
+                            "[anchors] OpenChannelRequest from active LSP {}…: REFUSED — channel type {:?} is not static remote key without anchors; this wallet takes only channels its 12 words can recover (funding={} sat)",
+                            &counterparty_hex[..16], channel_type, funding_satoshis
+                        );
+                        ANCHORS_REFUSED_AT_MS.store(current_time_secs() * 1000, std::sync::atomic::Ordering::Relaxed);
+                        ANCHORS_REFUSED_SATS.store(funding_satoshis, std::sync::atomic::Ordering::Relaxed);
+                        if let Some(ref cm) = self.channel_manager {
+                            let _ = cm.force_close_broadcasting_latest_txn(
+                                &temporary_channel_id,
+                                &counterparty_node_id,
+                                "LiJ: this wallet takes only static-remote-key channels without anchors".to_string(),
+                            );
+                        }
+                    } else if is_active_lsp && !self.accepting_channels.load(std::sync::atomic::Ordering::Relaxed) {
                         // D-1: app is backgrounded/offline, so we can't reliably claim
                         // the JIT HTLC. Refuse the open rather than leave an empty
                         // channel; the sender just sees a normal payment failure.
@@ -6130,12 +6175,16 @@ impl LijNode {
     /// sealed (§2), the holder body (§3) and the relay event (§5). Read-only like escape_export.
     /// {"npub","pubkey","seq","channels": n,"bytes": envelope length,"put": <body>,"event": <event>}
     pub fn black_start_bundle_json(&self) -> LijResult<String> {
-        let k = crate::black_start::BlackStartKeys::from_root(&self.root_key)?;
+        let now_ms = current_time_secs() * 1000;
+        let kit = self.black_start_own_kit(now_ms)?;
+        self.black_start_seal(kit, now_ms, None)
+    }
+
+    /// v313: this copy's kit plaintext — the escape export plus made_at, seq (= now) and the LSP it was made under.
+    fn black_start_own_kit(&self, now_ms: u64) -> LijResult<serde_json::Value> {
         let kit_s = self.escape_export()?;
         let mut kit: serde_json::Value = serde_json::from_str(&kit_s)
             .map_err(|e| LijError::Key(format!("escape kit: {e}")))?;
-        let now_ms = current_time_secs() * 1000;
-        let channels = kit["channels"].as_array().map(|a| a.len()).unwrap_or(0);
         if let Some(obj) = kit.as_object_mut() {
             obj.insert("made_at".into(), serde_json::json!(now_ms));
             obj.insert("seq".into(), serde_json::json!(now_ms));
@@ -6144,14 +6193,102 @@ impl LijNode {
                 None => serde_json::Value::Null,
             });
         }
+        Ok(kit)
+    }
+
+    /// v313: seal a kit plaintext at its own seq — the envelope, the holder body, the relay event (as v275), plus the
+    /// merge report when the kit was merged.
+    fn black_start_seal(&self, kit: serde_json::Value, now_ms: u64, merge: Option<serde_json::Value>) -> LijResult<String> {
+        let k = crate::black_start::BlackStartKeys::from_root(&self.root_key)?;
+        let seq = kit.get("seq").and_then(|v| v.as_u64()).unwrap_or(now_ms);
+        let channels = kit["channels"].as_array().map(|a| a.len()).unwrap_or(0);
         let plain = serde_json::to_string(&kit).map_err(|e| LijError::Key(format!("escape kit: {e}")))?;
-        let envelope = k.seal(plain.as_bytes(), now_ms)?;
-        let put = k.put_body(&envelope, now_ms);
+        let envelope = k.seal(plain.as_bytes(), seq)?;
+        let put = k.put_body(&envelope, seq);
         let event = k.nostr_event(&envelope, current_time_secs())?;
         Ok(format!(
-            "{{\"npub\":\"{}\",\"pubkey\":\"{}\",\"seq\":{},\"channels\":{},\"bytes\":{},\"put\":{},\"event\":{}}}",
-            k.npub_hex(), k.pubkey_hex(), now_ms, channels, envelope.len(), put, event
+            "{{\"npub\":\"{}\",\"pubkey\":\"{}\",\"seq\":{},\"channels\":{},\"bytes\":{},\"put\":{},\"event\":{},\"merge\":{}}}",
+            k.npub_hex(), k.pubkey_hex(), seq, channels, envelope.len(), put, event,
+            merge.unwrap_or(serde_json::Value::Null)
         ))
+    }
+
+    /// v313: the held kits the page collected — [{"seq": n, "kit": <envelope object or string>}] — opened with this
+    /// wallet's kit key. A kit that does not open (another wallet's, damaged) is skipped and counted.
+    fn black_start_open_held(&self, held_json: &str) -> LijResult<(Vec<crate::kit_merge::HeldKit>, usize)> {
+        let k = crate::black_start::BlackStartKeys::from_root(&self.root_key)?;
+        let list: Vec<serde_json::Value> = serde_json::from_str(held_json)
+            .map_err(|e| LijError::Node(format!("held kits: {e}")))?;
+        let (mut out, mut failed) = (Vec::new(), 0usize);
+        let mut seen = std::collections::HashSet::new();
+        for h in list {
+            let env = match h.get("kit") {
+                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(v @ serde_json::Value::Object(_)) => v.to_string(),
+                _ => { failed += 1; continue; }
+            };
+            if !seen.insert(env.clone()) { continue; }   // the same kit from several holders: once
+            match k.open(&env).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) {
+                Some(plain) => {
+                    let seq = plain.get("seq").and_then(|v| v.as_u64())
+                        .or_else(|| h.get("seq").and_then(|v| v.as_u64())).unwrap_or(0);
+                    out.push(crate::kit_merge::HeldKit { seq, plain });
+                }
+                None => failed += 1,
+            }
+        }
+        Ok((out, failed))
+    }
+
+    /// v313 (S57, DP 17:55 "where anything is different … Go"): what the chain must be asked before a merge — the
+    /// funding and delayed outputs of channels only a held kit has, and the silent-payment coins only a held kit has.
+    /// {"opened": n, "failed": n, "checks": ["txid:vout", …]}
+    pub fn black_start_merge_plan_json(&self, held_json: &str) -> LijResult<String> {
+        let (held, failed) = self.black_start_open_held(held_json)?;
+        let own = self.black_start_own_kit(current_time_secs() * 1000)?;
+        let checks = crate::kit_merge::plan(&own, &held);
+        Ok(serde_json::json!({ "opened": held.len(), "failed": failed, "checks": checks }).to_string())
+    }
+
+    /// v313: the push, merged — this copy's kit merged with the held kits (kit_merge::merge) given the chain's
+    /// answers {"txid:vout": {"spent": bool, "by": txid|null}}, kept under the holder's cap (carried silent-payment
+    /// coins go first, oldest first; channels never), sealed at seq = max(now, held + 1). Same shape as
+    /// black_start_bundle_json plus "merge": the report (carried, kept_newer, dropped, trimmed, opened, failed).
+    pub fn black_start_bundle_merged_json(&self, held_json: &str, chain_json: &str) -> LijResult<String> {
+        let now_ms = current_time_secs() * 1000;
+        let (held, failed) = self.black_start_open_held(held_json)?;
+        let own = self.black_start_own_kit(now_ms)?;
+        let chain = crate::kit_merge::parse_chain(chain_json);
+        // the channels this copy knows: their factors decode an older kit's commitment numbers
+        let mut factors: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+        if let Some(cm) = self.chain_monitor.as_ref() {
+            for channel_id in cm.list_monitors() {
+                if let Ok(m) = cm.get_monitor(channel_id) {
+                    let f = m.get_funding_txo();
+                    factors.insert(format!("{}:{}", f.txid, f.index), m.lij_commitment_obscure_factor());
+                }
+            }
+        }
+        let number_of = |e: &serde_json::Value| -> Option<u64> {
+            if let Some(n) = e.get("commitment_number").and_then(|x| x.as_u64()) { return Some(n); }
+            let f = e.get("funding_txo").and_then(|x| x.as_str())?;
+            let factor = *factors.get(f)?;
+            let bytes = hex::decode(e.get("commitment_hex").and_then(|x| x.as_str())?).ok()?;
+            let tx: bitcoin::Transaction = bitcoin::consensus::deserialize(&bytes).ok()?;
+            crate::kit_merge::decode_commitment_number(&tx, factor)
+        };
+        let (mut kit, mut report) = crate::kit_merge::merge(&own, &held, &chain, &number_of, now_ms);
+        let trimmed = crate::kit_merge::trim_to_fit(&mut kit, 32_000);
+        if let Some(o) = report.as_object_mut() {
+            o.insert("trimmed_coins".into(), serde_json::json!(trimmed));
+            o.insert("failed".into(), serde_json::json!(failed));
+        }
+        if !report["kept_newer"].as_array().map(|a| a.is_empty()).unwrap_or(true) {
+            log::warn!("[BlackStart] merge: this copy holds an OLDER state than the kit for {} — the kit's newer entry kept", report["kept_newer"]);
+        }
+        log::info!("[BlackStart] merge: held {} (+{} unopened) · carried {} ch / {} coins · dropped {} · trimmed {} · seq {}",
+            held.len(), failed, report["carried_channels"], report["carried_coins"], report["dropped"], trimmed, report["seq"]);
+        self.black_start_seal(kit, now_ms, Some(report))
     }
 
     /// v211 — ESCAPE KIT export (read-only). For every retained channel
@@ -6242,8 +6379,13 @@ impl LijNode {
             };
             let (sweep_normal, sweep_high) = sweeps;
             let funding_txo = monitor.get_funding_txo();   // 0.2: list_monitors yields ids only
+            // v313 (S57, the kit across copies): the exported commitment's BOLT number, plain — a later merge orders
+            // this entry against another copy's without the channel's factor
+            let commitment_number = txs.get(0)
+                .and_then(|tx| crate::kit_merge::decode_commitment_number(tx, monitor.lij_commitment_obscure_factor()));
             channels.push(serde_json::json!({
                 "channel_id": channel_id.to_string(),
+                "commitment_number": commitment_number,
                 "open": open_txos.contains(&funding_txo),
                 "claimable_sats": claimable_sats,
                 "funding_txo": format!("{}:{}", funding_txo.txid, funding_txo.index),

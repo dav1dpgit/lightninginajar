@@ -2391,6 +2391,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		inner.funding.current_holder_commitment_tx.trust().txid()
 	}
 
+	/// LiJ v313 (Black start kit across copies, read-only): the factor that obscures this channel's commitment numbers
+	/// in its commitment transactions (BOLT 3). With it the wallet orders a kit entry made by another copy of itself
+	/// against its own state — a revoked CLOSE never replaces a newer one in the kit.
+	pub fn lij_commitment_obscure_factor(&self) -> u64 {
+		self.inner.lock().unwrap().commitment_transaction_number_obscure_factor
+	}
+
 	/// LiJ v223 (re-ported to 0.2.6): true when every balance is claimed AND the funding spend
 	/// was seen — the monitor is only waiting out the archive threshold. Read-only twin of
 	/// `is_fully_resolved` with no height latch and no threshold test; the spend walker uses it
