@@ -42,6 +42,12 @@ export class LijWalletHandle {
     background_tick(tick_count: bigint): void;
     backup(): Promise<any>;
     /**
+     * v319: take the number of this phone's own outstanding upload as the phone's (the cloud holds that copy; its OK
+     * was lost) — the note is read, its number committed (upward only), the note cleared. Returns the number taken,
+     * 0 when no note stands. Never takes a number from the page: only the one this phone itself sent.
+     */
+    backup_adopt_own(): bigint;
+    /**
      * v309 (S56): the cloud's number when it refused this phone's copy as older; 0 = no refusal. The page shows it
      * once and offers "Use the cloud copy" (adopt_cloud_backup at the next unlock) or "Replace the cloud copy with this
      * phone" (backup_replace_cloud).
@@ -142,6 +148,10 @@ export class LijWalletHandle {
      * v310 (S57, DP 2026-10-07 "Go with … 1"): the cloud copy's number and date only — {"found":true,"version":v,
      * "saved_at_ms":t} or {"found":false}; REJECTS when the service gave no answer (or has no /backup/meta). The page
      * compares the number with this phone's before the first connection to the provider; nothing is pulled or written.
+     * v319 (S57, DP 2026-10-08 14:40 "Go"): the answer adds "fingerprint" (the stored copy's, or null) and "own" —
+     * true when the cloud's copy is THIS PHONE'S OWN UPLOAD: its number and fingerprint are the ones this phone noted
+     * before an upload whose OK never arrived (the app put away mid-upload). The page then takes the number
+     * (backup_adopt_own) and connects with no warning; a copy this phone never sent reads own:false as before.
      */
     cloud_backup_meta(): Promise<any>;
     /**
@@ -1017,6 +1027,7 @@ export interface InitOutput {
     readonly lijwallethandle_adopt_cloud_backup: (a: number, b: number, c: number, d: number) => any;
     readonly lijwallethandle_background_tick: (a: number, b: bigint) => [number, number];
     readonly lijwallethandle_backup: (a: number) => any;
+    readonly lijwallethandle_backup_adopt_own: (a: number) => bigint;
     readonly lijwallethandle_backup_conflict: (a: number) => bigint;
     readonly lijwallethandle_backup_now: (a: number) => any;
     readonly lijwallethandle_backup_probe: (a: number, b: number, c: number, d: number) => any;
@@ -1171,8 +1182,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c_160: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c_161: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c_162: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

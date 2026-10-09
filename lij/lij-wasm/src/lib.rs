@@ -96,7 +96,9 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v318".to_string()  // v314–v318 (S57, DP 2026-10-07 21:36 "start building the wallet side now", 21:53 "Go on 1 & 2", 22:58 "Proceed with the scanner fix" + the kit sweeps, 23:10 the Mix mark): v314 lij_core::bip86 (BIP86 addresses, vectors); v315 lij_core::musig (the MuSig2 signer, musig2 0.4.1 vendored — not exported); v316 a BIP86 coin signs on the key path (held out of the automatic pick for DP's postmix rule); v317 THE WALK FINDS TAPROOT COINS AND THEIR SPENDS — both BIP86 branches in the net at a fifth of its width, tier2::tr_hits names a BIP86 script in a matched block's filter, a TrHint per (script, block), resolve_tr_spends re-reads the hinted block when the coin is met (a key-path witness names no key: before this a spent taproot coin read unspent after a words-only restore), the widen rule per branch; v318 the Black start kit's taproot leg (one pre-signed sweep per BIP86 coin to its own m/84 address; merged and trimmed with the silent-payment leg; the fingerprint counts them) and CoinMarks::mix_exits (DP: Mix exits on the main branch, marked; the marks ride the backup blob)
+    "phase11-v320".to_string()  // v320 (S57, DP 2026-10-08 22:53 "for Fixes we choose (a)… the note on the row should say self-claimed Push Key, and just show the transaction fee. (b)… put that in, too"): THE SELF-CLAIMED PUSH KEY IS PROVEN DURABLY. FOUND: a Push Key minted and claimed on the same wallet showed "Pushed · taken −1,003" and no incoming row — the lock and the delivery share the key's hash, and the page wrote a claimed payment's row only when no row of any kind carried the hash (two of DP's three 1,000-sat keys; the provider's journal shows both delivered over the existing channel, fee 0, taken, fee kept 3,000 msat — net −3 each; the third went to another wallet). The engine's part: push_in_json marks an accepted push "claimed" when its key has LEFT the preimage pool (push_accept puts it in; only the claim takes it out) — not only when this session saw PaymentClaimed — so the page can tell a self-claim on this phone, in a later session, or after a restore (the pool and the accepted list ride the blob). Test v320_an_accepted_push_whose_key_left_the_pool_reads_claimed (370 green). The page (v974) merges the two legs into one row: "Self-claimed Push Key", the delivery fee alone; and the claim sheet says when a key is the wallet's own and offers to cancel it instead (everything comes back, fee included).
+    // "phase11-v319".to_string()  // v319 (S57, DP 2026-10-08 14:40 "Agreed on the fix for the cloud copy fingerprint. Go"): THE PHONE KNOWS ITS OWN UPLOAD. FOUND (DP's phone, 14:33 — "Your cloud copy is newer than this phone: cloud no. 6142, this phone no. 6141"): the phone had uploaded 6142 itself, the cloud stored it, the app was put away before the OK arrived, so the number was never committed (v309 commits on the OK alone) and at the next open the cloud's 6142 read as another copy's. Now: before each upload the phone NOTES the number and the fingerprint (sha256 of the sealed bytes) of the copy it sends (storage::backup_inflight_note, KEY_BACKUP_INFLIGHT); the cloud keeps the fingerprint of the copy it stores (worker 0.10.0) and answers it with the number; cloud_backup_meta adds "fingerprint" and "own" (backup_meta_is_own: number AND fingerprint equal the note); backup_adopt_own() takes the noted number (never one from the page) and clears the note. The note is cleared when the cloud answers (accepted or refused as older); a lost answer keeps it. The worker also accepts a resend of the very same copy as an OK, so the retry after a lost OK while the app is open is no false conflict. Tests v319_the_fingerprint_is_the_sha256_of_the_sealed_bytes_as_the_worker_takes_it, v319_the_note_is_made_before_the_upload_and_read_back_whole, v319_the_clouds_copy_is_this_phones_own_only_when_number_and_fingerprint_both_match, v319_meta_reads_the_fingerprint_when_the_worker_answers_one
+    // "phase11-v318".to_string()  // v314–v318 (S57, DP 2026-10-07 21:36 "start building the wallet side now", 21:53 "Go on 1 & 2", 22:58 "Proceed with the scanner fix" + the kit sweeps, 23:10 the Mix mark): v314 lij_core::bip86 (BIP86 addresses, vectors); v315 lij_core::musig (the MuSig2 signer, musig2 0.4.1 vendored — not exported); v316 a BIP86 coin signs on the key path (held out of the automatic pick for DP's postmix rule); v317 THE WALK FINDS TAPROOT COINS AND THEIR SPENDS — both BIP86 branches in the net at a fifth of its width, tier2::tr_hits names a BIP86 script in a matched block's filter, a TrHint per (script, block), resolve_tr_spends re-reads the hinted block when the coin is met (a key-path witness names no key: before this a spent taproot coin read unspent after a words-only restore), the widen rule per branch; v318 the Black start kit's taproot leg (one pre-signed sweep per BIP86 coin to its own m/84 address; merged and trimmed with the silent-payment leg; the fingerprint counts them) and CoinMarks::mix_exits (DP: Mix exits on the main branch, marked; the marks ride the backup blob)
     // "phase11-v313".to_string()  // v313 (S57, DP 2026-10-07 17:55 on the recovery recheck item 1: "it's not just fewer channels, it is where anything is different. Let's not wear blinders. Write it well and thoughtfully — Go"): THE BLACK START KIT ACROSS COPIES — kit_merge (docs/design/black-start/kit-merge-r1.md): black_start_merge_plan_json / black_start_bundle_merged_json open the held kits with the kit key and merge them with this copy's kit entry by entry (carry a channel only a held kit has while its funding or delayed output is unspent; keep a held entry whose commitment number is higher than this copy's; unite silent-payment coins while unspent; seq = max(now, held + 1)); every kit entry carries its commitment_number; the patched LDK reader lij_commitment_obscure_factor
     // "phase11-v312".to_string()  // v312 (S57, DP 2026-10-07 17:55, ruling (a): "If a new LSP arrives to the marketplace and that LSP requires ANCHORS, it knows upfront, the user is aware, and JIT channels fail in plain sight"): the wallet refuses an inbound open whose channel type is not static remote key without anchors (node::channel_type_words_recoverable); the last refusal is readable (anchors_refused_json) so the page says why
     // "phase11-v311".to_string()  // v311 (S57, DP 2026-10-07 16:03 "Agreed", the recovery recheck item 4): the closed-channel log rides every backup (cloud copy and device file) — node::BUNDLE_SINGLE_KEYS gains closed_channel_log::KEY_CLOSED_CHANNELS. A restore while a cooperative close was still unconfirmed lost the coop hold, so LDK could broadcast its commitment over the cooperative close (the 2026-09-03 incident); the closed history and the saved cooperative-close transaction were lost too. Older copies without the key still load. Test v311_the_closed_channel_log_rides_every_backup.
@@ -218,6 +220,14 @@ fn note_push_refusal(err: &str) -> bool {
     match lij_core::storage::parse_stale_refusal(err) {
         Some(n) => { BACKUP_CONFLICT.store(n, std::sync::atomic::Ordering::Relaxed); true }
         None => false,
+    }
+}
+/// v319 (S57, DP 2026-10-08 14:40 "Go"): before a copy goes up, its number and fingerprint are noted on the phone — if
+/// the OK never comes back (the app put away mid-upload), the next open can tell the cloud's copy is this phone's own.
+fn note_inflight(blob: &lij_core::storage::StateBlob) {
+    let fp = lij_core::storage::backup_fingerprint(blob);
+    if let Err(e) = lij_core::storage::backup_inflight_note(&LocalStorage, blob.version, &fp) {
+        log::warn!("[v319] in-flight note not written: {e}");
     }
 }
 /// v302 (S54): the last receive-watch check's report (watch_report) — kept outside the wallet lock.
@@ -745,12 +755,14 @@ impl LijWalletHandle {
                 None => return Ok(JsValue::from_str("{\"ok\":true,\"pushed\":0}")),
             };
             // Network push happens with NO wallet lock held.
+            note_inflight(&blob);   // v319: the number and fingerprint of the copy on its way, before it goes
             let mut ok = 0u32;
             let mut last_err: Option<String> = None;
+            let mut refused = false;
             for sink in &sinks {
                 match sink.push(&blob, &*signer).await {
                     Ok(()) => ok += 1,
-                    Err(e) => { let s = e.to_string(); note_push_refusal(&s); last_err = Some(s); }
+                    Err(e) => { let s = e.to_string(); if note_push_refusal(&s) { refused = true; } last_err = Some(s); }
                 }
             }
             if ok > 0 {
@@ -758,6 +770,7 @@ impl LijWalletHandle {
                 let _ = lij_core::storage::backup_version_commit(&LocalStorage, blob.version);
                 BACKUP_CONFLICT.store(0, std::sync::atomic::Ordering::Relaxed);
             }
+            if ok > 0 || refused { let _ = lij_core::storage::backup_inflight_clear(&LocalStorage); }   // v319: the cloud answered
             if ok == 0 {
                 if let Some(e) = last_err {
                     return Err(JsValue::from_str(&format!("backup: all sinks failed: {e}")));
@@ -812,6 +825,10 @@ impl LijWalletHandle {
     /// v310 (S57, DP 2026-10-07 "Go with … 1"): the cloud copy's number and date only — {"found":true,"version":v,
     /// "saved_at_ms":t} or {"found":false}; REJECTS when the service gave no answer (or has no /backup/meta). The page
     /// compares the number with this phone's before the first connection to the provider; nothing is pulled or written.
+    /// v319 (S57, DP 2026-10-08 14:40 "Go"): the answer adds "fingerprint" (the stored copy's, or null) and "own" —
+    /// true when the cloud's copy is THIS PHONE'S OWN UPLOAD: its number and fingerprint are the ones this phone noted
+    /// before an upload whose OK never arrived (the app put away mid-upload). The page then takes the number
+    /// (backup_adopt_own) and connects with no warning; a copy this phone never sent reads own:false as before.
     #[wasm_bindgen]
     pub fn cloud_backup_meta(&self) -> js_sys::Promise {
         let inner = self.inner.clone();
@@ -826,11 +843,34 @@ impl LijWalletHandle {
                 .await
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
             let json = match r {
-                Some((version, saved_at_ms)) => format!("{{\"found\":true,\"version\":{version},\"saved_at_ms\":{saved_at_ms}}}"),
+                Some(m) => {
+                    let note = lij_core::storage::backup_inflight(&LocalStorage).unwrap_or(None);
+                    let own = lij_core::storage::backup_meta_is_own(&m, note.as_ref());
+                    let fp = match &m.fingerprint { Some(f) => format!("\"{f}\""), None => "null".to_string() };
+                    if own { log::info!("[v319] the cloud copy no. {} is this phone's own upload (its OK never arrived)", m.version); }
+                    format!("{{\"found\":true,\"version\":{},\"saved_at_ms\":{},\"fingerprint\":{fp},\"own\":{own}}}", m.version, m.saved_at_ms)
+                }
                 None => "{\"found\":false}".to_string(),
             };
             Ok(JsValue::from_str(&json))
         })
+    }
+
+    /// v319: take the number of this phone's own outstanding upload as the phone's (the cloud holds that copy; its OK
+    /// was lost) — the note is read, its number committed (upward only), the note cleared. Returns the number taken,
+    /// 0 when no note stands. Never takes a number from the page: only the one this phone itself sent.
+    #[wasm_bindgen]
+    pub fn backup_adopt_own(&self) -> u64 {
+        match lij_core::storage::backup_inflight(&LocalStorage) {
+            Ok(Some((version, _fp))) => {
+                let _ = lij_core::storage::backup_version_commit(&LocalStorage, version);
+                let _ = lij_core::storage::backup_inflight_clear(&LocalStorage);
+                BACKUP_CONFLICT.store(0, std::sync::atomic::Ordering::Relaxed);
+                log::info!("[v319] took no. {version} — this phone's own upload");
+                version
+            }
+            _ => 0,
+        }
     }
 
     /// Auto-backup tick: if channel state changed since the last push, snapshot
@@ -902,6 +942,7 @@ impl LijWalletHandle {
             // Push with NO wallet lock held. On failure re-mark dirty to retry
             // next tick; on success leave it as cleared at snapshot (a concurrent
             // state change during the push will already have re-dirtied it).
+            note_inflight(&blob);   // v319: the number and fingerprint of the copy on its way, before it goes
             let mut ok = 0u32;
             let mut refused = false;
             for sink in &sinks {
@@ -918,6 +959,7 @@ impl LijWalletHandle {
                 let _ = lij_core::storage::backup_version_commit(&LocalStorage, blob.version);   // v309: accepted — the number is the phone's now
                 BACKUP_CONFLICT.store(0, std::sync::atomic::Ordering::Relaxed);
             }
+            if ok > 0 || refused { let _ = lij_core::storage::backup_inflight_clear(&LocalStorage); }   // v319: the cloud answered; a lost answer keeps the note
             let conflict = if refused { BACKUP_CONFLICT.load(std::sync::atomic::Ordering::Relaxed) } else { 0 };
             Ok(JsValue::from_str(&format!("{{\"ok\":true,\"pushed\":{ok},\"conflict\":{conflict}}}")))
         })

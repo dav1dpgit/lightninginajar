@@ -87,17 +87,82 @@ pub fn backup_version_commit(storage: &dyn LijStorage, version: u64) -> LijResul
     Ok(())
 }
 
-/// v310: the worker's /backup/meta answer — {"found":true,"version":v,"saved_at_ms":t} → Some((v, t)); {"found":false}
-/// → None; anything else is not an answer (an error, so the caller starts as it always has).
-pub fn parse_backup_meta(text: &str) -> LijResult<Option<(u64, u64)>> {
+// ── v319 (S57, DP 2026-10-08 14:40 "Agreed on the fix for the cloud copy fingerprint. Go"): THE PHONE KNOWS ITS OWN UPLOAD ──
+// FOUND (DP's phone, 14:33): "Your cloud copy is newer than this phone — cloud no. 6142, this phone no. 6141". The phone
+// had uploaded 6142 itself; the cloud stored it; the app was put away before the OK arrived, so the number was never
+// committed (v309 commits only on the OK). At the next open the cloud's 6142 read as another copy's. Now, before each
+// upload, the phone NOTES the number and a fingerprint (sha256 of the sealed bytes) of the copy it sends; the cloud
+// keeps the fingerprint of the copy it stores (worker 0.10.0) and answers it with the number; a cloud copy carrying
+// this phone's own note is this phone's upload — the number is taken, no warning. Only a copy this phone never sent
+// raises it. (The worker also accepts a resend of the very same copy as an OK, so the retry after a lost OK while
+// the app is open is not a false conflict either.)
+
+/// The fingerprint of a copy — sha256 of its sealed bytes, hex (what the worker computes over the same bytes).
+pub fn backup_fingerprint(blob: &StateBlob) -> String {
+    use bitcoin::hashes::{sha256, Hash};
+    sha256::Hash::hash(&blob.encrypted_data).to_string()
+}
+
+/// The note made before an upload: the number and the fingerprint of the copy on its way. 8 bytes BE + 32 bytes.
+pub fn backup_inflight_note(storage: &dyn LijStorage, version: u64, fingerprint_hex: &str) -> LijResult<()> {
+    let fp = hex::decode(fingerprint_hex).map_err(|e| LijError::Backup(format!("fingerprint hex: {e}")))?;
+    if fp.len() != 32 { return Err(LijError::Backup("fingerprint: not 32 bytes".into())); }
+    let mut v = Vec::with_capacity(40);
+    v.extend_from_slice(&version.to_be_bytes());
+    v.extend_from_slice(&fp);
+    storage.set(KEY_BACKUP_INFLIGHT, &v)
+}
+
+/// The note, if one stands: (number, fingerprint hex). None when no upload is outstanding or the note is malformed.
+pub fn backup_inflight(storage: &dyn LijStorage) -> LijResult<Option<(u64, String)>> {
+    Ok(match storage.get(KEY_BACKUP_INFLIGHT)? {
+        Some(b) if b.len() == 40 => {
+            let mut a = [0u8; 8];
+            a.copy_from_slice(&b[..8]);
+            Some((u64::from_be_bytes(a), hex::encode(&b[8..])))
+        }
+        _ => None,
+    })
+}
+
+/// The note is cleared once the cloud answered (accepted, or refused as older — the copy is not on its way any more).
+pub fn backup_inflight_clear(storage: &dyn LijStorage) -> LijResult<()> {
+    storage.delete(KEY_BACKUP_INFLIGHT)
+}
+
+/// What /backup/meta says the cloud holds: the number, the date, and (worker 0.10.0) the stored copy's fingerprint —
+/// None for a copy stored by an older worker, or by a worker without the field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupMeta {
+    pub version: u64,
+    pub saved_at_ms: u64,
+    pub fingerprint: Option<String>,
+}
+
+/// Is the cloud's copy this phone's own upload? — its number AND fingerprint are the ones this phone noted before
+/// sending. A cloud copy without a fingerprint, or a phone without a note, is never "own".
+pub fn backup_meta_is_own(meta: &BackupMeta, inflight: Option<&(u64, String)>) -> bool {
+    match (inflight, meta.fingerprint.as_deref()) {
+        (Some((v, fp)), Some(cfp)) => *v == meta.version && fp == cfp,
+        _ => false,
+    }
+}
+
+/// v310: the worker's /backup/meta answer — {"found":true,"version":v,"saved_at_ms":t,"fingerprint":h|null} →
+/// Some(BackupMeta); {"found":false} → None; anything else is not an answer (an error, so the caller starts as it
+/// always has). v319: the fingerprint (64 hex) when the worker answers one.
+pub fn parse_backup_meta(text: &str) -> LijResult<Option<BackupMeta>> {
     let v: serde_json::Value = serde_json::from_str(text)
         .map_err(|e| LijError::Backup(format!("meta parse: {e}")))?;
     match v.get("found").and_then(|f| f.as_bool()) {
         Some(true) => {
             let version = v.get("version").and_then(|x| x.as_u64())
                 .ok_or_else(|| LijError::Backup("meta: no version".into()))?;
-            let saved = v.get("saved_at_ms").and_then(|x| x.as_u64()).unwrap_or(0);
-            Ok(Some((version, saved)))
+            let saved_at_ms = v.get("saved_at_ms").and_then(|x| x.as_u64()).unwrap_or(0);
+            let fingerprint = v.get("fingerprint").and_then(|x| x.as_str())
+                .filter(|s| s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit()))
+                .map(|s| s.to_ascii_lowercase());
+            Ok(Some(BackupMeta { version, saved_at_ms, fingerprint }))
         }
         Some(false) => Ok(None),
         None => Err(LijError::Backup(format!("meta: not an answer: {}", text.chars().take(80).collect::<String>()))),
@@ -206,6 +271,8 @@ pub const KEY_NETWORK_GRAPH: &str = "lij_network_graph";
 pub const KEY_SCORER: &str = "lij_scorer";
 pub const KEY_LSP_CONFIG: &str = "lij_lsp_config";
 pub const KEY_BACKUP_VERSION: &str = "lij_backup_version";
+/// v319: the number and fingerprint of the copy on its way to the cloud (storage::backup_inflight_note).
+pub const KEY_BACKUP_INFLIGHT: &str = "lij_backup_inflight";
 
 // ── WASM localStorage implementation ────────────────────────────────────────
 
@@ -407,13 +474,14 @@ impl KvBackupClient {
 
     /// v310 (S57, DP 2026-10-07 "Go with … 1"): the cloud copy's NUMBER AND DATE only (worker 0.9.0 /backup/meta) —
     /// the wallet compares them with its own before it connects to its provider, without pulling the whole sealed
-    /// copy (~1.4 MB) at every unlock. Same signed challenge as pull ("backup-read"). Ok(Some((version, saved_at_ms)))
-    /// / Ok(None) = the service holds no copy / Err = no answer, or a worker without the route (its 404).
+    /// copy (~1.4 MB) at every unlock. Same signed challenge as pull ("backup-read"). Ok(Some(BackupMeta)) (v319: with
+    /// the stored copy's fingerprint when the worker answers one) / Ok(None) = the service holds no copy / Err = no
+    /// answer, or a worker without the route (its 404).
     pub async fn meta(
         &self,
         pubkey_hex: &str,
         signer: &dyn BackupSigner,
-    ) -> LijResult<Option<(u64, u64)>> {
+    ) -> LijResult<Option<BackupMeta>> {
         let nonce = self.get_challenge(pubkey_hex).await?;
         let digest = backup_digest(BACKUP_ACTION_READ, &nonce, pubkey_hex)?;
         let signature = signer.sign_backup(&digest)?;
@@ -770,8 +838,8 @@ mod v310_backup_meta_tests {
 
     #[test]
     fn v310_meta_reads_the_number_and_the_date() {
-        assert_eq!(parse_backup_meta(r#"{"found":true,"version":7,"saved_at_ms":1791307311302}"#).unwrap(), Some((7, 1791307311302)));
-        assert_eq!(parse_backup_meta(r#"{"found":true,"version":3,"saved_at_ms":0}"#).unwrap(), Some((3, 0)), "a copy saved before v309 has no date");
+        assert_eq!(parse_backup_meta(r#"{"found":true,"version":7,"saved_at_ms":1791307311302}"#).unwrap(), Some(BackupMeta { version: 7, saved_at_ms: 1791307311302, fingerprint: None }));
+        assert_eq!(parse_backup_meta(r#"{"found":true,"version":3,"saved_at_ms":0}"#).unwrap(), Some(BackupMeta { version: 3, saved_at_ms: 0, fingerprint: None }), "a copy saved before v309 has no date");
     }
 
     #[test]
@@ -780,6 +848,75 @@ mod v310_backup_meta_tests {
         assert!(parse_backup_meta(r#"{"error":"Not found"}"#).is_err(), "a worker without the route is not 'no copy'");
         assert!(parse_backup_meta("<html>").is_err());
         assert!(parse_backup_meta(r#"{"found":true}"#).is_err(), "found without a number is not an answer");
+    }
+}
+
+#[cfg(test)]
+mod v319_own_upload_tests {
+    use super::*;
+    use native_storage::MemoryStorage;
+
+    fn blob(seed: u8, version: u64) -> StateBlob {
+        StateBlob { version, encrypted_data: (0..5000u32).map(|i| (seed as u32 * 31 + i * 7) as u8).collect(), nonce: vec![], pubkey_hex: "02ab".into(), saved_at_ms: 5 }
+    }
+
+    #[test]
+    fn v319_the_fingerprint_is_the_sha256_of_the_sealed_bytes_as_the_worker_takes_it() {
+        let b = blob(1, 10);
+        let fp = backup_fingerprint(&b);
+        assert_eq!(fp.len(), 64);
+        assert!(fp.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()), "lowercase hex, as the worker writes it: {fp}");
+        // the same bytes the worker's test hashes (test-backup-meta.mjs b8: bytes(1, 5000) → (1*31 + i*7) & 255)
+        use sha2::Digest;
+        assert_eq!(fp, hex::encode(sha2::Sha256::digest(&b.encrypted_data)), "plain sha256 over encrypted_data, nothing else");
+        assert_ne!(fp, backup_fingerprint(&blob(2, 10)), "other bytes, other fingerprint");
+        let mut same = blob(1, 11); same.saved_at_ms = 99;
+        assert_eq!(fp, backup_fingerprint(&same), "the number and the date are outside the fingerprint — the bytes alone");
+    }
+
+    #[test]
+    fn v319_the_note_is_made_before_the_upload_and_read_back_whole() {
+        let s = MemoryStorage::new();
+        assert_eq!(backup_inflight(&s).unwrap(), None, "no upload outstanding");
+        let b = blob(1, 6142);
+        let fp = backup_fingerprint(&b);
+        backup_inflight_note(&s, 6142, &fp).unwrap();
+        assert_eq!(backup_inflight(&s).unwrap(), Some((6142, fp.clone())), "the number and the fingerprint, as noted");
+        assert_eq!(backup_version_stored(&s).unwrap(), 0, "the note commits nothing — the number stays the phone's old one until the cloud answers");
+        backup_inflight_clear(&s).unwrap();
+        assert_eq!(backup_inflight(&s).unwrap(), None, "cleared once the cloud answered");
+        assert!(backup_inflight_note(&s, 1, "abcd").is_err(), "a short fingerprint is refused");
+        s.set(KEY_BACKUP_INFLIGHT, &[1u8; 7]).unwrap();
+        assert_eq!(backup_inflight(&s).unwrap(), None, "a malformed note is no note");
+    }
+
+    #[test]
+    fn v319_the_clouds_copy_is_this_phones_own_only_when_number_and_fingerprint_both_match() {
+        let b = blob(1, 6142);
+        let fp = backup_fingerprint(&b);
+        let note = (6142u64, fp.clone());
+        let own = BackupMeta { version: 6142, saved_at_ms: 1, fingerprint: Some(fp.clone()) };
+        assert!(backup_meta_is_own(&own, Some(&note)), "DP's case: the phone uploaded 6142, the app was put away before the OK — the cloud's 6142 is this phone's");
+        let other_bytes = BackupMeta { version: 6142, saved_at_ms: 1, fingerprint: Some(backup_fingerprint(&blob(2, 6142))) };
+        assert!(!backup_meta_is_own(&other_bytes, Some(&note)), "the same number from another copy: not own — the warning stands");
+        let other_number = BackupMeta { version: 6143, saved_at_ms: 1, fingerprint: Some(fp.clone()) };
+        assert!(!backup_meta_is_own(&other_number, Some(&note)), "another number: not own");
+        let old_worker = BackupMeta { version: 6142, saved_at_ms: 1, fingerprint: None };
+        assert!(!backup_meta_is_own(&old_worker, Some(&note)), "a cloud copy without a fingerprint (stored by worker 0.9.0): never own");
+        assert!(!backup_meta_is_own(&own, None), "a phone without a note: never own");
+    }
+
+    #[test]
+    fn v319_meta_reads_the_fingerprint_when_the_worker_answers_one() {
+        let fp = "ab".repeat(32);
+        let m = parse_backup_meta(&format!(r#"{{"found":true,"version":6142,"saved_at_ms":1791307311302,"fingerprint":"{fp}"}}"#)).unwrap().unwrap();
+        assert_eq!(m, BackupMeta { version: 6142, saved_at_ms: 1791307311302, fingerprint: Some(fp.clone()) });
+        let m = parse_backup_meta(r#"{"found":true,"version":12,"saved_at_ms":5,"fingerprint":null}"#).unwrap().unwrap();
+        assert_eq!(m.fingerprint, None, "worker 0.10.0 answers null for a copy stored before it");
+        let m = parse_backup_meta(r#"{"found":true,"version":12,"saved_at_ms":5,"fingerprint":"zz"}"#).unwrap().unwrap();
+        assert_eq!(m.fingerprint, None, "a malformed fingerprint reads as none (never a match)");
+        let m = parse_backup_meta(&format!(r#"{{"found":true,"version":1,"saved_at_ms":5,"fingerprint":"{}"}}"#, "AB".repeat(32))).unwrap().unwrap();
+        assert_eq!(m.fingerprint, Some("ab".repeat(32)), "read lowercase, so it compares with the phone's");
     }
 }
 

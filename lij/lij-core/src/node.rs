@@ -4341,12 +4341,20 @@ impl LijNode {
     }
 
     /// Every push this wallet accepted, newest first; `claimed` once the delivery was claimed.
+    /// v320 (S57, DP 2026-10-08 22:53 — the self-claimed Push Key): the claim is proven DURABLY by the preimage
+    /// pool, not only by this session's PaymentClaimed. push_accept puts the key into the LNURLp pool under its
+    /// hash; the claim (and nothing else) takes it out. So an accepted push whose hash is no longer in a readable
+    /// pool was claimed by this wallet — on this phone, in an earlier session, or before a restore (the pool and
+    /// the accepted list both ride the backup blob). An unreadable pool proves nothing; the status stands.
     pub fn push_in_json(&self) -> String {
         let mut inn = self.push_load_in();
         let claimed = self.claimed_payments.lock().unwrap();
+        let pool = self.lnurlp_load_pool_checked();
         let mut changed = false;
         for (h, rec) in inn.iter_mut() {
-            if rec.status != "claimed" && claimed.contains_key(h) { rec.status = "claimed".into(); rec.updated = current_time_secs(); changed = true; }
+            let by_event = claimed.contains_key(h);
+            let by_pool = rec.status == "accepted" && pool.as_ref().map(|p| !p.contains_key(h)).unwrap_or(false);
+            if rec.status != "claimed" && (by_event || by_pool) { rec.status = "claimed".into(); rec.updated = current_time_secs(); changed = true; }
         }
         drop(claimed);
         if changed { self.push_save_in(&inn); }
@@ -7799,6 +7807,34 @@ mod tests {
             ),
             Ok(_) => panic!("monitors-without-CM should error"),
         }
+    }
+
+    /// v320: a self-claimed Push Key is proven by the pool, durably — the key goes in at accept, out at the claim.
+    #[tokio::test]
+    async fn v320_an_accepted_push_whose_key_left_the_pool_reads_claimed() {
+        let (root_key, _m) = RootKey::generate(Network::Regtest).unwrap();
+        let storage: Arc<dyn LijStorage> = Arc::new(MemoryStorage::new());
+        let node = LijNode::new(root_key, test_config(), storage.clone()).await.unwrap();
+        let now = current_time_secs();
+        let pre = [7u8; 32];
+        let hash_hex = hex::encode(crate::push::hash_of(&pre));
+        let lsp = "02".to_string() + &"ab".repeat(32);
+        let frag = crate::push::build_fragment(1_000, now + 3600, &lsp, &pre);
+        let acc: serde_json::Value = serde_json::from_str(&node.push_accept(&frag).unwrap()).unwrap();
+        assert_eq!(acc["hash"].as_str().unwrap(), hash_hex);
+        let pool = node.lnurlp_load_pool();
+        assert_eq!(pool.get(&hash_hex).map(String::as_str), Some(hex::encode(pre).as_str()), "accept puts the key into the pool under its hash");
+        let v: Vec<serde_json::Value> = serde_json::from_str(&node.push_in_json()).unwrap();
+        assert_eq!(v[0]["status"].as_str().unwrap(), "accepted", "the key still in the pool: not claimed");
+        let mut pool = node.lnurlp_load_pool();
+        pool.remove(&hash_hex);   // what the claim does (PaymentClaimable: look up, claim, burn)
+        node.lnurlp_save_pool(&pool);
+        let v: Vec<serde_json::Value> = serde_json::from_str(&node.push_in_json()).unwrap();
+        assert_eq!(v[0]["status"].as_str().unwrap(), "claimed", "the key gone from the pool: claimed by this wallet");
+        let again: Vec<serde_json::Value> = serde_json::from_str(&node.push_in_json()).unwrap();
+        assert_eq!(again[0]["status"].as_str().unwrap(), "claimed", "and it stays claimed (persisted)");
+        let inn = node.push_load_in();
+        assert_eq!(inn.get(&hash_hex).unwrap().status, "claimed", "written to storage, so it rides the backup");
     }
 
     #[tokio::test]

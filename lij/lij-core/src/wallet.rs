@@ -609,11 +609,12 @@ impl LijWallet {
     }
 
     /// v310: the cloud copy's number and date only (worker 0.9.0 /backup/meta), read with the running wallet's own key;
-    /// nothing written, nothing decrypted. Ok(Some((version, saved_at_ms))) / Ok(None) = no copy / Err = no answer.
+    /// nothing written, nothing decrypted. Ok(Some(BackupMeta)) / Ok(None) = no copy / Err = no answer. v319: the meta
+    /// carries the stored copy's fingerprint when the worker (0.10.0) answers one.
     pub async fn cloud_backup_meta(
         backup_client: &KvBackupClient,
         signer: &crate::key::RootKey,
-    ) -> LijResult<Option<(u64, u64)>> {
+    ) -> LijResult<Option<crate::storage::BackupMeta>> {
         let portable_pubkey = signer.portable_pubkey_hex()?;
         backup_client.meta(&portable_pubkey, signer).await
     }

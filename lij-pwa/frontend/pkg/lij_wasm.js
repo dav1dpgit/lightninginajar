@@ -98,6 +98,16 @@ export class LijWalletHandle {
         return ret;
     }
     /**
+     * v319: take the number of this phone's own outstanding upload as the phone's (the cloud holds that copy; its OK
+     * was lost) — the note is read, its number committed (upward only), the note cleared. Returns the number taken,
+     * 0 when no note stands. Never takes a number from the page: only the one this phone itself sent.
+     * @returns {bigint}
+     */
+    backup_adopt_own() {
+        const ret = wasm.lijwallethandle_backup_adopt_own(this.__wbg_ptr);
+        return BigInt.asUintN(64, ret);
+    }
+    /**
      * v309 (S56): the cloud's number when it refused this phone's copy as older; 0 = no refusal. The page shows it
      * once and offers "Use the cloud copy" (adopt_cloud_backup at the next unlock) or "Replace the cloud copy with this
      * phone" (backup_replace_cloud).
@@ -415,6 +425,10 @@ export class LijWalletHandle {
      * v310 (S57, DP 2026-10-07 "Go with … 1"): the cloud copy's number and date only — {"found":true,"version":v,
      * "saved_at_ms":t} or {"found":false}; REJECTS when the service gave no answer (or has no /backup/meta). The page
      * compares the number with this phone's before the first connection to the provider; nothing is pulled or written.
+     * v319 (S57, DP 2026-10-08 14:40 "Go"): the answer adds "fingerprint" (the stored copy's, or null) and "own" —
+     * true when the cloud's copy is THIS PHONE'S OWN UPLOAD: its number and fingerprint are the ones this phone noted
+     * before an upload whose OK never arrived (the app put away mid-upload). The page then takes the number
+     * (backup_adopt_own) and connects with no warning; a copy this phone never sent reads own:false as before.
      * @returns {Promise<any>}
      */
     cloud_backup_meta() {
@@ -3534,12 +3548,12 @@ function __wbg_get_imports() {
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("ErrorEvent")], shim_idx: 8, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c_160);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c_161);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 8, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c_161);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c_162);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
@@ -3586,12 +3600,12 @@ function wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c_160(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c_160(arg0, arg1, arg2);
-}
-
 function wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c_161(arg0, arg1, arg2) {
     wasm.wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c_161(arg0, arg1, arg2);
+}
+
+function wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c_162(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c_162(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed(arg0, arg1, arg2) {
