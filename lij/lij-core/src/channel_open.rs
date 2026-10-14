@@ -91,8 +91,14 @@ pub struct FundingTx {
 /// died later in the event pass for lack of funds (a phantom "opening").
 /// v281 (S50, coin control): the user's freezes — read from the same encrypted store the
 /// view lives in; a frozen coin is never a candidate for an open (nor for its Max).
+/// v323 (S58, Mix step 7 — v0.10 §8 rule 4): and the coins a Mix pool holds — no channel open may use one.
 fn frozen_set(storage: &dyn LijStorage) -> std::collections::HashSet<(String, u32)> {
-    tier2_wallet::load_marks(storage).map(|m| m.frozen_set()).unwrap_or_default()
+    tier2_wallet::load_marks(storage).map(|m| m.held_set()).unwrap_or_default()
+}
+
+/// v323: the Mix's holds alone (the refusals name them apart from a freeze).
+fn mix_locked_set(storage: &dyn LijStorage) -> std::collections::HashSet<(String, u32)> {
+    tier2_wallet::load_marks(storage).map(|m| m.mix_locked_set()).unwrap_or_default()
 }
 
 fn spendable_utxos<'a>(
@@ -152,7 +158,7 @@ pub fn max_channel_value_with(storage: &dyn LijStorage, fee_rate_sat_per_kw: u32
         spendable_utxos(storage, &view).into_iter().cloned().collect();
     utxos.extend(unconfirmed_change_candidates(storage, &view));
     if let Some(p) = pins {
-        utxos = pick_pinned(&utxos, &frozen_set(storage), p)?;
+        utxos = pick_pinned(&utxos, &frozen_set(storage), &mix_locked_set(storage), p)?;
     }
     if utxos.is_empty() {
         return Ok(0);
@@ -228,6 +234,7 @@ pub fn take_pins(nonce: u32) -> Option<Vec<(String, u32)>> {
 fn pick_pinned(
     candidates: &[tier2_wallet::OnchainUtxo],
     frozen: &std::collections::HashSet<(String, u32)>,
+    locked: &std::collections::HashSet<(String, u32)>,
     pins: &[(String, u32)],
 ) -> LijResult<Vec<tier2_wallet::OnchainUtxo>> {
     if pins.is_empty() {
@@ -239,7 +246,7 @@ fn pick_pinned(
         let key = (txid.to_ascii_lowercase(), *vout);
         if !seen.insert(key.clone()) { continue; }
         if frozen.contains(&key) {
-            return Err(LijError::Node(format!("a chosen coin is frozen ({}…:{vout}) — unfreeze it first", &txid[..8.min(txid.len())])));
+            return Err(LijError::Node(tier2_wallet::held_refusal(txid, *vout, locked)));   // v323: a freeze or the Mix's hold
         }
         match candidates.iter().find(|u| u.txid.eq_ignore_ascii_case(txid) && u.vout == *vout) {
             Some(u) => out.push(u.clone()),
@@ -252,50 +259,36 @@ fn pick_pinned(
     Ok(out)
 }
 
-pub fn build_funding_tx_with(
-    root_key: &RootKey,
+/// v323 (S58, Mix step 7): the coins an open spends — the candidates (m/84, silent-payment coins with their t_k, and —
+/// §13 — mixed coins; no reserved, frozen or Mix-held coin), the chosen set or the automatic pick — split out of
+/// build_funding_tx_with unchanged so the quote (`funding_pick_quote`) and the build pick the same coins. Returns them
+/// with the reserved set (the build's belt check).
+fn select_funding_coins(
     storage: &dyn LijStorage,
-    network: Network,
-    output_script: ScriptBuf,
+    view: &tier2_wallet::Tier2View,
     channel_value_sats: u64,
     fee_rate_sat_per_kw: u32,
     pins: Option<&[(String, u32)]>,
-) -> LijResult<FundingTx> {
-    if channel_value_sats < LDK_MIN_CHANNEL_SATS {
-        return Err(LijError::Node(format!(
-            "channel value {channel_value_sats} below LDK minimum {LDK_MIN_CHANNEL_SATS} sats"
-        )));
-    }
-
-    let secp = Secp256k1::new();
-    let view = tier2_wallet::load_view(storage)?;
-    // Confirmed receive/change (chain 0/1) from the Tier-2 view PLUS unconfirmed
-    // change recorded by still-pending txs (capped 3, deduped) — owned so the two
-    // sources mix. This is what lets a channel be funded from the change of a
-    // just-broadcast funding tx without waiting a block.
-    // v191 (S29): RESERVED EXCLUSION — the missing half of the pending
-    // integration. The confirmed pool must not offer coins already
-    // committed by a pending tx (open or send); without this, a second
-    // open while the first pends re-selects the same largest coin and
-    // mints an unbroadcastable double-spend (the S29 zombie opens).
+) -> LijResult<(Vec<tier2_wallet::OnchainUtxo>, std::collections::HashSet<(String, u32)>)> {
     let pending_res = tier2_wallet::load_pending(storage);
     let reserved: std::collections::HashSet<(String, u32)> = pending_res
         .iter()
         .flat_map(|p| p.spent_outpoints.iter().cloned())
         .collect();
-    let frozen = frozen_set(storage);   // v281: the user's freezes are never funding
+    let frozen = frozen_set(storage);   // v281: the user's freezes are never funding · v323: nor the Mix's holds
+    let locked = mix_locked_set(storage);
     let mut candidates: Vec<tier2_wallet::OnchainUtxo> = view
         .utxos
         .iter()
         .filter(|u| {
             u.spent_height.is_none()
-                && crate::onchain_send::is_signable(u)   // v285: m/84 coins, and a silent-payment coin with its t_k
+                && crate::onchain_send::is_signable(u)   // v285: m/84 coins, and a silent-payment coin with its t_k · v323: mixed coins (§13)
                 && !reserved.contains(&(u.txid.clone(), u.vout))
                 && !frozen.contains(&(u.txid.clone(), u.vout))
         })
         .cloned()
         .collect();
-    candidates.extend(unconfirmed_change_candidates(storage, &view));
+    candidates.extend(unconfirmed_change_candidates(storage, view));
     if candidates.is_empty() {
         return Err(LijError::Node(
             "no spendable on-chain funds to open a channel".into(),
@@ -304,7 +297,7 @@ pub fn build_funding_tx_with(
 
     // v282 (S50): the user's chosen coins — exactly those; short = an error in plain words.
     let pinned: Option<Vec<tier2_wallet::OnchainUtxo>> = match pins {
-        Some(p) => Some(pick_pinned(&candidates, &frozen, p)?),
+        Some(p) => Some(pick_pinned(&candidates, &frozen, &locked, p)?),
         None => None,
     };
     let candidates: Vec<tier2_wallet::OnchainUtxo> = match pinned { Some(c) => c, None => candidates };
@@ -335,25 +328,77 @@ pub fn build_funding_tx_with(
                 channel_value_sats.saturating_add(estimate_fee(n, 2, fee_rate_sat_per_kw))
             }).map(|idx| idx.into_iter().map(|j| sp_idx[j]).collect::<Vec<usize>>())
         };
+        // v323 (S58, Mix step 7 — spec v0.10 §13): then DP's rule over every coin with the mixed coins last (alone when
+        // one is enough) — coin_select::pick_mixed_last, the send's own rule.
+        let mixed: Vec<bool> = candidates.iter().map(|u| crate::onchain_send::is_mixed(u.chain)).collect();
         match sp_first {
             Some(idx) => Some(idx),
-            None => crate::coin_select::pick(&values, |n| {
+            None => crate::coin_select::pick_mixed_last(&values, &mixed, |n| {
                 channel_value_sats.saturating_add(estimate_fee(n, 2, fee_rate_sat_per_kw))
             }),
         }
     };
-    let selected: Vec<&tier2_wallet::OnchainUtxo> = match picked {
-        Some(idx) => idx.into_iter().map(|i| &candidates[i]).collect(),
+    let selected: Vec<tier2_wallet::OnchainUtxo> = match picked {
+        Some(idx) => idx.into_iter().map(|i| candidates[i].clone()).collect(),
         None => {
             let have: u64 = values.iter().sum();
             let fee = funding_fee(&all_refs, fee_rate_sat_per_kw);
             return Err(LijError::Node(format!(
                 "insufficient funds for channel: have {have} sats, need {} (channel {channel_value_sats} + fee {fee}){}",
                 channel_value_sats + fee,
-                if frozen.is_empty() { "" } else { " — frozen coins are not counted" }
+                tier2_wallet::held_note(&frozen, &locked)
             )));
         }
     };
+    Ok((selected, reserved))
+}
+
+/// v323 (S58, Mix step 7 — spec v0.10 §13): what an open WOULD spend, for the sheet before it starts — how many coins,
+/// the fee for them, and the mixed-coin warning (a mixed coin beside another coin). The build's own pick.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct FundingPick {
+    pub inputs: usize,
+    pub fee_sats: u64,
+    pub mixed_inputs: usize,
+    pub links_mixed: bool,
+}
+
+pub fn funding_pick_quote(storage: &dyn LijStorage, channel_value_sats: u64, fee_rate_sat_per_kw: u32, pins: Option<&[(String, u32)]>) -> LijResult<FundingPick> {
+    let view = tier2_wallet::load_view(storage)?;
+    let (selected, _) = select_funding_coins(storage, &view, channel_value_sats, fee_rate_sat_per_kw, pins)?;
+    let refs: Vec<&tier2_wallet::OnchainUtxo> = selected.iter().collect();
+    let (mixed_inputs, links_mixed) = crate::onchain_send::mixed_flags(selected.iter().map(|u| u.chain));
+    Ok(FundingPick { inputs: selected.len(), fee_sats: funding_fee(&refs, fee_rate_sat_per_kw), mixed_inputs, links_mixed })
+}
+
+pub fn build_funding_tx_with(
+    root_key: &RootKey,
+    storage: &dyn LijStorage,
+    network: Network,
+    output_script: ScriptBuf,
+    channel_value_sats: u64,
+    fee_rate_sat_per_kw: u32,
+    pins: Option<&[(String, u32)]>,
+) -> LijResult<FundingTx> {
+    if channel_value_sats < LDK_MIN_CHANNEL_SATS {
+        return Err(LijError::Node(format!(
+            "channel value {channel_value_sats} below LDK minimum {LDK_MIN_CHANNEL_SATS} sats"
+        )));
+    }
+
+    let secp = Secp256k1::new();
+    let view = tier2_wallet::load_view(storage)?;
+    // Confirmed receive/change (chain 0/1) from the Tier-2 view PLUS unconfirmed
+    // change recorded by still-pending txs (capped 3, deduped) — owned so the two
+    // sources mix. This is what lets a channel be funded from the change of a
+    // just-broadcast funding tx without waiting a block.
+    // v191 (S29): RESERVED EXCLUSION — the missing half of the pending
+    // integration. The confirmed pool must not offer coins already
+    // committed by a pending tx (open or send); without this, a second
+    // open while the first pends re-selects the same largest coin and
+    // mints an unbroadcastable double-spend (the S29 zombie opens).
+    let (selected_owned, reserved) = select_funding_coins(storage, &view, channel_value_sats, fee_rate_sat_per_kw, pins)?;
+    let selected: Vec<&tier2_wallet::OnchainUtxo> = selected_owned.iter().collect();
     let total_in: u64 = selected.iter().map(|u| u.value_sats).sum();
     // v191 (S29): belt — impossible by construction post-exclusion; if it
     // ever fires, refuse loudly instead of minting a double-spend.
@@ -378,8 +423,12 @@ pub fn build_funding_tx_with(
     // Change address: m/84'/{coin}'/0'/1/n — ROTATED per use (fresh address each
     // time) so change isn't linkable by reuse. The gap-limited Tier-2 scan
     // (chain 1, 0..gap) re-discovers it.
-    let change_idx =
-        tier2_wallet::next_change_index(&view, &tier2_wallet::load_pending(storage));
+    // v323 (Mix step 7 — v0.10 §5.3, §8 rule 1): past every change index a pool's funding was given, too
+    let change_idx = tier2_wallet::next_change_index_marked(
+        &view,
+        &tier2_wallet::load_pending(storage),
+        &tier2_wallet::load_marks(storage).unwrap_or_default(),
+    );
     let account_xpriv = root_key.onchain_key()?; // m/84'/{coin}'/0'
     let change_xpriv = account_xpriv
         .derive_priv(
@@ -485,12 +534,16 @@ mod coin_control_tests {
     fn pinned_set_is_exact_and_refuses_frozen_or_unknown() {
         let cands = vec![coin("aa", 0, 10), coin("bb", 0, 20)];
         let mut frozen = std::collections::HashSet::new();
-        let got = pick_pinned(&cands, &frozen, &[("BB".into(), 0)]).unwrap();
+        let none = std::collections::HashSet::new();
+        let got = pick_pinned(&cands, &frozen, &none, &[("BB".into(), 0)]).unwrap();
         assert_eq!(got.len(), 1); assert_eq!(got[0].txid, "bb");
-        assert!(pick_pinned(&cands, &frozen, &[("zz".into(), 0)]).is_err());
-        assert!(pick_pinned(&cands, &frozen, &[]).is_err());
+        assert!(pick_pinned(&cands, &frozen, &none, &[("zz".into(), 0)]).is_err());
+        assert!(pick_pinned(&cands, &frozen, &none, &[]).is_err());
         frozen.insert(("aa".to_string(), 0));
-        assert!(pick_pinned(&cands, &frozen, &[("aa".into(), 0)]).unwrap_err().to_string().contains("frozen"));
+        assert!(pick_pinned(&cands, &frozen, &none, &[("aa".into(), 0)]).unwrap_err().to_string().contains("frozen"));
+        // v323: a coin a Mix pool holds is refused in its own words
+        let locked = std::collections::HashSet::from([("aa".to_string(), 0u32)]);
+        assert!(pick_pinned(&cands, &frozen, &locked, &[("aa".into(), 0)]).unwrap_err().to_string().contains("in a Mix pool"));
     }
 
     fn root() -> RootKey {
@@ -568,5 +621,62 @@ mod coin_control_tests {
         assert_eq!(f.tx.input[0].witness.len(), 1, "the SP coin: one Schnorr signature");
         assert_eq!(f.tx.input[1].witness.len(), 2, "the m/84 coin: DER signature + key");
         assert_eq!(f.change_sats, 110_000 - 100_000 - f.fee_sats);
+    }
+    // v323 (S58, Mix step 7 — spec v0.10 §13): channel opens include mixed coins — last, alone when one is enough — and
+    // the sheet's quote picks exactly what the build spends, with the warning when a mixed coin goes beside another;
+    // a coin a Mix pool holds is out; the change goes past every index a pool's funding was given.
+    #[test]
+    fn v323_opens_take_mixed_coins_last_and_the_quote_flags_the_link() {
+        use bitcoin::sighash::{Prevouts, TapSighashType, SighashCache};
+        use bitcoin::hashes::Hash;
+        let storage = crate::storage::native_storage::MemoryStorage::new();
+        let r = root();
+        let mut view = tier2_wallet::Tier2View::default();
+        let mut plain = coin(&"22".repeat(32), 1, 60_000);
+        plain.index = 2;
+        let mut big = coin(&"33".repeat(32), 0, 80_000);
+        big.chain = crate::tier2::CHAIN_BIP86; big.index = 1;
+        let mut small = coin(&"44".repeat(32), 0, 30_000);
+        small.chain = crate::tier2::CHAIN_BIP86; small.index = 0;
+        view.utxos = vec![plain, big, small];
+        tier2_wallet::save_view(&storage, &view).unwrap();
+        let spk = || ScriptBuf::new_p2wsh(&bitcoin::WScriptHash::from_byte_array([0xab; 32]));
+        let rate = 2 * 250;
+        let ids = |f: &FundingTx| { let mut v: Vec<String> = f.spent_outpoints.iter().map(|(t, _)| t[..2].to_string()).collect(); v.sort(); v };
+        // the m/84 coin covers: no mixed coin
+        let f = build_funding_tx(&r, &storage, Network::Bitcoin, spk(), 40_000, rate).unwrap();
+        assert_eq!(ids(&f), vec!["22"]);
+        let q = funding_pick_quote(&storage, 40_000, rate, None).unwrap();
+        assert_eq!((q.inputs, q.fee_sats, q.mixed_inputs, q.links_mixed), (1, f.fee_sats, 0, false));
+        // it cannot: the smallest mixed coin that covers alone, alone — signed on its BIP86 key path
+        let f = build_funding_tx(&r, &storage, Network::Bitcoin, spk(), 70_000, rate).unwrap();
+        assert_eq!(ids(&f), vec!["33"]);
+        assert_eq!(f.fee_sats, (11 + 58 + 31 * 2) * 2);
+        let (_, mix_spk) = crate::bip86::secret_and_script(&r, 0, 1).unwrap();
+        let prevouts = vec![TxOut { value: bitcoin::Amount::from_sat(80_000), script_pubkey: mix_spk.clone() }];
+        let mut unsigned = f.tx.clone(); unsigned.input[0].witness = Witness::new();
+        let sh = SighashCache::new(&unsigned).taproot_key_spend_signature_hash(0, &Prevouts::All(&prevouts), TapSighashType::Default).unwrap();
+        let xonly = bitcoin::secp256k1::XOnlyPublicKey::from_slice(&mix_spk.as_bytes()[2..34]).unwrap();
+        let sig = bitcoin::secp256k1::schnorr::Signature::from_slice(f.tx.input[0].witness.nth(0).unwrap()).unwrap();
+        Secp256k1::new().verify_schnorr(&sig, &bitcoin::secp256k1::Message::from_digest(sh.to_byte_array()), &xonly).expect("Schnorr verifies");
+        let q = funding_pick_quote(&storage, 70_000, rate, None).unwrap();
+        assert_eq!((q.inputs, q.mixed_inputs, q.links_mixed), (1, 1, false));
+        // no mixed coin covers alone: the m/84 coin, then the largest mixed coin — the warning
+        let f = build_funding_tx(&r, &storage, Network::Bitcoin, spk(), 130_000, rate).unwrap();
+        assert_eq!(ids(&f), vec!["22", "33"]);
+        assert_eq!(funding_pick_quote(&storage, 130_000, rate, None).unwrap().links_mixed, true);
+        // Max takes everything at its real size
+        assert_eq!(max_channel_value(&storage, rate).unwrap(), 170_000 - (11 + 68 + 58 + 58 + 62) * 2);
+        // a coin a Mix pool holds is out; the change goes past the pool's change index
+        let mut marks = tier2_wallet::CoinMarks::default();
+        marks.mix_lock(&[("33".repeat(32), 0)], 1);
+        marks.mix_change.insert(5);
+        tier2_wallet::save_marks(&storage, &marks).unwrap();
+        let f = build_funding_tx(&r, &storage, Network::Bitcoin, spk(), 70_000, rate).unwrap();
+        assert_eq!(ids(&f), vec!["22", "44"]);
+        assert_eq!(f.change_index, 6, "past the pool's change index");
+        let e = build_funding_tx(&r, &storage, Network::Bitcoin, spk(), 95_000, rate).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(e.contains("coins in a Mix pool are not counted"), "{e}");
+        assert_eq!(max_channel_value(&storage, rate).unwrap(), 90_000 - (11 + 68 + 58 + 62) * 2);
     }
 }

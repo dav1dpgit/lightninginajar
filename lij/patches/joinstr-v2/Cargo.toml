@@ -1,0 +1,29 @@
+# joinstr v2's protocol core, vendored for LiJ (S58, DP 2026-10-12 17:54 — the review report approved).
+# Upstream: gitlab.com/1440000bytes/joinstr-v2 (MIT) at 83637efafd6fdf04691bbe9930c95d5e026fa231; the zip DP attached
+# (sha256 47d9adcf54ffeb6ce4f76d8e8e5818984ec3e1e97e4f4f5eb3ca895b7da3d4ed). Allow-listed files only (Tatara v0.9 §15.2):
+# keys, sign, ring, pool, funding, msg, util. Every change to upstream's bytes is listed in docs/joinstr-patches.md; this
+# manifest and lib.rs are ours (upstream's pull in the network, the files and the command line — §15.3).
+# Dependencies: only crates already in the engine's vendored set (§15.4); ops/joinstr/gate.sh fails on any other.
+[package]
+name = "joinstr-v2"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "joinstr v2's protocol core (allow-listed files) for the LiJ engine"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+bitcoin = { version = "0.32", features = ["serde"] }
+musig2 = { version = "=0.4.1", default-features = false, features = ["secp256k1"] }
+secp = { version = "0.7", default-features = false, features = ["secp256k1"] }
+anyhow = "1"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+# the crate's own tests only (P5: the library takes every random byte from its caller)
+rand = { version = "0.8", features = ["getrandom"] }

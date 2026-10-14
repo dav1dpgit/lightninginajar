@@ -115,6 +115,7 @@ dependencies = [
  "hex-conservative 0.2.3",
  "hex_lit",
  "secp256k1 0.29.1",
+ "serde",
 ]
 
 [[package]]
@@ -150,6 +151,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9cb95693f371d089a4b5b6fc41c6f3ea6e01ee8c15388335dfac8ea685173b51"
 dependencies = [
  "bitcoin-consensus-encoding",
+ "serde",
 ]
 
 [[package]]
@@ -160,6 +162,7 @@ checksum = "bca4c7abb40c8817d77403c880988cfd484f23ab2365726afb2f798363e2c4a2"
 dependencies = [
  "bitcoin-io",
  "hex-conservative 0.2.3",
+ "serde",
 ]
 
 [[package]]
@@ -527,6 +530,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "joinstr-v2"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bitcoin",
+ "hex",
+ "musig2",
+ "rand 0.8.8",
+ "secp",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "js-sys"
 version = "0.3.105"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -611,12 +628,14 @@ dependencies = [
  "hex",
  "hkdf",
  "instant",
+ "joinstr-v2",
  "js-sys",
  "lightning",
  "lightning-invoice",
  "log",
  "musig2",
  "rand 0.8.8",
+ "secp",
  "serde",
  "serde_json",
  "sha2",
@@ -945,6 +964,7 @@ dependencies = [
  "bitcoin_hashes",
  "rand 0.8.8",
  "secp256k1-sys 0.10.1",
+ "serde",
 ]
 
 [[package]]

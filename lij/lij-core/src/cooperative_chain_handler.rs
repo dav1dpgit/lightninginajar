@@ -136,6 +136,10 @@ pub struct CooperativeChainHandler {
     /// path sends no subscribe) — the wallet then sat on its last tip for as long as the
     /// socket lived (DP's Android: six blocks behind, every internal send refused by LND).
     resubscribe_wanted: std::sync::atomic::AtomicBool,
+    /// v321 (S58, DP 2026-10-12 — the CHAIN dot): the last SubscribeChainData sent to the target. The one sent while
+    /// the provider is not yet connected is dropped by LDK; peer_connected sends this one again AT ONCE, so the
+    /// process_events that follows the socket read delivers it in the same pass (it used to wait for the next tick).
+    last_subscribe: Mutex<Option<SubscribeChainData>>,
 }
 
 impl CooperativeChainHandler {
@@ -145,6 +149,7 @@ impl CooperativeChainHandler {
             inbound: Mutex::new(VecDeque::new()),
             subscribe_target: Mutex::new(None),
             resubscribe_wanted: std::sync::atomic::AtomicBool::new(false),
+            last_subscribe: Mutex::new(None),
         }
     }
 
@@ -181,6 +186,7 @@ impl CooperativeChainHandler {
 
     pub fn send_subscribe(&self, peer: PublicKey, msg: SubscribeChainData) {
         *self.subscribe_target.lock().unwrap() = Some(peer);   // v249
+        *self.last_subscribe.lock().unwrap() = Some(msg.clone());   // v321
         self.enqueue(peer, CooperativeChainMessage::SubscribeChainData(msg));
     }
 
@@ -306,7 +312,17 @@ impl CustomMessageHandler for CooperativeChainHandler {
         // v249: every (re)connect of the LSP gets a fresh subscription (the LSP keeps no
         // subscriber across a disconnect; the wallet used to assume it did).
         if *self.subscribe_target.lock().unwrap() == Some(their_node_id) {
-            log::info!("cooperative_chain_handler: LSP peer connected — re-issuing SubscribeChainData");
+            // v321 (S58): the last subscription goes out NOW (LDK calls this while reading the peer's init, and the
+            // socket read is followed at once by process_events), instead of on the next tick's flush. The flag stays:
+            // the tick still sends a fresh snapshot of the watch lists (anything registered while the peer was away),
+            // which costs the provider one more bundle.
+            let last = self.last_subscribe.lock().unwrap().clone();
+            if let Some(m) = last {
+                log::info!("cooperative_chain_handler: LSP peer connected — SubscribeChainData sent at once");
+                self.enqueue(their_node_id, CooperativeChainMessage::SubscribeChainData(m));
+            } else {
+                log::info!("cooperative_chain_handler: LSP peer connected — re-issuing SubscribeChainData");
+            }
             self.resubscribe_wanted.store(true, std::sync::atomic::Ordering::Release);
         }
         Ok(())
@@ -340,6 +356,56 @@ mod tests {
 
     fn dummy_blockhash(b: u8) -> BlockHash {
         BlockHash::from_byte_array([b; 32])
+    }
+
+    fn init_msg() -> lightning::ln::msgs::Init {
+        lightning::ln::msgs::Init { features: InitFeatures::empty(), networks: None, remote_network_address: None }
+    }
+
+    // v321 (S58, the CHAIN dot): the subscription sent before the provider connected is dropped by LDK; the moment the
+    // provider's peer connects it goes out again in the same pass — and the tick's fresh snapshot is still asked for.
+    #[test]
+    fn v321_peer_connected_sends_the_last_subscription_at_once() {
+        let h = CooperativeChainHandler::new();
+        let lsp = dummy_pubkey(9);
+        let sub = SubscribeChainData { watch_txids: vec![dummy_txid(3)], watch_scripts: vec![ScriptBuf::from(vec![0x51])] };
+        h.send_subscribe(lsp, sub.clone());
+        assert_eq!(h.get_and_clear_pending_msg().len(), 1);   // drained while the peer was not yet connected (LDK drops it)
+        h.peer_connected(lsp, &init_msg(), false).unwrap();
+        let out = h.get_and_clear_pending_msg();
+        assert_eq!(out.len(), 1, "the subscription goes out at once");
+        assert_eq!(out[0].0, lsp);
+        assert_eq!(out[0].1, CooperativeChainMessage::SubscribeChainData(sub));
+        assert!(h.take_resubscribe_wanted(), "the tick still sends a fresh snapshot after");
+    }
+
+    #[test]
+    fn v321_another_peer_or_no_subscription_sends_nothing() {
+        let h = CooperativeChainHandler::new();
+        h.peer_connected(dummy_pubkey(4), &init_msg(), false).unwrap();   // nothing ever subscribed
+        assert_eq!(h.get_and_clear_pending_msg().len(), 0);
+        assert!(!h.take_resubscribe_wanted());
+        let lsp = dummy_pubkey(9);
+        h.send_subscribe(lsp, SubscribeChainData { watch_txids: vec![], watch_scripts: vec![] });
+        let _ = h.get_and_clear_pending_msg();
+        h.peer_connected(dummy_pubkey(5), &init_msg(), true).unwrap();   // a different peer (not the provider)
+        assert_eq!(h.get_and_clear_pending_msg().len(), 0);
+        assert!(!h.take_resubscribe_wanted());
+    }
+
+    #[test]
+    fn v321_each_reconnect_sends_the_newest_subscription() {
+        let h = CooperativeChainHandler::new();
+        let lsp = dummy_pubkey(9);
+        h.send_subscribe(lsp, SubscribeChainData { watch_txids: vec![dummy_txid(1)], watch_scripts: vec![] });
+        let newer = SubscribeChainData { watch_txids: vec![dummy_txid(1), dummy_txid(2)], watch_scripts: vec![] };
+        h.send_subscribe(lsp, newer.clone());
+        let _ = h.get_and_clear_pending_msg();
+        h.peer_disconnected(lsp);
+        h.peer_connected(lsp, &init_msg(), false).unwrap();
+        let out = h.get_and_clear_pending_msg();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1, CooperativeChainMessage::SubscribeChainData(newer));
     }
 
     #[test]

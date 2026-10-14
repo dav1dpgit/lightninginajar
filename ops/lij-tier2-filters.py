@@ -24,6 +24,15 @@ S50 (2026-09-28): the silent-payment tweak index, read from the sqlite lij-sp-in
   /sp/commits?start=H&count=N  -> {"commits":[{"height","hash","count","commit","head"}]}
   /sp/mempool?since=S          -> {"seq","tweaks":[{"seq","txid","tweak","outputs":[{"vout","key","value"}]}],"gone":[txid...]}
 
+S58 (2026-10-12, LIJOX's Tatara step 6 — spec v0.10 §7): the coin check, OFF unless COIN_CHECK=1:
+  /coin?txid=<64 hex>&vout=<n> -> {"txid","vout","unspent","confirmations","tx","proof"}
+     tx    = the raw transaction (getrawtransaction at the proof's block — no txindex needed)
+     proof = Core's gettxoutproof (the block header + the Merkle branch); null when the transaction is not in a block
+             or none of its outputs is unspent
+     unspent = gettxout, confirmed outputs only
+  The one route that takes a per-coin question. Pool members' phones never ask it themselves: their checks come
+  through another LIJOX provider (door 2), so this server sees that provider, not the wallet. Never cached.
+
 Requires bitcoind with `blockfilterindex=1` (for getblockfilter). Stdlib only.
 Credentials and CORS origin come from the environment — nothing is hardcoded.
 No request logging. No general RPC passthrough — only the fixed methods below.
@@ -38,8 +47,10 @@ Env:
 """
 
 import base64
+import hashlib
 import json
 import os
+import re
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -53,6 +64,7 @@ LISTEN_ADDR = os.environ.get("LISTEN_ADDR", "127.0.0.1:3000")
 MAX_COUNT = int(os.environ.get("MAX_COUNT", "2000"))
 SP_DB = os.environ.get("SP_DB", "")          # S50: the tweak index's sqlite (lij-sp-index.py); empty = no index here
 SP_MAX_BLOCKS = int(os.environ.get("SP_MAX_BLOCKS", "500"))
+COIN_CHECK = os.environ.get("COIN_CHECK", "") == "1"   # S58: /coin answers only when switched on
 
 
 def _auth_header():
@@ -132,6 +144,37 @@ def block(height):
     return {"height": height, "hash": bh, "block": rpc("getblock", [bh, 0])}
 
 
+# ── S58: the coin check (Tatara step 6; spec v0.10 §7) ─────────────────────────────────────────
+class BadRequest(Exception):
+    pass
+
+
+def coin(txid, vout):
+    if not re.fullmatch(r"[0-9a-f]{64}", txid or ""):
+        raise BadRequest("txid must be 64 lowercase hex")
+    if not re.fullmatch(r"[0-9]{1,6}", vout or ""):
+        raise BadRequest("vout must be a whole number")
+    n = int(vout)
+    out = rpc("gettxout", [txid, n, False])          # null = spent, or never in a block (mempool not counted)
+    try:
+        proof = rpc("gettxoutproof", [[txid]])       # header + Merkle branch; needs an unspent output (no txindex)
+    except RuntimeError:
+        proof = None
+    tx = None
+    if proof:
+        header = bytes.fromhex(proof[:160])
+        bh = hashlib.sha256(hashlib.sha256(header).digest()).digest()[::-1].hex()
+        tx = rpc("getrawtransaction", [txid, 0, bh])
+    return {
+        "txid": txid,
+        "vout": n,
+        "unspent": out is not None,
+        "confirmations": (out or {}).get("confirmations", 0),
+        "tx": tx,
+        "proof": proof,
+    }
+
+
 # ── S50: the silent-payment tweak index (read-only; lij-sp-index.py writes it) ──────────────────
 class NoIndex(Exception):
     pass
@@ -208,12 +251,12 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass  # no request logging (privacy)
 
-    def _send(self, code, payload):
+    def _send(self, code, payload, cache="public, max-age=60"):
         body = json.dumps(payload).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
-        self.send_header("Cache-Control", "public, max-age=60")
+        self.send_header("Cache-Control", cache)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -252,14 +295,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, sp_commits(int(q.get("start", ["0"])[0]), q.get("count", ["1"])[0]))
             elif u.path == "/sp/mempool":
                 self._send(200, sp_mempool(int(q.get("since", ["0"])[0])))
+            # S58: the coin check — off unless COIN_CHECK=1; never cached (spent-ness changes)
+            elif u.path == "/coin" and COIN_CHECK:
+                self._send(200, coin(q.get("txid", [""])[0], q.get("vout", [""])[0]), cache="no-store")
             else:
                 self._send(404, {"error": "not found"})
+        except BadRequest as e:
+            self._send(400, {"error": str(e)}, cache="no-store")
         except NoIndex:
             self._send(404, {"error": "no silent-payment index on this box"})
         except KeyError as e:
             self._send(404, {"error": str(e).strip("'")})
         except Exception as e:
-            self._send(502, {"error": str(e)})
+            self._send(502, {"error": str(e)}, cache=("no-store" if u.path == "/coin" else "public, max-age=60"))
 
 
 if __name__ == "__main__":

@@ -502,6 +502,13 @@ pub struct LijNode {
     /// them to stop retrying an open that will fail the same way again, and to clear its
     /// "moving to Lightning" marks. In-memory / per-session, like claimed_payments.
     open_failures: Arc<Mutex<Vec<(String, u64, String, u64)>>>,
+    /// Phase 1b (Mix, v0.10 §6.2 — S58 step 11b): the channels a Mix pool funds, by the open's nonce — what the pool
+    /// machine needs of each (the funding script, the counterparty's signature, a close) while the attempt runs.
+    /// In memory: a channel outlives the page in the manager; this map is only the attempt's view of it.
+    pool_channels: Arc<Mutex<std::collections::HashMap<u32, PoolChannel>>>,
+    /// Pool channels this wallet dropped itself (a stop before the coin signature; a coin spent elsewhere) — their
+    /// ChannelClosed is a dropped open, never filed as a close.
+    pool_drops: Arc<Mutex<std::collections::HashSet<ChannelId>>>,
     #[allow(deprecated)]
     closed_channel_watcher: crate::closed_channel_watcher::ClosedChannelWatcher,
     network_graph: LijNetworkGraph,
@@ -691,7 +698,9 @@ pub enum MppDecision {
 /// a restore while a cooperative close is still unconfirmed must carry its coop hold (lij_coop_hold reads the log), or
 /// LDK may broadcast its commitment over the cooperative close (the 2026-09-03 incident); the closed history and the
 /// saved cooperative-close transaction come along too. Older copies without it still load (the key is simply absent).
-pub const BUNDLE_SINGLE_KEYS: [&str; 12] = [
+/// v323 (S58, Mix step 7 — spec v0.10 §9 rule 2): the Mix's attempt records ride every backup taken while one is
+/// unsettled (sealed, the same ciphertext); the key is deleted once none is left, so a later backup carries no trace.
+pub const BUNDLE_SINGLE_KEYS: [&str; 13] = [
     crate::tier2_wallet::VIEW_KEY,
     crate::tier2_wallet::PENDING_KEY,
     crate::tier2_wallet::MARKS_KEY,   // v281 (S50, coin control): freezes and notes ride the blob too
@@ -704,6 +713,7 @@ pub const BUNDLE_SINGLE_KEYS: [&str; 12] = [
     KEY_PUSH_IN,
     crate::nwc::NWC_KEY,     // v286 (S50, NWC): the connections (service secrets, encrypted at rest) and limits ride too
     crate::closed_channel_log::KEY_CLOSED_CHANNELS,   // v311: the closed-channel log and its coop hold
+    crate::tatara::records::RECORDS_KEY,              // v323: the Mix's unsettled attempt records
 ];
 
 #[cfg(test)]
@@ -801,6 +811,8 @@ impl LijNode {
             sent_parts: Arc::new(Mutex::new(std::collections::HashMap::new())),
             chan_reserves: Arc::new(Mutex::new(std::collections::HashMap::new())),
             open_failures: Arc::new(Mutex::new(Vec::new())),
+            pool_channels: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            pool_drops: Arc::new(Mutex::new(std::collections::HashSet::new())),
             #[allow(deprecated)]
             closed_channel_watcher: crate::closed_channel_watcher::ClosedChannelWatcher::new(),
             network_graph, scorer, storage,
@@ -1151,6 +1163,8 @@ impl LijNode {
             sent_parts: Arc::new(Mutex::new(std::collections::HashMap::new())),
             chan_reserves: Arc::new(Mutex::new(std::collections::HashMap::new())),
             open_failures: Arc::new(Mutex::new(Vec::new())),
+            pool_channels: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            pool_drops: Arc::new(Mutex::new(std::collections::HashSet::new())),
             #[allow(deprecated)]
             closed_channel_watcher: crate::closed_channel_watcher::ClosedChannelWatcher::new(),
             network_graph,
@@ -2178,6 +2192,22 @@ impl LijNode {
                         fee_rate_sat_per_kw,
                         temporary_channel_id
                     );
+                    if user_channel_id & UCID_POOL_FUNDED_BIT != 0 {
+                        // Phase 1b (§6.2.1): a Mix pool funds this channel — no transaction here; the funding script is
+                        // the member's payout, kept for the pool machine (fund_pool_channel hands LDK the exit's outpoint)
+                        let nonce = ((user_channel_id >> 32) & 0xFFFF_FFFF) as u32;
+                        if let Ok(mut m) = self.pool_channels.lock() {
+                            match m.get_mut(&nonce) {
+                                Some(pc) => {
+                                    pc.script = Some(hex::encode(output_script.as_bytes()));
+                                    pc.channel_id = hex::encode(temporary_channel_id.0);
+                                    log::info!("[mix] pool channel #{nonce}: the funding script is ready ({} sats; the pool's exit will fund it)", channel_value_satoshis);
+                                }
+                                None => log::warn!("[mix] FundingGenerationReady for a pool channel this page does not know (#{nonce})"),
+                            }
+                        }
+                        return Ok(());
+                    }
                     let t2_store = crate::tier2_wallet::encrypted(&*self.storage, self.root_key.encryption_key());   // v263: the view is encrypted at rest (v256)
                     // v282 (S50, coin control): the chosen coins parked by open_channel_to_lsp_with, by this open's nonce
                     let open_nonce = ((user_channel_id >> 32) & 0xFFFF_FFFF) as u32;
@@ -2407,7 +2437,13 @@ impl LijNode {
                         }
                     }
                 }
-                lightning::events::Event::ChannelReady { channel_id, counterparty_node_id, .. } => {
+                lightning::events::Event::ChannelReady { channel_id, counterparty_node_id, user_channel_id, .. } => {
+                    if user_channel_id & UCID_POOL_FUNDED_BIT != 0 {
+                        // Phase 1b: the pool's exit reached the chain — the channel is open
+                        let nonce = ((user_channel_id >> 32) & 0xFFFF_FFFF) as u32;
+                        if let Ok(mut m) = self.pool_channels.lock() { if let Some(pc) = m.get_mut(&nonce) { pc.ready = true; } }
+                        log::info!("[mix] pool channel #{nonce} is open: {:?}", channel_id);
+                    }
                     log::info!(
                         "ChannelReady: channel_id={:?} counterparty={}",
                         channel_id, counterparty_node_id
@@ -2440,6 +2476,20 @@ impl LijNode {
                         "ChannelClosed: channel_id={} reason={:?}",
                         channel_id_hex, reason
                     );
+                    if user_channel_id & UCID_POOL_FUNDED_BIT != 0 {
+                        // Phase 1b: the attempt's view of the channel learns of the close (the page stops the attempt
+                        // if it still runs); a channel this wallet dropped itself (a stop before the coin signature,
+                        // a coin spent elsewhere — pool_drops) or one never funded is a dropped open, not a close
+                        let nonce = ((user_channel_id >> 32) & 0xFFFF_FFFF) as u32;
+                        if let Ok(mut m) = self.pool_channels.lock() {
+                            if let Some(pc) = m.get_mut(&nonce) { if pc.closed.is_none() { pc.closed = Some(format!("{reason:?}")); } }
+                        }
+                        let ours = self.pool_drops.lock().map(|d| d.contains(&channel_id)).unwrap_or(false);
+                        if ours || channel_funding_txo.is_none() {
+                            log::info!("[mix] pool channel #{nonce} dropped before its funding reached the chain ({}) — no funds moved; not a close", if ours { "by this wallet" } else { "never funded" });
+                            return Ok(());
+                        }
+                    }
                     // TEMP diagnostic: record the ChannelClosed event with reason +
                     // timestamp so the close SEQUENCE for a channel is visible.
                     close_event_record(format!(
@@ -2591,6 +2641,23 @@ impl LijNode {
                         } else {
                             log::info!("Closed-channel record persisted: {}", channel_id_hex);
                         }
+                    }
+                }
+                lightning::events::Event::FundingTxBroadcastSafe { channel_id, user_channel_id, funding_txo, former_temporary_channel_id, .. } => {
+                    // Phase 1b (§6.2.3): the provider signed the first commitment of a pool channel — the manager is
+                    // written right after this event loop (event_seen); pool_channels_mark_saved then says so
+                    if user_channel_id & UCID_POOL_FUNDED_BIT != 0 {
+                        let nonce = ((user_channel_id >> 32) & 0xFFFF_FFFF) as u32;
+                        if let Ok(mut m) = self.pool_channels.lock() {
+                            if let Some(pc) = m.get_mut(&nonce) {
+                                pc.signed = true;
+                                pc.channel_id = hex::encode(channel_id.0);
+                                pc.funding = Some((funding_txo.txid.to_string(), funding_txo.vout));
+                            }
+                        }
+                        log::info!("[mix] pool channel #{nonce}: the provider's signature is in (was {:?}; funding {}:{})", former_temporary_channel_id, funding_txo.txid, funding_txo.vout);
+                    } else {
+                        log::info!("[Event] FundingTxBroadcastSafe for {:?} (not a pool channel; LDK broadcasts wallet-funded opens itself)", channel_id);
                     }
                 }
                 _ => {
@@ -3847,11 +3914,14 @@ impl LijNode {
         // chainmonitor::Persist trait.
         let cm_dirty = self.manager_dirty.swap(false, Ordering::Relaxed);
         if event_seen.load(Ordering::Relaxed) || cm_dirty || tick_count % 10 == 0 {
-            if let Err(e) = self.persist_channel_manager() {
-                log::warn!("ChannelManager persist failed: {e}");
-                if cm_dirty {
-                    // Don't drop dirtiness on a failed write.
-                    self.manager_dirty.store(true, Ordering::Relaxed);
+            match self.persist_channel_manager() {
+                Ok(()) => self.pool_channels_mark_saved(),   // Phase 1b (§6.3.3): a signed pool channel is saved once the manager is written
+                Err(e) => {
+                    log::warn!("ChannelManager persist failed: {e}");
+                    if cm_dirty {
+                        // Don't drop dirtiness on a failed write.
+                        self.manager_dirty.store(true, Ordering::Relaxed);
+                    }
                 }
             }
         }
@@ -3881,6 +3951,101 @@ impl LijNode {
             .into_iter()
             .map(|p| hex::encode(p.counterparty_node_id.serialize()))
             .collect())
+    }
+
+    // ── Phase 1b (Mix, v0.10 §6.2 — S58 step 11b): channels a pool's exit funds ────────────────────────────────────
+
+    /// §6.2.1: open a channel of exactly `amount_sats` with the active provider, to be funded by a Mix pool's exit —
+    /// static remote key, no anchors, private, as every wallet-opened channel (Terminus pin); the UCID carries the
+    /// pool bit and a fresh nonce (a new channel per attempt, §6.3.5). Answers the nonce; the funding script comes with
+    /// FundingGenerationReady (`pool_channel_json`).
+    pub fn open_pool_channel(&self, amount_sats: u64) -> LijResult<u32> {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static POOL_NONCE: AtomicU32 = AtomicU32::new(1);
+        let cm = self.channel_manager.as_ref().ok_or_else(|| LijError::Node("ChannelManager not initialized".into()))?;
+        let lsp = self.active_lsp().ok_or_else(|| LijError::Lsp("No active LSP — select one first".into()))?;
+        let lsp_pubkey = <bitcoin::secp256k1::PublicKey as std::str::FromStr>::from_str(&lsp.info.pubkey)
+            .map_err(|e| LijError::Lsp(format!("bad LSP pubkey {}: {e}", lsp.info.pubkey)))?;
+        let connected = self.list_peers()?.iter().any(|p| p.eq_ignore_ascii_case(&lsp.info.pubkey));
+        if !connected {
+            return Err(LijError::Node("not connected to the provider — the channel for the pool cannot be opened".into()));
+        }
+        let nonce = POOL_NONCE.fetch_add(1, Ordering::Relaxed);
+        let user_channel_id: u128 = crate::signer::UCID_TERMINUS_PIN_BIT | UCID_POOL_FUNDED_BIT | ((nonce as u128) << 32);
+        let mut config = UserConfig::default();
+        config.channel_handshake_config.minimum_depth = 1;
+        config.channel_config.force_close_avoidance_max_fee_satoshis = COOP_CLOSE_MAX_FEE_OVERAGE_SAT;
+        config.channel_handshake_config.their_channel_reserve_proportional_millionths = LSP_RESERVE_PPM.load(std::sync::atomic::Ordering::Relaxed);
+        config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+        config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;   // §6.4: no anchor
+        config.channel_handshake_config.negotiate_scid_privacy = true;
+        config.channel_handshake_config.announce_for_forwarding = false;
+        let temp = cm.create_channel(lsp_pubkey, amount_sats, 0, user_channel_id, None, Some(config))
+            .map_err(|e| LijError::Node(format!("the channel for the pool could not be opened: {e:?}")))?;
+        if let Ok(mut m) = self.pool_channels.lock() {
+            m.insert(nonce, PoolChannel { nonce, value_sats: amount_sats, channel_id: hex::encode(temp.0), ..Default::default() });
+        }
+        log::info!("[mix] pool channel #{nonce} opening with the provider: {} sats, temp {:?}", amount_sats, temp);
+        Ok(nonce)
+    }
+
+    /// The attempt's view of a pool channel (PoolChannel as JSON), or "null".
+    pub fn pool_channel_json(&self, nonce: u32) -> String {
+        self.pool_channels.lock().ok().and_then(|m| m.get(&nonce).cloned()).and_then(|pc| serde_json::to_string(&pc).ok()).unwrap_or_else(|| "null".into())
+    }
+
+    /// §6.2.2: the pool machine checked the exit that pays this channel (its script, the size, the output) — hand LDK
+    /// that outpoint. LDK then sends funding_created; the provider's signature comes back as FundingTxBroadcastSafe.
+    pub fn fund_pool_channel(&self, nonce: u32, txid: &str, vout: u32) -> LijResult<()> {
+        let cm = self.channel_manager.as_ref().ok_or_else(|| LijError::Node("ChannelManager not initialized".into()))?;
+        let (temp_hex, value) = {
+            let m = self.pool_channels.lock().map_err(|_| LijError::Node("pool channels".into()))?;
+            let pc = m.get(&nonce).ok_or_else(|| LijError::Node(format!("no pool channel #{nonce} on this page")))?;
+            if pc.script.is_none() { return Err(LijError::Node("the channel's funding script is not ready yet".into())); }
+            if pc.funding.is_some() { return Ok(()); }   // handed already
+            (pc.channel_id.clone(), pc.value_sats)
+        };
+        let temp = parse_channel_id_hex(&temp_hex)?;
+        let txid_p: bitcoin::Txid = txid.parse().map_err(|_| LijError::InvalidArgument("the exit's txid".into()))?;
+        let counterparty = cm.list_channels().into_iter().find(|c| c.channel_id == temp).map(|c| c.counterparty.node_id)
+            .ok_or_else(|| LijError::Node("the pool channel is no longer open on this wallet".into()))?;
+        cm.unsafe_manual_funding_transaction_generated(temp, counterparty, lightning::chain::transaction::OutPoint { txid: txid_p, index: vout as u16 })
+            .map_err(|e| LijError::Node(format!("LDK refused the pool's funding outpoint: {e:?}")))?;
+        if let Ok(mut m) = self.pool_channels.lock() { if let Some(pc) = m.get_mut(&nonce) { pc.funding = Some((txid.to_string(), vout)); } }
+        log::info!("[mix] pool channel #{nonce}: the exit {txid}:{vout} ({value} sats) handed to LDK as the funding");
+        Ok(())
+    }
+
+    /// After the manager is written: every signed pool channel is saved (§6.3.3).
+    fn pool_channels_mark_saved(&self) {
+        if let Ok(mut m) = self.pool_channels.lock() {
+            for pc in m.values_mut() { if pc.signed && !pc.saved { pc.saved = true; log::info!("[mix] pool channel #{}: saved with the provider's signature", pc.nonce); } }
+        }
+    }
+
+    /// §6.2.4: a stop before the coin signature — the half-open channel is dropped (closed without broadcasting;
+    /// nothing moved; LDK tells the provider). Answers whether a channel was there to drop.
+    pub fn drop_pool_channel(&self, nonce: u32, why: &str) -> LijResult<bool> {
+        let id_hex = match self.pool_channels.lock().ok().and_then(|m| m.get(&nonce).map(|pc| pc.channel_id.clone())) { Some(h) => h, None => return Ok(false) };
+        let dropped = self.drop_pool_channel_by_id(&id_hex, why)?;
+        if let Ok(mut m) = self.pool_channels.lock() { if let Some(pc) = m.get_mut(&nonce) { pc.closed = Some(why.to_string()); } }
+        Ok(dropped)
+    }
+
+    /// §6.3.4: a pool channel whose funding can never reach the chain (a stop before the signature; the coin spent
+    /// elsewhere, 6 deep — records::duty) is closed without broadcasting. A channel that is already open is never
+    /// touched here (false).
+    pub fn drop_pool_channel_by_id(&self, channel_id_hex: &str, why: &str) -> LijResult<bool> {
+        let channel_id = parse_channel_id_hex(channel_id_hex)?;
+        let cm = self.channel_manager.as_ref().ok_or_else(|| LijError::Node("ChannelManager not initialized".into()))?;
+        let Some(c) = cm.list_channels().into_iter().find(|c| c.channel_id == channel_id) else { return Ok(false) };
+        if c.user_channel_id & UCID_POOL_FUNDED_BIT == 0 { return Err(LijError::Node("not a pool channel".into())); }
+        if c.is_channel_ready || c.confirmations.unwrap_or(0) > 0 { return Ok(false); }
+        if let Ok(mut d) = self.pool_drops.lock() { d.insert(channel_id); }
+        cm.force_close_without_broadcasting_txn(&channel_id, &c.counterparty.node_id, format!("LiJ: pool channel dropped ({why})"))
+            .map_err(|e| LijError::Node(format!("the pool channel could not be dropped: {e:?}")))?;
+        log::info!("[mix] pool channel {channel_id_hex} dropped: {why}");
+        Ok(true)
     }
 
     /// Open an outbound channel to the active LSP, funded from our on-chain
@@ -5631,6 +5796,7 @@ impl LijNode {
                         .and_then(|m| m.get(&format!("{}:{}", o.txid, o.index)).cloned())
                 }),
                 terminus_pinned: (c.user_channel_id & crate::signer::UCID_TERMINUS_PIN_BIT) != 0,
+                pool_funded: (c.user_channel_id & UCID_POOL_FUNDED_BIT) != 0,   // Phase 1b: a Mix pool's exit funds it
                 funding_txid: c.funding_txo.map(|o| o.txid.to_string()),
                 confirmations: c.confirmations,
                 is_channel_ready: c.is_channel_ready,
@@ -6118,6 +6284,13 @@ impl LijNode {
         self.cooperative_bridge.cooperative_subscribed()
     }
 
+    /// v321 (S58, DP 2026-10-12 — the CHAIN dot): handle the provider's chain messages the moment they arrive (called
+    /// right after the socket read), instead of on the next 1-second tick. dispatch() only updates the stream's own
+    /// state (height, hash, fee quote, subscribed) and queues funding confirmations for the tick — no LDK call here.
+    pub fn cooperative_process_inbound_now(&self) {
+        self.cooperative_bridge.process_inbound_tick(0);
+    }
+
     /// Last cooperative-cached block height. None until first ChainDataBundle.
     pub fn cooperative_block_height(&self) -> Option<u32> {
         self.cooperative_bridge.cooperative_block_height()
@@ -6465,6 +6638,14 @@ impl LijNode {
                 .map(|m| m.sp_labels.iter().map(|l| serde_json::json!({ "m": l.m, "name": l.name, "hidden": l.hidden })).collect())
                 .unwrap_or_default()
         };
+        // v323 (S58, Mix step 7 — spec v0.10 §9 rule 2, restore table): the signed exits of each unsettled Mix attempt,
+        // ALONE (no funding, no payout, no coin) — one list per attempt, in signing order, so /recover can send them if the
+        // phone is lost after its coin signature. Wiped with the record: the next kit carries none (a clean kit pushed
+        // twice). Never carried from another copy's kit (kit_merge leaves the leg alone), so a wipe stays a wipe.
+        let mix_exits: Vec<Vec<String>> = {
+            let t2_store = crate::tier2_wallet::encrypted(&*self.storage, self.root_key.encryption_key());
+            crate::tatara::records::load(&t2_store).map(|rs| crate::tatara::records::kit_exits(&rs)).unwrap_or_default()
+        };
         let kit = serde_json::json!({
             "version": 1,
             "sweep_destination_index": dest_index,
@@ -6477,6 +6658,7 @@ impl LijNode {
             "silent_payment_labels": sp_labels,   // v304
             "taproot_coins": taproot_coins_marked,   // v318
             "taproot_coins_note": tr_note,
+            "mix_exits": mix_exits,   // v323
         });
         serde_json::to_string(&kit)
             .map_err(|e| LijError::Node(format!("escape export: serialize: {e}")))
@@ -7028,6 +7210,34 @@ pub fn parse_network(s: &str) -> LijResult<Network> {
         "regtest" => Ok(Network::Regtest),
         other => Err(LijError::InvalidArgument(format!("Unknown network: {other}"))),
     }
+}
+
+/// Phase 1b (Mix, v0.10 §6.2 — S58 step 11b): the open's user_channel_id bit that says "a Mix pool's exit funds this
+/// channel": at FundingGenerationReady no transaction is built — the funding script is kept for the pool (it is the
+/// member's payout); the pool's exit outpoint is handed to LDK by `fund_pool_channel`; the counterparty's signature
+/// arrives as FundingTxBroadcastSafe; the pool's own sending carries the transaction (LDK never broadcasts it).
+/// Bit 127 is the Terminus pin (signer.rs); a pool channel carries both.
+pub const UCID_POOL_FUNDED_BIT: u128 = 1u128 << 126;
+
+/// One pool-funded channel, as the attempt sees it (`LijNode::pool_channels`).
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct PoolChannel {
+    pub nonce: u32,
+    pub value_sats: u64,
+    /// The temporary channel id (hex) until the funding is set; then the channel id.
+    pub channel_id: String,
+    /// The funding script (hex), from FundingGenerationReady — the payout the pool registers.
+    pub script: Option<String>,
+    /// The pool's exit that funds it (txid, vout), once handed to LDK.
+    pub funding: Option<(String, u32)>,
+    /// The counterparty's first-commitment signature arrived (FundingTxBroadcastSafe).
+    pub signed: bool,
+    /// The manager was written after that signature: the channel is saved (§6.3.3) — the coin signature may follow.
+    pub saved: bool,
+    /// The funding reached the chain (ChannelReady).
+    pub ready: bool,
+    /// The channel closed before the pool completed — the reason in plain words.
+    pub closed: Option<String>,
 }
 
 fn parse_channel_id_hex(hex_str: &str) -> LijResult<ChannelId> {

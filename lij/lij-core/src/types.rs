@@ -84,6 +84,10 @@ pub struct ChannelInfo {
     /// pays the seed's m/84 tree directly on force close.
     #[serde(default)]
     pub terminus_pinned: bool,
+    /// Phase 1b (Mix, v0.10 §6): a Mix pool's exit funds this channel (UCID bit) — until its funding is in a block it
+    /// is "Opening — waiting for the pool" (§6.3.1).
+    #[serde(default)]
+    pub pool_funded: bool,
     /// On-chain funding txid (the value to look up on a block explorer), if the
     /// channel has a funding outpoint yet. Distinct from channel_id.
     pub funding_txid: Option<String>,

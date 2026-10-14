@@ -2,6 +2,7 @@
 members = [
     "lij-core",
     "lij-wasm",
+    "patches/joinstr-v2",   # S58: joinstr v2's protocol core (docs/joinstr-patches.md); not yet used by the engine
 ]
 resolver = "2"
 

@@ -261,13 +261,41 @@ pub(crate) fn sp_tweak_of(u: &crate::tier2_wallet::OnchainUtxo) -> Option<[u8; 3
 
 /// v285: is this ledger record a coin the wallet can sign for? Receive and change (m/84) always;
 /// a silent-payment coin (chain 352) when its t_k is on the record. Legacy (m/525) never here.
-/// v316: a BIP86 coin (chains 86/87 — today only Mix coins) is NOT here yet, though sign_inputs signs it: whether the
-/// automatic pick may put a mixed coin beside the wallet's other coins (which links them and undoes the mix) waits for
-/// DP's postmix rule (CoinMarks::is_mix tells a Mix coin from a plain taproot one).
+/// v316: a BIP86 coin (chains 86/87 — today only Mix coins) was held out until DP's postmix rule.
+/// v323 (S58, Mix step 7 — spec v0.10 §13, DP 2026-10-10 13:23 and 13:35): it is in — "Send, Max and channel opens
+/// include mixed coins" — the automatic pick takes it last (coin_select::pick_mixed_last), Max takes everything, and a
+/// pick that puts a mixed coin beside another coin says so (`mixed_flags`), keyed on the branch (`is_mixed`).
 pub(crate) fn is_signable(u: &crate::tier2_wallet::OnchainUtxo) -> bool {
     u.chain == crate::tier2::CHAIN_RECEIVE
         || u.chain == crate::tier2::CHAIN_CHANGE
         || (u.chain == crate::tier2::CHAIN_SP && sp_tweak_of(u).is_some())
+        || crate::tier2::bip86_branch(u.chain).is_some()
+}
+
+/// v323 (§13): a mixed coin, for the pick and the warning — any coin on a BIP86 branch, so the rule holds after a 12-word
+/// restore where the Mixed mark (CoinMarks::mix_exits) is gone.
+pub(crate) fn is_mixed(chain: u32) -> bool {
+    crate::tier2::bip86_branch(chain).is_some()
+}
+
+/// v323 (§13): (how many mixed coins a set spends, whether it spends one BESIDE another coin). The page's warning, on
+/// Send and again on Review, shows when the second is true: "This uses a mixed coin together with your other coins.
+/// Anyone looking at the chain can then link them as one wallet's, which undoes the mix for that coin."
+pub(crate) fn mixed_flags(chains: impl Iterator<Item = u32>) -> (usize, bool) {
+    let (mut n, mut mixed) = (0usize, 0usize);
+    for c in chains {
+        n += 1;
+        if is_mixed(c) { mixed += 1; }
+    }
+    (mixed, mixed > 0 && n > 1)
+}
+
+/// v323 (§13): THE automatic pick of a send and its quote — DP's rule over the other coins, a mixed coin only when the
+/// amount needs one (coin_select::pick_mixed_last). Indexes into `coins`.
+fn auto_pick(coins: &[&SpendableUtxo], need: impl Fn(usize) -> u64) -> Option<Vec<usize>> {
+    let values: Vec<u64> = coins.iter().map(|u| u.value_sats).collect();
+    let mixed: Vec<bool> = coins.iter().map(|u| is_mixed(u.chain)).collect();
+    crate::coin_select::pick_mixed_last(&values, &mixed, need)
 }
 
 /// v284: an input's size in the fee estimate — a taproot key-path input (a silent-payment coin;
@@ -461,6 +489,7 @@ pub async fn build_and_send_all_pinned(
 fn resolve_pins<'a>(
     spendable: &'a [SpendableUtxo],
     frozen: &std::collections::HashSet<(String, u32)>,
+    locked: &std::collections::HashSet<(String, u32)>,
     pins: &[(String, u32)],
 ) -> LijResult<Vec<&'a SpendableUtxo>> {
     if pins.is_empty() {
@@ -474,7 +503,7 @@ fn resolve_pins<'a>(
             continue;   // the same coin twice is one coin
         }
         if frozen.contains(&key) {
-            return Err(LijError::Node(format!("a chosen coin is frozen ({}…:{vout}) — unfreeze it first", &txid[..8.min(txid.len())])));
+            return Err(LijError::Node(crate::tier2_wallet::held_refusal(txid, *vout, locked)));   // v323: a freeze or the Mix's hold
         }
         match spendable.iter().find(|u| u.txid.eq_ignore_ascii_case(txid) && u.vout == *vout) {
             Some(u) => out.push(u),
@@ -511,6 +540,13 @@ pub struct MaxQuote {
     pub frozen_sats: u64,
     pub frozen_count: usize,
     pub sat_per_vb: u64,
+    /// v323 (S58, Mix step 7 — v0.10 §8 rule 4): what a Mix pool holds out of this Max (a coin both frozen and held
+    /// counts here, not in the frozen figure).
+    pub mix_locked_sats: u64,
+    pub mix_locked_count: usize,
+    /// v323 (§13): Max takes every coin, mixed ones too — how many, and whether beside another coin (the warning).
+    pub mixed_inputs: usize,
+    pub links_mixed: bool,
 }
 
 impl MaxQuote {
@@ -534,13 +570,15 @@ pub fn max_sendable(
         Ok(d) => dest_extra_vbytes(&d),
         Err(_) => 0,
     };
-    let frozen = marks.frozen_set();
-    let spendable = gather_spendable(view, pending, &frozen);
+    let locked = marks.mix_locked_set();   // v323: the Mix's holds
+    let frozen: std::collections::HashSet<(String, u32)> = marks.frozen_set().into_iter().filter(|k| !locked.contains(k)).collect();
+    let spendable = gather_spendable(view, pending, &marks.held_set());
     let total_sats: u64 = spendable.iter().map(|u| u.value_sats).sum();
     let inputs = spendable.len();
     let refs: Vec<&SpendableUtxo> = spendable.iter().collect();
     let fee_sats = if inputs == 0 { 0 } else { estimate_fee_inputs(&refs, 1, extra_vb, fee_rate_sat_per_kw) };   // v284: real input sizes
     let max_sats = total_sats.saturating_sub(fee_sats);
+    let (mixed_inputs, links_mixed) = mixed_flags(spendable.iter().map(|u| u.chain));   // v323 (§13)
     // The frozen figure: unspent, unreserved coins the user froze (the same set the
     // summary reports), so the page can say "Max leaves out N frozen sats".
     let reserved: std::collections::HashSet<(String, u32)> = pending
@@ -549,10 +587,16 @@ pub fn max_sendable(
         .collect();
     let mut frozen_sats = 0u64;
     let mut frozen_count = 0usize;
+    let mut mix_locked_sats = 0u64;
+    let mut mix_locked_count = 0usize;
     for u in view.utxos.iter().filter(|u| u.spent_height.is_none() && u.chain != crate::tier2::CHAIN_LEGACY) {
         if frozen.contains(&(u.txid.clone(), u.vout)) && !reserved.contains(&(u.txid.clone(), u.vout)) {
             frozen_sats = frozen_sats.saturating_add(u.value_sats);
             frozen_count += 1;
+        }
+        if locked.contains(&(u.txid.clone(), u.vout)) && !reserved.contains(&(u.txid.clone(), u.vout)) {
+            mix_locked_sats = mix_locked_sats.saturating_add(u.value_sats);   // v323
+            mix_locked_count += 1;
         }
     }
     for u in crate::tier2_wallet::unconfirmed_change_utxos(view, pending) {
@@ -569,6 +613,10 @@ pub fn max_sendable(
         frozen_sats,
         frozen_count,
         sat_per_vb: (((fee_rate_sat_per_kw as u64) + 249) / 250).max(1),
+        mix_locked_sats,
+        mix_locked_count,
+        mixed_inputs,
+        links_mixed,
     }
 }
 
@@ -608,6 +656,9 @@ pub struct CoinQuote {
     pub folded_sats: u64,
     pub tiny_change: bool,
     pub tiny_below_sats: u64,
+    /// v323 (§13): the mixed coins `spend` takes, and whether beside another coin (the warning on Send and Review).
+    pub spend_mixed: usize,
+    pub spend_links_mixed: bool,
     pub dust_sats: u64,
     pub sendable_sats: u64,
     pub frozen_sats: u64,
@@ -639,11 +690,12 @@ pub fn coin_quote(
         Err(_) => 0,
     };
     let base = max_sendable(dest, network, fee_rate_sat_per_kw, view, pending, marks);
-    let frozen = marks.frozen_set();
+    let frozen = marks.held_set();   // v323: a freeze or the Mix's hold
+    let locked = marks.mix_locked_set();
     let spendable = gather_spendable(view, pending, &frozen);
     let mut problem: Option<String> = None;
     let chosen: Vec<&SpendableUtxo> = match pins {
-        Some(p) if !p.is_empty() => match resolve_pins(&spendable, &frozen, p) {
+        Some(p) if !p.is_empty() => match resolve_pins(&spendable, &frozen, &locked, p) {
             Ok(c) => c,
             Err(e) => { problem = Some(e.to_string()); Vec::new() }
         },
@@ -670,8 +722,7 @@ pub fn coin_quote(
         if let (Some(a), Some(false)) = (amount_sats, covered) {
             let chosen_keys: std::collections::HashSet<(String, u32)> = chosen.iter().map(|u| (u.txid.clone(), u.vout)).collect();
             let rest: Vec<&SpendableUtxo> = spendable.iter().filter(|u| !chosen_keys.contains(&(u.txid.clone(), u.vout))).collect();
-            let values: Vec<u64> = rest.iter().map(|u| u.value_sats).collect();
-            let picked = crate::coin_select::pick(&values, |k| {
+            let picked = auto_pick(&rest, |k| {   // v323 (§13): mixed coins last here too
                 a.saturating_add(estimate_fee_mixed(&chosen, k, 2, extra_vb, fee_rate_sat_per_kw)).saturating_sub(chosen_sats)
             });
             match picked {
@@ -691,17 +742,19 @@ pub fn coin_quote(
     let mut change_sats: Option<u64> = None;
     let mut send_fee_sats: Option<u64> = None;
     let mut folded_sats = 0u64;
+    let (mut spend_mixed, mut spend_links_mixed) = (0usize, false);
     if let Some(a) = amount_sats {
         if problem.is_none() {
             let set: Option<Vec<&SpendableUtxo>> = match pins {
                 Some(p) if !p.is_empty() => if covered == Some(true) { Some(chosen.clone()) } else { None },
                 _ => {
-                    let values: Vec<u64> = spendable.iter().map(|u| u.value_sats).collect();
-                    crate::coin_select::pick(&values, |k| a.saturating_add(estimate_fee_with(k, 2, extra_vb, fee_rate_sat_per_kw)))
+                    let all: Vec<&SpendableUtxo> = spendable.iter().collect();
+                    auto_pick(&all, |k| a.saturating_add(estimate_fee_with(k, 2, extra_vb, fee_rate_sat_per_kw)))   // v323: the send's own pick
                         .map(|idx| idx.into_iter().map(|i| &spendable[i]).collect())
                 }
             };
             if let Some(set) = set {
+                (spend_mixed, spend_links_mixed) = mixed_flags(set.iter().map(|u| u.chain));
                 spend_sats = set.iter().map(|u| u.value_sats).sum();
                 spend = set.iter().map(|u| (u.txid.clone(), u.vout)).collect();
                 let fee = estimate_fee_inputs(&set, 2, extra_vb, fee_rate_sat_per_kw);   // v284: the set's real sizes — what the send pays
@@ -734,6 +787,8 @@ pub fn coin_quote(
         folded_sats,
         tiny_change,
         tiny_below_sats,
+        spend_mixed,
+        spend_links_mixed,
         dust_sats: DUST_THRESHOLD_SATS,
         sendable_sats: base.total_sats,
         frozen_sats: base.frozen_sats,
@@ -848,6 +903,7 @@ fn plan_send<'a>(
     fee_rate_sat_per_kw: u32,
     spendable: &'a [SpendableUtxo],
     frozen: &std::collections::HashSet<(String, u32)>,
+    locked: &std::collections::HashSet<(String, u32)>,
     pins: Option<&[(String, u32)]>,
 ) -> LijResult<Plan<'a>> {
     let n_dest = recipients.len();
@@ -873,16 +929,17 @@ fn plan_send<'a>(
     }
     let extra_vb: u64 = dests.iter().map(dest_extra_vbytes).sum();
     if spendable.is_empty() {
-        return Err(LijError::Node(if frozen.is_empty() {
-            "no spendable on-chain funds found".into()
-        } else {
-            "no spendable on-chain funds found — every coin is frozen".into()
-        }));
+        return Err(LijError::Node(match crate::tier2_wallet::held_kinds(frozen, locked) {   // v323: freezes and the Mix's holds
+            (false, false) => "no spendable on-chain funds found",
+            (true, false) => "no spendable on-chain funds found — every coin is frozen",
+            (false, true) => "no spendable on-chain funds found — every coin is in a Mix pool",
+            (true, true) => "no spendable on-chain funds found — every coin is frozen or in a Mix pool",
+        }.into()));
     }
     // v282: chosen coins are EXACTLY the set the transaction spends (DP 2026-09-28: chosen = exact; a top-up is the
     // user's explicit "Fill the rest for me", never silent).
     let chosen: Option<Vec<&SpendableUtxo>> = match pins {
-        Some(p) => Some(resolve_pins(spendable, frozen, p)?),
+        Some(p) => Some(resolve_pins(spendable, frozen, locked, p)?),
         None => None,
     };
     let fixed: u64 = recipients.iter().filter_map(|r| r.amount_sats).sum();
@@ -918,7 +975,8 @@ fn plan_send<'a>(
         }
         None => {
             let values: Vec<u64> = spendable.iter().map(|u| u.value_sats).collect();
-            let picked = crate::coin_select::pick(&values, |n| fixed.saturating_add(estimate_fee_with(n, n_dest + 1, extra_vb, fee_rate_sat_per_kw)));
+            let all: Vec<&SpendableUtxo> = spendable.iter().collect();
+            let picked = auto_pick(&all, |n| fixed.saturating_add(estimate_fee_with(n, n_dest + 1, extra_vb, fee_rate_sat_per_kw)));   // v323 (§13)
             match picked {
                 Some(idx) => idx.into_iter().map(|i| &spendable[i]).collect(),
                 None => {
@@ -927,7 +985,7 @@ fn plan_send<'a>(
                     return Err(LijError::Node(format!(
                         "insufficient funds: have {have} sats, need {} (amount {fixed} + fee {fee}){}",
                         fixed + fee,
-                        if frozen.is_empty() { "" } else { " — frozen coins are not counted" }
+                        crate::tier2_wallet::held_note(frozen, locked)
                     )));
                 }
             }
@@ -978,7 +1036,7 @@ fn resolve_dest_scripts(dests: &[Dest], root_key: &RootKey, secp: &Secp256k1<bit
 }
 
 /// v305: the change script at m/84'/{coin}'/0'/1/`change_index` — rotated per send so change is not linked by reuse.
-fn change_script(root_key: &RootKey, secp: &Secp256k1<bitcoin::secp256k1::All>, network: Network, change_index: u32) -> LijResult<ScriptBuf> {
+pub(crate) fn change_script(root_key: &RootKey, secp: &Secp256k1<bitcoin::secp256k1::All>, network: Network, change_index: u32) -> LijResult<ScriptBuf> {
     let change_xpriv = root_key.onchain_key()?   // m/84'/{coin}'/0'
         .derive_priv(
             secp,
@@ -1016,9 +1074,10 @@ pub(crate) fn build_send_tx(
     pins: Option<&[(String, u32)]>,
 ) -> LijResult<BuiltSend> {
     let secp = Secp256k1::new();
-    let frozen = marks.frozen_set();
+    let frozen = marks.held_set();   // v323: a freeze or the Mix's hold
+    let locked = marks.mix_locked_set();
     let spendable = gather_spendable(view, pending, &frozen);
-    let plan = plan_send(recipients, network, fee_rate_sat_per_kw, &spendable, &frozen, pins)?;
+    let plan = plan_send(recipients, network, fee_rate_sat_per_kw, &spendable, &frozen, &locked, pins)?;
     let scripts = resolve_dest_scripts(&plan.dests, root_key, &secp, &plan.selected)?;
     let mut outputs: Vec<TxOut> = scripts.into_iter().zip(plan.amounts.iter()).map(|(spk, a)| TxOut { value: bitcoin::Amount::from_sat(*a), script_pubkey: spk }).collect();
     if plan.change_sats > 0 {
@@ -1123,6 +1182,9 @@ pub struct MultiQuote {
     pub spend: Vec<(String, u32)>,
     pub sat_per_vb: u64,
     pub problem: Option<String>,
+    /// v323 (§13): the mixed coins the send takes, and whether beside another coin (the warning).
+    pub mixed_inputs: usize,
+    pub links_mixed: bool,
 }
 
 impl MultiQuote {
@@ -1140,11 +1202,14 @@ pub fn multi_quote(
     marks: &crate::tier2_wallet::CoinMarks,
     pins: Option<&[(String, u32)]>,
 ) -> MultiQuote {
-    let frozen = marks.frozen_set();
+    let frozen = marks.held_set();   // v323: a freeze or the Mix's hold
+    let locked = marks.mix_locked_set();
     let spendable = gather_spendable(view, pending, &frozen);
     let sat_per_vb = (((fee_rate_sat_per_kw as u64) + 249) / 250).max(1);
-    match plan_send(recipients, network, fee_rate_sat_per_kw, &spendable, &frozen, pins) {
+    match plan_send(recipients, network, fee_rate_sat_per_kw, &spendable, &frozen, &locked, pins) {
         Ok(p) => MultiQuote {
+            mixed_inputs: mixed_flags(p.selected.iter().map(|u| u.chain)).0,   // v323 (§13)
+            links_mixed: mixed_flags(p.selected.iter().map(|u| u.chain)).1,
             total_sats: p.amounts.iter().sum(),
             amounts: p.amounts,
             fee_sats: p.fee_sats,
@@ -1618,6 +1683,44 @@ mod coin_control_tests {
         assert_eq!(sp_ex_finds(&b.tx, &root), vec![(0, 10_000), (2, 30_000)]);
     }
 
+    // v323 (S58, Mix step 7 — v0.10 §8 rule 4): a coin a Mix pool holds is never a candidate — not for Max, not for the
+    // automatic pick, not as a chosen coin — and the page is told how much the pool holds, apart from the freezes.
+    #[test]
+    fn v323_a_coin_held_by_a_mix_pool_is_out_of_every_pick_and_reported_apart() {
+        let mut view = Tier2View::default();
+        view.utxos = vec![coin("aa", 0, 0, 50_000), coin("bb", 0, 1, 20_000), coin("cc", 0, 0, 7_000)];
+        let rate_kw = 2 * 250;
+        let mut marks = CoinMarks::default();
+        marks.mix_lock(&[("AA".into(), 0)], 1);
+        marks.set_frozen("cc", 0, true, 1);
+        let q = max_sendable("", Network::Bitcoin, rate_kw, &view, &[], &marks);
+        assert_eq!((q.inputs, q.total_sats), (1, 20_000));
+        assert_eq!((q.mix_locked_sats, q.mix_locked_count), (50_000, 1));
+        assert_eq!((q.frozen_sats, q.frozen_count), (7_000, 1));
+        // frozen AND held counts as the pool's
+        marks.set_frozen("aa", 0, true, 2);
+        let q = max_sendable("", Network::Bitcoin, rate_kw, &view, &[], &marks);
+        assert_eq!((q.frozen_sats, q.mix_locked_sats), (7_000, 50_000));
+        // the automatic pick cannot reach it
+        let root = root305();
+        let e = build_send_tx(&root, Network::Bitcoin, &[rcpt(BC1_EX, Some(30_000))], 500, 7, &view, &[], &marks, None).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(e.contains("insufficient funds") && e.contains("frozen coins and coins in a Mix pool are not counted"), "{e}");
+        // a chosen held coin is refused in its own words; the quote says so too
+        let pins = vec![("aa".to_string(), 0u32)];
+        let e = build_send_tx(&root, Network::Bitcoin, &[rcpt(BC1_EX, Some(10_000))], 500, 7, &view, &[], &marks, Some(&pins)).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(e.contains("in a Mix pool") && e.contains("until the pool settles or you leave the list"), "{e}");
+        assert!(coin_quote("", Network::Bitcoin, rate_kw, &view, &[], &marks, Some(&pins), None, false).problem.unwrap_or_default().contains("in a Mix pool"));
+        // every coin held: said so
+        let mut all = CoinMarks::default();
+        all.mix_lock(&[("aa".into(), 0), ("bb".into(), 0), ("cc".into(), 0)], 1);
+        let e = build_send_tx(&root, Network::Bitcoin, &[rcpt(BC1_EX, Some(1_000))], 500, 7, &view, &[], &all, None).err().map(|e| e.to_string()).unwrap_or_default();
+        assert_eq!(e.trim_start_matches("Node error: "), "no spendable on-chain funds found — every coin is in a Mix pool");
+        // freed: back in the pick
+        marks.mix_unlock(&[("aa".into(), 0)]);
+        marks.set_frozen("aa", 0, false, 3);
+        assert_eq!(max_sendable("", Network::Bitcoin, rate_kw, &view, &[], &marks).total_sats, 70_000);
+    }
+
     #[test]
     fn max_is_total_minus_a_one_output_fee_and_skips_frozen_and_legacy() {
         let mut view = Tier2View::default();
@@ -1993,15 +2096,57 @@ mod coin_control_tests {
         assert_eq!(ins[0].secret.x_only_public_key(&secp).0, xonly);
     }
 
+    // v323 (S58, Mix step 7 — spec v0.10 §13, DP 2026-10-10): mixed coins are in Send, Max and the quotes; the automatic
+    // pick takes them last (alone when one is enough), and every quote says when a mixed coin goes beside another coin.
+    // Replaces v316's hold test.
     #[test]
-    fn v316_a_mix_coin_is_not_in_the_automatic_pick_until_dps_rule() {
+    fn v323_mixed_coins_are_spendable_last_and_the_quotes_flag_a_link() {
         let mut view = Tier2View::default();
-        view.utxos = vec![coin("aa", 0, 0, 50_000), coin("bb", 0, crate::tier2::CHAIN_BIP86, 100_000)];
-        assert!(!is_signable(&view.utxos[1]), "held: a mixed coin beside the others links them");
-        let got = gather_spendable(&view, &[], &std::collections::HashSet::new());
-        assert_eq!(got.iter().map(|u| u.txid.as_str()).collect::<Vec<_>>(), vec!["aa"]);
-        let mut marks = crate::tier2_wallet::CoinMarks::default();
+        let mut c = coin(&"cc".repeat(32), 0, crate::tier2::CHAIN_BIP86, 100_000);
+        c.index = 0;
+        let mut d = coin(&"dd".repeat(32), 0, crate::tier2::CHAIN_BIP86, 30_000);
+        d.index = 1;
+        view.utxos = vec![coin(&"aa".repeat(32), 0, 0, 50_000), coin(&"bb".repeat(32), 0, 1, 20_000), c, d];
+        assert!(is_signable(&view.utxos[2]) && is_mixed(view.utxos[2].chain) && !is_mixed(0));
+        let mut marks = CoinMarks::default();
         marks.mix_exits.insert(0);
-        assert_eq!(crate::tier2_wallet::coin_tag(&view, &marks, &view.utxos[1]), "mix");
+        assert_eq!(crate::tier2_wallet::coin_tag(&view, &marks, &view.utxos[2]), "mix", "the Mixed mark stands");
+        let root = root305();
+        let rate = 500;   // 2 sat/vB
+        let spent = |amount: u64, marks: &CoinMarks| -> Vec<String> {
+            let b = build_send_tx(&root, Network::Bitcoin, &[rcpt(BC1_EX, Some(amount))], rate, 7, &view, &[], marks, None).ok().unwrap();
+            let mut v: Vec<String> = b.spent_outpoints.iter().map(|(t, _)| t[..2].to_string()).collect();
+            v.sort();
+            // the quote picks the same coins and flags them the same way
+            let q = coin_quote(BC1_EX, Network::Bitcoin, rate, &view, &[], marks, None, Some(amount), false);
+            let mut qv: Vec<String> = q.spend.iter().map(|(t, _)| t[..2].to_string()).collect();
+            qv.sort();
+            assert_eq!(qv, v, "quote = send at {amount}");
+            let m = multi_quote(&[rcpt(BC1_EX, Some(amount))], Network::Bitcoin, rate, &view, &[], marks, None);
+            assert_eq!((m.mixed_inputs, m.links_mixed), (q.spend_mixed, q.spend_links_mixed));
+            v.push(format!("mixed={} links={}", q.spend_mixed, q.spend_links_mixed));
+            v
+        };
+        // the other coins cover: no mixed coin
+        assert_eq!(spent(10_000, &marks), vec!["bb", "mixed=0 links=false"]);
+        assert_eq!(spent(60_000, &marks), vec!["aa", "bb", "mixed=0 links=false"]);
+        // they cannot (70,000): the mixed coin that covers alone, alone — no link, no warning
+        assert_eq!(spent(80_000, &marks), vec!["cc", "mixed=1 links=false"]);
+        // no mixed coin covers alone: every other coin, then the largest mixed coin — the warning
+        assert_eq!(spent(120_000, &marks), vec!["aa", "bb", "cc", "mixed=1 links=true"]);
+        assert_eq!(spent(169_800, &marks), vec!["aa", "bb", "cc", "dd", "mixed=2 links=true"]);
+        // Max takes everything, mixed coins too, and says so
+        let q = max_sendable("", Network::Bitcoin, rate, &view, &[], &marks);
+        assert_eq!((q.inputs, q.total_sats, q.mixed_inputs, q.links_mixed), (4, 200_000, 2, true));
+        assert_eq!(q.fee_sats, (11 + 68 * 2 + 58 * 2 + 31) * 2, "taproot inputs at their own size");
+        let all = build_send_tx(&root, Network::Bitcoin, &[rcpt(BC1_EX, None)], rate, 7, &view, &[], &marks, None).ok().unwrap();
+        assert_eq!(all.paid[0].amount_sats, q.max_sats, "Max on the screen = Max sent");
+        // chosen coins: exactly the chosen set, flagged
+        let pins = vec![("aa".repeat(32), 0u32), ("cc".repeat(32), 0u32)];
+        let qc = coin_quote(BC1_EX, Network::Bitcoin, rate, &view, &[], &marks, Some(&pins), Some(10_000), false);
+        assert_eq!((qc.spend_mixed, qc.spend_links_mixed), (1, true));
+        // a held mixed coin is out of all of it
+        marks.mix_lock(&[("cc".repeat(32), 0)], 1);
+        assert_eq!(spent(80_000, &marks), vec!["aa", "bb", "dd", "mixed=1 links=true"]);
     }
 }

@@ -11,7 +11,7 @@
 // v873 (S51, DP): /pkg/ is served CACHE-FIRST on an exact-version hit (the pair is ?v= keyed) — the network only
 // for a version this cache does not hold; the install copies an exact-version engine file from an earlier
 // build's cache instead of re-fetching it. Everything else stays network-first as described above.
-const CACHE = 'lij-offline-v976';  // v468 RITUAL: bump with EVERY page build — a changed sw.js re-runs install, refreshing the precached shell (the SW sat unchanged since v400, freezing iOS's offline-served index at v400-era)
+const CACHE = 'lij-offline-v1007';  // v468 RITUAL: bump with EVERY page build — a changed sw.js re-runs install, refreshing the precached shell (the SW sat unchanged since v400, freezing iOS's offline-served index at v400-era)
 // v687 (S45, DP): UPDATES DIAL. The mode lives in a settings cache that
 // survives CACHE bumps, so a freshly installed sw.js can read it in its own
 // install event. Under 'ask' the new build precaches, describes itself (page
@@ -40,8 +40,8 @@ const PRECACHE = [
   '/wallet/index.html',
   '/styles.css?v=328',
   '/wood-hinoki.jpg?v=1',   // v623: hinoki wood-motif plane image \u2014 a future buster flip updates the page token, the tile, and this line together (parity law)   // v579: styles buster flip — precache moves in lockstep (the parity lesson generalized)
-  '/pkg/lij_wasm.js?v=320',   // v567 (S37 ROOT-CAUSE): precache pinned at v214 since S34 while the page moved to v218 (S36 flips v215-218 never updated this list) — with the v472 exact-or-nothing /pkg law, OFFLINE ENGINE LOAD was impossible on every device. The sanity pass now asserts page-buster == precache version, permanently.
-  '/pkg/lij_wasm_bg.wasm?v=320',
+  '/pkg/lij_wasm.js?v=332',   // v567 (S37 ROOT-CAUSE): precache pinned at v214 since S34 while the page moved to v218 (S36 flips v215-218 never updated this list) — with the v472 exact-or-nothing /pkg law, OFFLINE ENGINE LOAD was impossible on every device. The sanity pass now asserts page-buster == precache version, permanently.
+  '/pkg/lij_wasm_bg.wasm?v=332',
   '/fonts/geist-sans-400.woff2',
   '/fonts/geist-sans-500.woff2',
   '/fonts/geist-mono-400.woff2',
@@ -165,6 +165,9 @@ self.addEventListener('push', (e) => {
     if (data.t === 'nwc') {   // v855 (S50, NWC): a Nostr app's request waits at the provider — content-free; the wallet fetches it on open
       title = 'NWC request waiting';
       body = foreground ? 'A Nostr app is asking your open wallet to pay.' : 'Open the LiJ app to see it.';
+    } else if (data.t === 'tatara') {   // v990 (S58): the Mix — a pool this phone has a seat in is starting
+      title = 'Your Mix pool is starting';
+      body = 'Open LiJ within 3 minutes and keep it open while the pool sets up.';
     } else if (data.t === 'wake') {
       if (foreground) {
         title = 'Payment arriving';
@@ -177,7 +180,7 @@ self.addEventListener('push', (e) => {
     }
     await self.registration.showNotification(title, {
       body: body,
-      tag: 'lij-wake',
+      tag: data.t === 'tatara' ? 'lij-mix' : 'lij-wake',   // v990: a Mix start is its own notification
       // v546: renotify — a repeat wake RE-ALERTS instead of silently
       // replacing the same-tag notification; vibrate strengthens Android
       // (heads-up banners remain governed by the site's Android
@@ -194,10 +197,11 @@ self.addEventListener('notificationclick', (e) => {
   e.notification.close();
   e.waitUntil((async () => {
     const list = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const mix = e.notification && e.notification.tag === 'lij-mix';   // v990 (S58): a Mix start opens the wallet on Mix
     for (const c of list) {
-      if ('focus' in c) return c.focus();
+      if ('focus' in c) { if (mix) { try { c.postMessage({ lij: 'open-mix' }); } catch (err) {} } return c.focus(); }
     }
-    return self.clients.openWindow('/wallet/');
+    return self.clients.openWindow(mix ? '/wallet/#mix' : '/wallet/');
   })());
 });
 

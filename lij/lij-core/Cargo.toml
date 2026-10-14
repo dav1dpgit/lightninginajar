@@ -49,6 +49,12 @@ sha2 = { version = "0.10", default-features = false }
 # (libsecp256k1 0.31, beside rust-bitcoin's 0.29); no `rand` feature — the engine supplies every nonce seed itself.
 musig2 = { version = "=0.4.1", default-features = false, features = ["secp256k1"] }
 argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
+# S58 (DP 2026-10-12 19:11 "Go on Step 3"): joinstr v2's protocol core, our vendored and patched copy (patches/joinstr-v2,
+# docs/joinstr-patches.md; CI-gated by ops/joinstr/gate.sh). Used by tatara/ — not yet by the wallet.
+joinstr-v2 = { path = "../patches/joinstr-v2" }
+# S58 (Tatara step 7): the point and scalar types joinstr's ring signature takes — the same crate and version already in the
+# engine's tree (musig2 0.4.1 and joinstr-v2 use it); adds nothing to Cargo.lock but this line.
+secp = { version = "0.7", default-features = false, features = ["secp256k1"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

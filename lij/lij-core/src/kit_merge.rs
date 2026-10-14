@@ -423,6 +423,20 @@ mod tests {
     }
 
     #[test]
+    fn v323_a_mix_attempts_exits_ride_only_their_own_copys_kit() {
+        // spec v0.10 §9 rule 3: the exits are wiped fully at settlement — a held kit's (another copy's, or this copy's
+        // older one) are never carried, or a wipe would come back with the next merge.
+        let own = json!({ "channels": [], "silent_payments": [], "mix_exits": [["aa"]] });
+        let held = vec![HeldKit { seq: 5, plain: json!({ "mix_exits": [["bb", "cc"]] }) }];
+        let (kit, _) = merge(&own, &held, &HashMap::new(), &|_| None, 9);
+        assert_eq!(kit["mix_exits"], json!([["aa"]]));
+        let own2 = json!({ "channels": [], "silent_payments": [], "mix_exits": [] });
+        let (kit2, _) = merge(&own2, &held, &HashMap::new(), &|_| None, 9);
+        assert_eq!(kit2["mix_exits"], json!([]), "wiped here: stays wiped");
+        assert!(plan(&own2, &held).is_empty(), "nothing to ask the chain about them");
+    }
+
+    #[test]
     fn v318_taproot_coins_are_united_like_silent_payment_coins_and_an_old_kit_is_unchanged() {
         // this copy has no taproot leg (an older engine); a held kit has two coins, one spent since
         let own = json!({ "channels": [], "silent_payments": [] });

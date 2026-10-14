@@ -96,7 +96,19 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v320".to_string()  // v320 (S57, DP 2026-10-08 22:53 "for Fixes we choose (a)… the note on the row should say self-claimed Push Key, and just show the transaction fee. (b)… put that in, too"): THE SELF-CLAIMED PUSH KEY IS PROVEN DURABLY. FOUND: a Push Key minted and claimed on the same wallet showed "Pushed · taken −1,003" and no incoming row — the lock and the delivery share the key's hash, and the page wrote a claimed payment's row only when no row of any kind carried the hash (two of DP's three 1,000-sat keys; the provider's journal shows both delivered over the existing channel, fee 0, taken, fee kept 3,000 msat — net −3 each; the third went to another wallet). The engine's part: push_in_json marks an accepted push "claimed" when its key has LEFT the preimage pool (push_accept puts it in; only the claim takes it out) — not only when this session saw PaymentClaimed — so the page can tell a self-claim on this phone, in a later session, or after a restore (the pool and the accepted list ride the blob). Test v320_an_accepted_push_whose_key_left_the_pool_reads_claimed (370 green). The page (v974) merges the two legs into one row: "Self-claimed Push Key", the delivery fee alone; and the claim sheet says when a key is the wallet's own and offers to cancel it instead (everything comes back, fee included).
+    "phase11-v332".to_string()  // v332 (S58, DP's first channel pool 2026-10-13 23:27 "Go"): (1) the creating phone's strict parse of its own announcement (P8's allowlist) takes `payout_type` — a channel pool's event carries "p2wsh" and the list lacked it, so every create stopped with "unknown field in the pool event" (phone test p1b: the announcement round trip for a channel pool). (2) A seat keeps its coins' ledger rows (Seat.coin_rows) when it is taken; an attempt's start uses the ledger's row when the list holds it and the seat's copy when it does not (a rebuild or a reorg rollback rewrites the list and re-derives a coin within a minute — one phone's "the seat's coin is not in the wallet's ledger" cost the pool a retry); mix_attempt_create / mix_attempt_join answer a "note" for the Mix log when the copy was used.
+    // "phase11-v331".to_string()  // v331 (S58, Phase 1b step 11c's engine half): the seat's route in the signed seat request — mix_seat_new takes "route" ("chain" | "channel"); seat_message_v1 / seat_body_v1 / ring_seat_digest / ring_seat_body carry the route (a chain seat signs exactly what it signed before; adapter 0.103.0 checks the same); ChannelInfo.pool_funded (the UCID bit) so Connections can say "Opening — waiting for the pool". lij-core 445 + 1 ignored.
+    // "phase11-v330".to_string()  // v330 (S58, DP 2026-10-13 18:08 "Proceed with onchain to pool to channel (1b) now" — steps 11a/11b): THE CHANNEL ROUTE — joinstr P1 payout_type (p2tr | p2wsh; the vendored diff regenerated, the gate green); the pool machine's Channel phase (OpenChannel → PayoutGiven → the ring-signed registration; every payout checked against the pool's declared type; FundChannel names the exit that pays this phone's channel exactly the size; the coin signature waits for ChannelSaved; ChannelFailed stops with nobody named); the node's pool channels (UCID_POOL_FUNDED_BIT: open_pool_channel with the provider — static remote key, no anchors, private, a fresh nonce per attempt; FundingGenerationReady keeps the funding script for the pool instead of building a transaction; fund_pool_channel hands LDK the exit's outpoint (unsafe_manual_funding_transaction_generated); FundingTxBroadcastSafe = the provider's signature, saved once the manager is written; a stop before the coin signature drops the half-open channel, never filed as a close; a channel record wiped for "the coin went elsewhere" drops its channel); the wasm: mix_attempt_channel_open / mix_attempt_payout / mix_attempt_channel_saved / mix_attempt_channel, the tick carries the channel's news into the attempt. StoredRecord.channel, channel_id() = LDK's v1 id of the exit's outpoint (test r0); a channel record puts the funding row only. Tests c1–c3, r0, s1b. lij-core 445 + 1 ignored.
+    // "phase11-v329".to_string()  // v329 (S58, DP 2026-10-13 17:12 — his first mainnet pool, three phones, in a block): THE POOL IS SEEN LIKE ANY SEND OF THIS WALLET'S, AND ITS RECORD NAMES ITS TRANSACTIONS — store::record_save puts the funding (this phone's coins reserved, its change back) and this phone's exit (received) among the sends still confirming (PendingTx, TxKind::Mix) the moment the record is written, so ONCHAIN RECENT and ONCHAIN COINS show the pool before its block; the rows go with the record, or at once when "Keep my coin out" spends the coin elsewhere (drop_pool_rows_for); records_view names the funding txid, every exit's txid, this phone's exit and output, the payout's address and the change (and a record's own funding row is not a keep-out); mix_tx_status asks the quorum whether a txid is known (tx_known: true / false / null) and, when known, whether it is in a block — the Mix screen's "Pull my coin back" shows only for a funding the network has not seen. The record keeps the change script and index (StoredRecord v329). Test s1b. lij-core 441 + 1 ignored.
+    // "phase11-v328".to_string()  // v328 (S58, DP's first real pools 2026-10-13 11:44/11:55 — the cellular phone's coin checks never reached the second provider; the page counted "no answer" as "the coin failed", the phone blamed both members, refused their coins in every retry and its abort stopped the others; the boxes' journals, no phone log yet): A COIN CHECK WITH NO ANSWER BLAMES NO ONE — mix_attempt_coin takes an empty answer as "no provider answered" (Phone::coin_result Option<bool>; machine Input::CoinsChecked { bad, unanswered }): the attempt stops with "the coin checks got no answer from any provider", names nobody (nothing is refused later), and its abort stops the others without blame; the final re-check of one's own coin refuses to sign without an answer. Test p5b. lij-core 440 + 1 ignored.
+    // "phase11-v327".to_string()  // v327 (S58, step 8 — the Mix screen's Confirming card): (1) mix_records answers each record's coins (inputs), their value (coin_sats) and its state from the wallet's own ledger and its sends still confirming — "waiting" (the funding is not in a block and nothing else spent the coin: "Keep my coin out of this pool" may be offered while no setup is running), "funded" (the funding spent it: the exits go out), "kept_out" (this wallet's own send took it: the pool can never use it; wiped once 6 deep). (2) mix_keep_out_quote(req) — what "Keep my coin out" costs before the person confirms: the coins' value, the fee for them alone to one address of this wallet's own (coin_quote's one-output Max of exactly those coins — the send's own arithmetic), what arrives; the same checks as the send, nothing written. (3) From Channel's quote: mix_quote with "close_sats" in place of "coins" quotes the coin a cooperative close of a channel with that balance will pay (the wallet's whole balance, to its own m/84 shutdown address — P2WPKH; LiJ's channels are provider-funded, the provider pays the close fee), with the no-change band (the balances that cover the pool at the fee limit and leave no change at today's rate — "bring this channel to between … and … sats first"); every quote names what goes to the miners when there is no change (to_miners_sats — v0.10 §5.3's "180 sats go to the miners"). (4) From Channel's waiting step: mix_close_join_add / mix_close_joins / mix_close_join_drop — a channel this phone is closing so its coin joins a pool ("Close channel and join"), sealed and on this phone only (never in a backup: after a restore the close's coin is an ordinary coin), one per channel and, like a seat, one per pool size. lij-core 439 + 1 ignored.
+    // "phase11-v326".to_string()  // v326 (S58, step 8): (1) "Keep my coin out of this pool" (v0.10 §8 rule 10) — mix_keep_out sends a coin a signed pool's record holds (the funding never came), alone, to a new address of this wallet's own (the next change address, marked), which ends that attempt for good; the record is wiped once that send is 6 deep (the settle check: "the coin went elsewhere"). A seat's coin is not sent: leaving the seat frees it. (2) Every send's change now goes past the change indexes a pool's funding was given (next_change_index_marked — §5.3, §8 rule 1): no send puts its change on an address a pool's members saw. lij-core 435 + 1 ignored.
+    // "phase11-v325".to_string()  // v325 (S58, step 8 — the Mix screen's engine needs): mix_quote (what Join shows: the pool size, the fee on top — rederive's own arithmetic at today's rate for the provider's largest pool — the change or none, and whether the coin covers the pool at the fee limit, 1.5 × today's rate); mix_records (the signed pools' records as the screen's "Confirming" cards — the size is the payout's own value); mix_send (a complete pool sent in order: the funding, then each exit — "already known" counts as sent, a refusal stops it); the ledger's coin rows say mix_held (a Mix pool holds the coin). lij-core 434 + 1 ignored.
+    // "phase11-v324".to_string()  // v324 (S58, DP 2026-10-13 00:33 "Go ahead with Step 8" — the Mix's engine half; docs/design/mix/tatara-phone-r1.md): ONE PHONE'S ATTEMPT, FOR THE PAGE. The seats (sealed, this phone only, never in a backup): mix_seat_new (a fresh seat key, its coins held from Join, the /tatara/seat body signed by the node key), mix_seat_confirm, mix_seat_drop (the coins freed unless a record names one), mix_seats, mix_seat_body (check-in, leave, pause, resume, open, report, announce, backup — signed by the seat key), mix_notice (a provider's notice checked against its node key before anything in it is read). The attempt: mix_attempt_create — the pool made, its announcement carrying the pool's secret key sealed to each other opened seat's key (the provider passes it on and never holds the key; adapter 0.102.0 names the seats' keys) — and mix_attempt_join (the announcement opened and checked: its signature and author, this seat's copy, Phase 1's options and the provider's, the start's size, people and relay, the fee within the person's limit); then mix_attempt_event / _coin / _tick / _end, each answering what the page does next (the relay posts, the payout for the forwarder, the coin checks, funding signed, the complete funding, the stop and its report). The record is written before the funding signature; a stop before it wipes the record at once; the backup is marked dirty on either. A phone reads only what the relay holds, its own posts included (fed early, a lost payout carried it a step ahead and its timeout named members who did nothing wrong — found by a test). The payout is exactly the pool size; each member's change is what its coin leaves over the pool size, its exit-fee share and its funding fee (rederive's one arithmetic). lij-core 433 + 1 ignored: whole pools of 3 and 6 from the announcement to the complete funding, three wallets from Join to settlement.
+    // "phase11-v323".to_string()  // v323 (S58, DP 2026-10-12 23:21 "I am good go proceed on Step 7. Go" — THE MIX'S WALLET SIDE, tatara-rollout-r3 step 7; spec v0.10 §5, §8, §9, §13; docs/design/mix/tatara-explained-r1.md): the engine room for the Mix, nothing on screen yet (step 8). (1) The Tatara key from the 12 words on a path of its own (HKDF "LiJ-Tatara-key-v1", pinned) — mix_tatara_pub(ts) answers its public half and the ring join message the node key signs. (2) A pool's payout: this wallet's next m/86 address, marked Mixed when handed out and never past index 479 (inside what a words-only restore watches), or another wallet's taproot address (the room DP asked for) — and its change at the next m/84 change index, marked so no later send or open reuses an address the pool saw: mix_hand_out(choice). (3) The coin hold (§8 rule 4): CoinMarks.mix_locks, read by every picker (Send, Max, chosen coins, quotes, channel opens), a held coin refused in its own words, Max reporting mix_locked_sats apart from the freezes; mix_hold(req), mix_reconcile(seat_coins) (§9 rule 7). (4) The attempt records (tatara_records): sealed at rest, in every backup while unsettled, the key deleted when none is left; the chain decides — mix_settle() sends a funded pool's exits in order (at most every 10 minutes), wipes a settled record (the payout 6 deep, or the coin spent elsewhere 6 deep) and frees its coins, marks the backup dirty; mix_record_wipe(id); mix_records_count(). (5) The Black start kit carries each unsettled attempt's signed exits alone (mix_exits; never carried from another copy's kit). (6) §13: mixed coins (any BIP86 coin) are in Send, Max and channel opens — last, alone when one is enough — and every quote flags a mixed coin beside another coin (MaxQuote/MultiQuote mixed_inputs+links_mixed, CoinQuote spend_mixed+spend_links_mixed, lsp_channel_open_pick). Inert today: no wallet holds a BIP86 coin and no record exists until the Mix screen (step 8). lij-core 424 + 1 ignored.
+    // "phase11-v322".to_string()  // v322 (S58, DP 2026-10-12 20:18 "Go on Proposals 1, 2, and 3" — the CHAIN dot): THE CONNECTION OPENS WHILE THE CHECKS RUN. His v981 reports: connect started → socket open ~1 s (Cloudflare, the tunnel, TLS and the WebSocket upgrade), all of it after the provider check and the cloud check had finished. Now ws_preopen(url) opens the WebSocket to the provider as the checks start; it sends nothing (no Lightning handshake — the unknown-channel safety is untouched: LND only re-establishes channels after the Init exchange); connect_to_peer adopts it when it is still open or opening and under 60 s old (else it is closed and a fresh one opened, as before), and sends the handshake's first bytes at once. The adapter (0.96.0) opens its TCP connection to LND only when those first bytes arrive, so a pre-opened socket holds nothing at LND (LND drops a connection that sends no act one within 5 s — brontide handshakeReadTimeout). ws_preopen_drop() for a start the checks stop.
+    // "phase11-v321".to_string()  // v321 (S58, DP 2026-10-12 16:42 — the CHAIN dot still slow on v978; his Performance report: socket open → first chain bundle 2,567 ms): THE CHAIN STREAM NO LONGER WAITS FOR THE TICK. FOUND in background_tick: (1) send what is queued, (2) handle arrived chain messages, (3) not subscribed → queue SubscribeChainData — so the subscribe went out on the NEXT tick and the provider's answer (12 ms at the provider) sat in the inbound queue until the tick after. Now: (a) the handler keeps the last SubscribeChainData and sends it again the moment the provider's peer connects (peer_connected runs inside the socket read, which is followed at once by process_events) — the tick still sends a fresh snapshot after, as before; (b) chain messages are handled right after the socket read (dispatch only updates the stream's state; funding confirmations still go to the tick). Tests v321_* (handler).
+    // "phase11-v320".to_string()  // v320 (S57, DP 2026-10-08 22:53 "for Fixes we choose (a)… the note on the row should say self-claimed Push Key, and just show the transaction fee. (b)… put that in, too"): THE SELF-CLAIMED PUSH KEY IS PROVEN DURABLY. FOUND: a Push Key minted and claimed on the same wallet showed "Pushed · taken −1,003" and no incoming row — the lock and the delivery share the key's hash, and the page wrote a claimed payment's row only when no row of any kind carried the hash (two of DP's three 1,000-sat keys; the provider's journal shows both delivered over the existing channel, fee 0, taken, fee kept 3,000 msat — net −3 each; the third went to another wallet). The engine's part: push_in_json marks an accepted push "claimed" when its key has LEFT the preimage pool (push_accept puts it in; only the claim takes it out) — not only when this session saw PaymentClaimed — so the page can tell a self-claim on this phone, in a later session, or after a restore (the pool and the accepted list ride the blob). Test v320_an_accepted_push_whose_key_left_the_pool_reads_claimed (370 green). The page (v974) merges the two legs into one row: "Self-claimed Push Key", the delivery fee alone; and the claim sheet says when a key is the wallet's own and offers to cancel it instead (everything comes back, fee included).
     // "phase11-v319".to_string()  // v319 (S57, DP 2026-10-08 14:40 "Agreed on the fix for the cloud copy fingerprint. Go"): THE PHONE KNOWS ITS OWN UPLOAD. FOUND (DP's phone, 14:33 — "Your cloud copy is newer than this phone: cloud no. 6142, this phone no. 6141"): the phone had uploaded 6142 itself, the cloud stored it, the app was put away before the OK arrived, so the number was never committed (v309 commits on the OK alone) and at the next open the cloud's 6142 read as another copy's. Now: before each upload the phone NOTES the number and the fingerprint (sha256 of the sealed bytes) of the copy it sends (storage::backup_inflight_note, KEY_BACKUP_INFLIGHT); the cloud keeps the fingerprint of the copy it stores (worker 0.10.0) and answers it with the number; cloud_backup_meta adds "fingerprint" and "own" (backup_meta_is_own: number AND fingerprint equal the note); backup_adopt_own() takes the noted number (never one from the page) and clears the note. The note is cleared when the cloud answers (accepted or refused as older); a lost answer keeps it. The worker also accepts a resend of the very same copy as an OK, so the retry after a lost OK while the app is open is no false conflict. Tests v319_the_fingerprint_is_the_sha256_of_the_sealed_bytes_as_the_worker_takes_it, v319_the_note_is_made_before_the_upload_and_read_back_whole, v319_the_clouds_copy_is_this_phones_own_only_when_number_and_fingerprint_both_match, v319_meta_reads_the_fingerprint_when_the_worker_answers_one
     // "phase11-v318".to_string()  // v314–v318 (S57, DP 2026-10-07 21:36 "start building the wallet side now", 21:53 "Go on 1 & 2", 22:58 "Proceed with the scanner fix" + the kit sweeps, 23:10 the Mix mark): v314 lij_core::bip86 (BIP86 addresses, vectors); v315 lij_core::musig (the MuSig2 signer, musig2 0.4.1 vendored — not exported); v316 a BIP86 coin signs on the key path (held out of the automatic pick for DP's postmix rule); v317 THE WALK FINDS TAPROOT COINS AND THEIR SPENDS — both BIP86 branches in the net at a fifth of its width, tier2::tr_hits names a BIP86 script in a matched block's filter, a TrHint per (script, block), resolve_tr_spends re-reads the hinted block when the coin is met (a key-path witness names no key: before this a spent taproot coin read unspent after a words-only restore), the widen rule per branch; v318 the Black start kit's taproot leg (one pre-signed sweep per BIP86 coin to its own m/84 address; merged and trimmed with the silent-payment leg; the fingerprint counts them) and CoinMarks::mix_exits (DP: Mix exits on the main branch, marked; the marks ride the backup blob)
     // "phase11-v313".to_string()  // v313 (S57, DP 2026-10-07 17:55 on the recovery recheck item 1: "it's not just fewer channels, it is where anything is different. Let's not wear blinders. Write it well and thoughtfully — Go"): THE BLACK START KIT ACROSS COPIES — kit_merge (docs/design/black-start/kit-merge-r1.md): black_start_merge_plan_json / black_start_bundle_merged_json open the held kits with the kit key and merge them with this copy's kit entry by entry (carry a channel only a held kit has while its funding or delayed output is unspent; keep a held entry whose commitment number is higher than this copy's; unite silent-payment coins while unspent; seq = max(now, held + 1)); every kit entry carries its commitment_number; the patched LDK reader lij_commitment_obscure_factor
@@ -193,6 +205,20 @@ pub fn set_offline_start(v: bool) {
     OFFLINE_START.store(v, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// v322 (S58, DP 2026-10-12 20:18 — the CHAIN dot): open the WebSocket to the provider at `wss_url` now, while the
+/// start-up checks run; nothing is sent on it until connect_to_peer adopts it. Best-effort: an error is only logged by
+/// the page, which then connects as before.
+#[wasm_bindgen]
+pub fn ws_preopen(wss_url: &str) -> Result<(), JsValue> {
+    ws_transport::preopen(wss_url)
+}
+
+/// v322: close the pre-opened socket (the start-up checks stopped the start).
+#[wasm_bindgen]
+pub fn ws_preopen_drop() {
+    ws_transport::drop_preopen();
+}
+
 /// v303 (S54, DP): what a BOLT11 invoice says, read and signature-checked — {"payee","amount_msat"|null,"payment_hash",
 /// "network","expires_at"}; an error names why it does not decode. The page checks an invoice with it before paying.
 #[wasm_bindgen]
@@ -236,6 +262,75 @@ static WATCH_REPORT: std::sync::Mutex<String> = std::sync::Mutex::new(String::ne
 /// at rest under the wallet's persistence key — the same key the channel blobs use.
 fn t2_storage(root_key: &lij_core::key::RootKey) -> Arc<dyn lij_core::storage::LijStorage> {
     Arc::new(lij_core::tier2_wallet::encrypted(LocalStorage, root_key.encryption_key()))   // v263: one key list, shared with node.rs
+}
+
+thread_local! {
+    /// Step 8 (S58): the attempts running on this page, by the provider's attempt id — memory only (their secret numbers
+    /// are never written: §9 rule 1); a reload ends them (§8 rule 0: never resume).
+    static MIX_PHONES: std::cell::RefCell<std::collections::HashMap<String, lij_core::tatara::phone::Phone>> = std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Phase 1b (step 11b): the pool channel of each running attempt — the node's nonce (LijNode::pool_channels).
+    static MIX_POOL_CHANNELS: std::cell::RefCell<std::collections::HashMap<String, u32>> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Step 8: the sealed store.
+fn mix_storage(inner: &Arc<std::sync::Mutex<LijWallet>>) -> Result<Arc<dyn lij_core::storage::LijStorage>, JsValue> {
+    let (root_key, _independent, _network) = {
+        let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+        wallet.onchain_handles()
+    };
+    Ok(t2_storage(&root_key))
+}
+
+/// Step 8: the root key, the sealed store and the backup's dirty flag.
+fn mix_handles(inner: &Arc<std::sync::Mutex<LijWallet>>) -> Result<(Arc<lij_core::key::RootKey>, Arc<dyn lij_core::storage::LijStorage>, Arc<std::sync::atomic::AtomicBool>), JsValue> {
+    let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+    let (root_key, _independent, _network) = wallet.onchain_handles();
+    let storage = t2_storage(&root_key);
+    Ok((root_key, storage, wallet.node().backup_dirty_handle()))
+}
+
+fn mix_now() -> u64 {
+    (js_sys::Date::now() / 1000.0) as u64
+}
+
+/// Step 8: one step of a running attempt, then its saves (store::after — the record written before the signature); the
+/// backup marked dirty when a record was written or wiped. Phase 1b (step 11b): the pool channel's side of the step —
+/// the exit the machine named is handed to LDK as the channel's funding (fund_channel; a refusal stops the attempt),
+/// and a stop before this phone's coin signature drops the half-open channel (§6.2.4).
+fn mix_step<E: std::fmt::Display>(attempt_id: &str, storage: &dyn lij_core::storage::LijStorage, dirty: &std::sync::atomic::AtomicBool, inner: &Arc<std::sync::Mutex<LijWallet>>,
+    f: impl FnOnce(&mut lij_core::tatara::phone::Phone, u64) -> Result<lij_core::tatara::phone::Out, E>) -> Result<String, JsValue> {
+    let now = mix_now();
+    MIX_PHONES.with(|m| {
+        let mut m = m.borrow_mut();
+        let p = m.get_mut(attempt_id).ok_or_else(|| JsValue::from_str("no such attempt on this page"))?;
+        let mut out = f(p, now).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let nonce = MIX_POOL_CHANNELS.with(|c| c.borrow().get(attempt_id).copied());
+        if let (Some((txid, vout)), Some(n)) = (out.fund_channel.clone(), nonce) {
+            let r = inner.lock().map_err(|e| format!("Lock error: {e}")).and_then(|w| w.node().fund_pool_channel(n, &txid, vout).map_err(|e| e.to_string()));
+            if let Err(e) = r {
+                log::warn!("[mix] the pool's exit could not fund the channel: {e}");
+                let o2 = p.channel_failed(&format!("the exit could not fund it: {e}"), now).map_err(|e| JsValue::from_str(&e.to_string()))?;
+                out.merge(o2);
+            }
+        }
+        if let (Some(st), Some(n)) = (out.stopped.as_ref(), nonce) {
+            if st.channel_opened && !p.signed() {
+                match inner.lock().map_err(|e| format!("Lock error: {e}")).and_then(|w| w.node().drop_pool_channel(n, "the pool stopped before this phone signed").map_err(|e| e.to_string())) {
+                    Ok(dropped) => log::info!("[mix] the attempt stopped: its channel {}", if dropped { "dropped" } else { "was already gone" }),
+                    Err(e) => log::warn!("[mix] the attempt stopped, but its channel could not be dropped: {e}"),
+                }
+                MIX_POOL_CHANNELS.with(|c| { c.borrow_mut().remove(attempt_id); });
+            }
+        }
+        let (out, d) = lij_core::tatara::store::after(storage, p, out, now).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        if d { dirty.store(true, std::sync::atomic::Ordering::Relaxed); }
+        serde_json::to_string(&out).map_err(|e| JsValue::from_str(&e.to_string()))
+    })
+}
+
+thread_local! {
+    /// v323 (Mix step 7): when this page last sent each funded pool's exits (ms) — again at most every 10 minutes.
+    static MIX_LAST_SEND: std::cell::RefCell<std::collections::HashMap<String, f64>> = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 thread_local! {
@@ -1389,7 +1484,7 @@ impl LijWalletHandle {
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;   // v281: a freeze the send must honour
                 (view, pending, marks)
             };
-            let change_index = lij_core::tier2_wallet::next_change_index(&view, &pending);
+            let change_index = lij_core::tier2_wallet::next_change_index_marked(&view, &pending, &marks);   // v326 (Mix step 8): past every change index a pool was given
             let result = lij_core::onchain_send::build_and_send(
                 &root_key,
                 independent,
@@ -1470,7 +1565,7 @@ impl LijWalletHandle {
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
                 (view, pending, marks)
             };
-            let change_index = lij_core::tier2_wallet::next_change_index(&view, &pending);
+            let change_index = lij_core::tier2_wallet::next_change_index_marked(&view, &pending, &marks);   // v326 (Mix step 8): past every change index a pool was given
             let result = lij_core::onchain_send::build_and_send_all(
                 &root_key,
                 independent,
@@ -1554,7 +1649,7 @@ impl LijWalletHandle {
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
                 (view, pending, marks)
             };
-            let change_index = lij_core::tier2_wallet::next_change_index(&view, &pending);
+            let change_index = lij_core::tier2_wallet::next_change_index_marked(&view, &pending, &marks);   // v326 (Mix step 8): past every change index a pool was given
             let result = if r.all {
                 lij_core::onchain_send::build_and_send_all_pinned(&root_key, independent, network, &r.dest, r.fee_rate_sat_per_kw, change_index, &view, &pending, &marks, &pins).await
             } else {
@@ -1638,7 +1733,7 @@ impl LijWalletHandle {
                 let marks = lij_core::tier2_wallet::load_marks(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
                 (view, pending, marks)
             };
-            let change_index = lij_core::tier2_wallet::next_change_index(&view, &pending);
+            let change_index = lij_core::tier2_wallet::next_change_index_marked(&view, &pending, &marks);   // v326 (Mix step 8): past every change index a pool was given
             let result = lij_core::onchain_send::build_and_send_multi(&root_key, independent, network, &recipients, r.fee_rate_sat_per_kw, change_index, &view, &pending, &marks, pins.as_deref())
                 .await
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -1804,6 +1899,624 @@ impl LijWalletHandle {
             "frozen_count": marks.frozen_count(),
         });
         Ok(out.to_string())
+    }
+
+    // ── v323 (S58, Mix step 7 — tatara-rollout-r3 step 7; spec v0.10 §5, §8, §9, §13): the wallet's side of a Mix. The
+    // engine room only: the page drives an attempt in step 8. Every call below works on the sealed store (t2_storage). ──
+
+    /// The Tatara key's public half (33 bytes, hex) — what Mix on registers with the provider (door 1). From the 12 words
+    /// on a path of its own (DP 23:21), never stored. Answers JSON {"tatara_pk", "join_message"} for `ts` (seconds): the
+    /// page has the node key sign join_message (sign_message) and sends both.
+    #[wasm_bindgen]
+    pub fn mix_tatara_pub(&self, ts: u64) -> Result<String, JsValue> {
+        let (root_key, _independent, _network) = {
+            let wallet = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+            wallet.onchain_handles()
+        };
+        let pk = lij_core::tatara::client::tatara_pk(&root_key.tatara_key()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let pk_hex = hex::encode(pk);
+        Ok(serde_json::json!({ "tatara_pk": pk_hex, "join_message": lij_core::tatara::client::ring_join_message(&pk_hex, ts) }).to_string())
+    }
+
+    /// A new attempt's payout and change, handed out and marked together. `choice` is JSON {"to":"this_wallet"} or
+    /// {"to":"outside","address":"bc1p…"} (another wallet's taproot address — the room DP asked for; the screen comes
+    /// later). Answers {"payout_address","payout_spk_hex","payout_index","change_index","change_spk_hex"} or a refusal
+    /// in plain words.
+    #[wasm_bindgen]
+    pub fn mix_hand_out(&self, choice: &str) -> Result<String, JsValue> {
+        let c: lij_core::tatara::wallet::PayoutChoice = serde_json::from_str(choice).map_err(|e| JsValue::from_str(&format!("mix_hand_out: bad request: {e}")))?;
+        let (root_key, _independent, _network) = {
+            let wallet = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+            wallet.onchain_handles()
+        };
+        let storage = t2_storage(&root_key);
+        let h = lij_core::tatara::store::hand_out(storage.as_ref(), &root_key, &c).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        log::info!("[mix] handed out payout {} and change {}", h.payout_index.map(|i| format!("m/86 #{i}")).unwrap_or_else(|| "to another wallet".into()), h.change_index);
+        serde_json::to_string(&h).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Hold coins for a Mix, or free them. `req` JSON {"coins":[["txid",vout],…],"hold":true|false}. Freeing leaves a coin
+    /// an unsettled attempt record names held (only its settlement frees it). Answers {"held","freed"}.
+    #[wasm_bindgen]
+    pub fn mix_hold(&self, req: &str) -> Result<String, JsValue> {
+        #[derive(serde::Deserialize)]
+        struct Req { coins: Vec<(String, u32)>, hold: bool }
+        let r: Req = serde_json::from_str(req).map_err(|e| JsValue::from_str(&format!("mix_hold: bad request: {e}")))?;
+        if r.coins.iter().any(|(t, _)| t.len() != 64 || !t.chars().all(|c| c.is_ascii_hexdigit())) {
+            return Err(JsValue::from_str("mix_hold: each txid must be 64 hex characters"));
+        }
+        let (root_key, _independent, _network) = {
+            let wallet = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+            wallet.onchain_handles()
+        };
+        let storage = t2_storage(&root_key);
+        let (held, freed) = if r.hold {
+            lij_core::tatara::store::lock(storage.as_ref(), &r.coins, lij_core::tier2_wallet::now_ms()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            (r.coins.len(), 0)
+        } else {
+            (0, lij_core::tatara::store::unlock(storage.as_ref(), &r.coins).map_err(|e| JsValue::from_str(&e.to_string()))?.len())
+        };
+        log::info!("[mix] hold: {held} held, {freed} freed");
+        Ok(serde_json::json!({ "held": held, "freed": freed }).to_string())
+    }
+
+    /// Wipe an attempt record and free its coins — at once for an attempt that ended before this phone's coin
+    /// signature (§9 rule 3). Marks the backup dirty (a record wiped is an upload trigger); the page pushes a clean kit
+    /// twice when this answers true.
+    #[wasm_bindgen]
+    pub fn mix_record_wipe(&self, id: &str) -> Result<bool, JsValue> {
+        let wallet = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+        let (root_key, _independent, _network) = wallet.onchain_handles();
+        let storage = t2_storage(&root_key);
+        let gone = lij_core::tatara::store::record_wipe(storage.as_ref(), id).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        if gone {
+            wallet.node().backup_dirty_handle().store(true, std::sync::atomic::Ordering::Relaxed);
+            log::info!("[mix] record wiped (ended before the coin signature)");
+        }
+        Ok(gone)
+    }
+
+    /// How many attempt records this phone keeps (0 = the settle pass has nothing to do).
+    #[wasm_bindgen]
+    pub fn mix_records_count(&self) -> Result<u32, JsValue> {
+        let (root_key, _independent, _network) = {
+            let wallet = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+            wallet.onchain_handles()
+        };
+        let storage = t2_storage(&root_key);
+        Ok(lij_core::tatara::records::load(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?.len() as u32)
+    }
+
+    /// At start and after a restore (§9 rule 7): the holds become exactly the coins a seat on this phone
+    /// (`seat_coins` JSON [["txid",vout],…]) or an unsettled record names. Answers {"freed","added"}.
+    #[wasm_bindgen]
+    pub fn mix_reconcile(&self, seat_coins: &str) -> Result<String, JsValue> {
+        let coins: Vec<(String, u32)> = serde_json::from_str(seat_coins).map_err(|e| JsValue::from_str(&format!("mix_reconcile: bad request: {e}")))?;
+        let (root_key, _independent, _network) = {
+            let wallet = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+            wallet.onchain_handles()
+        };
+        let storage = t2_storage(&root_key);
+        let (freed, added) = lij_core::tatara::store::reconcile(storage.as_ref(), &coins, lij_core::tier2_wallet::now_ms()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        if !freed.is_empty() || !added.is_empty() { log::info!("[mix] holds reconciled: {} freed, {} added", freed.len(), added.len()); }
+        Ok(serde_json::json!({ "freed": freed.len(), "added": added.len() }).to_string())
+    }
+
+    /// The chain decides (§8 rule 6; §9 rule 4 — a restored record is watched, never resumed): every record is checked
+    /// against the wallet's ledger — its exits SENT, in order, once its funding spent this phone's coin (again at most
+    /// every 10 minutes until the payout is settled; "already known" is fine), WIPED once settled (its coins freed, the
+    /// backup marked dirty), or watched. A payout to another wallet's address is not in this wallet's ledger: the depth
+    /// of EVERY exit of that pool is asked of the chain servers, so the question does not single out the payout. Answers
+    /// the report JSON {"send":[[id,[hex…]]…],"wiped":[[id,why]…],"watching","unreadable","sent":[[id,accepted,refused]…]};
+    /// the page pushes a clean kit twice when "wiped" is not empty.
+    #[wasm_bindgen]
+    pub fn mix_settle(&self) -> js_sys::Promise {
+        let (root_key, independent, dirty) = match self.inner.try_lock() {
+            Ok(w) => { let (r, i, _n) = w.onchain_handles(); (r, i, w.node().backup_dirty_handle()) }
+            Err(_) => return js_sys::Promise::reject(&JsValue::from_str("WALLET_BUSY")),
+        };
+        let inner = self.inner.clone();
+        future_to_promise(async move {
+            let storage = t2_storage(&root_key);
+            let recs = lij_core::tatara::records::load(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            if recs.is_empty() {
+                return Ok(JsValue::from_str(&serde_json::to_string(&lij_core::tatara::store::SettleReport::default()).unwrap_or_default()));
+            }
+            let first = lij_core::tatara::store::settle_pass(storage.as_ref(), &|_| None).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let mut wiped = first.wiped.clone();
+            // another wallet's payout: ask the depth of every exit of its pool
+            let outside: Vec<&lij_core::tatara::records::StoredRecord> = recs.iter()
+                .filter(|r| r.payout_index.is_none() && first.send.iter().any(|(id, _)| *id == r.id))
+                .collect();
+            let report = if outside.is_empty() { first } else {
+                let mut depths: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+                if let Ok(tip) = independent.fetch_tip_height().await {
+                    for r in &outside {
+                        for h in &r.exits_hex {
+                            let Ok(tx) = bitcoin::consensus::encode::deserialize_hex::<bitcoin::Transaction>(h) else { continue };
+                            let txid = tx.compute_txid().to_string();
+                            if let Ok(t) = independent.fetch_tx(&txid).await {
+                                if let (true, Some(bh)) = (t.confirmed, t.block_height) { depths.insert(txid, tip.saturating_sub(bh).saturating_add(1)); }
+                            }
+                        }
+                    }
+                }
+                let second = lij_core::tatara::store::settle_pass(storage.as_ref(), &|t| depths.get(t).copied()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+                wiped.extend(second.wiped.clone());
+                lij_core::tatara::store::SettleReport { wiped: wiped.clone(), ..second }
+            };
+            let now = js_sys::Date::now();
+            let mut sent: Vec<(String, usize, usize)> = Vec::new();
+            for (id, txs) in &report.send {
+                let due = MIX_LAST_SEND.with(|m| m.borrow().get(id).map_or(true, |t| now - *t >= 600_000.0));
+                if !due { continue; }
+                MIX_LAST_SEND.with(|m| { m.borrow_mut().insert(id.clone(), now); });
+                let (mut ok, mut no) = (0usize, 0usize);
+                for h in txs {
+                    let Ok(bytes) = hex::decode(h) else { no += 1; continue };
+                    match independent.broadcast_raw_tx(&bytes).await {
+                        Ok(()) => ok += 1,
+                        Err(e) if e.to_string().to_ascii_lowercase().contains("already") => ok += 1,
+                        Err(e) => { no += 1; log::warn!("[mix] an exit was refused: {e}"); }
+                    }
+                }
+                log::info!("[mix] exits sent for a funded pool: {ok} accepted, {no} refused");
+                sent.push((id.clone(), ok, no));
+            }
+            if !report.wiped.is_empty() {
+                dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+                for (id, why) in &report.wiped {
+                    log::info!("[mix] record wiped — {why}");
+                    // Phase 1b (§6.3.4): a channel record whose coin went elsewhere — the pool's funding can never reach
+                    // the chain, so the channel it would have funded is dropped (closed without broadcasting)
+                    if why.contains("went elsewhere") {
+                        if let Some(cid) = recs.iter().find(|r| r.id == *id).and_then(|r| r.channel_id()) {
+                            match inner.lock().map_err(|e| format!("Lock error: {e}")).and_then(|w| w.node().drop_pool_channel_by_id(&cid, "the pool's coin went elsewhere, 6 blocks deep").map_err(|e| e.to_string())) {
+                                Ok(true) => log::info!("[mix] the pool channel {cid} dropped with its record"),
+                                Ok(false) => log::info!("[mix] the pool channel {cid} is not a channel to drop (open, or gone)"),
+                                Err(e) => log::warn!("[mix] the pool channel {cid} could not be dropped: {e}"),
+                            }
+                        }
+                    }
+                }
+            }
+            let mut out = serde_json::to_value(&report).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            if let Some(o) = out.as_object_mut() { o.insert("sent".into(), serde_json::json!(sent)); }
+            Ok(JsValue::from_str(&out.to_string()))
+        })
+    }
+
+    /// v323 (§13): what an open WOULD spend — `req` JSON {"channel_sats","fee_rate_sat_per_vb","inputs"?:[{"txid","vout"}]}
+    /// — answers {"inputs","fee_sats","mixed_inputs","links_mixed"} (the sheet's mixed-coin warning: links_mixed) or
+    /// {"problem"} in plain words. The open's own pick.
+    #[wasm_bindgen]
+    pub fn lsp_channel_open_pick(&self, req: &str) -> Result<String, JsValue> {
+        #[derive(serde::Deserialize)]
+        struct Pin { txid: String, vout: u32 }
+        #[derive(serde::Deserialize)]
+        struct Req { channel_sats: u64, fee_rate_sat_per_vb: f64, #[serde(default)] inputs: Option<Vec<Pin>> }
+        let r: Req = serde_json::from_str(req).map_err(|e| JsValue::from_str(&format!("lsp_channel_open_pick: bad request: {e}")))?;
+        let pins: Option<Vec<(String, u32)>> = r.inputs.map(|v| v.into_iter().map(|p| (p.txid.to_ascii_lowercase(), p.vout)).collect());
+        let (root_key, _independent, _network) = {
+            let wallet = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+            wallet.onchain_handles()
+        };
+        let storage = t2_storage(&root_key);
+        let rate = ((r.fee_rate_sat_per_vb * 250.0).round() as u32).max(250);
+        match lij_core::channel_open::funding_pick_quote(storage.as_ref(), r.channel_sats, rate, pins.as_deref()) {
+            Ok(q) => serde_json::to_string(&q).map_err(|e| JsValue::from_str(&e.to_string())),
+            Err(e) => Ok(serde_json::json!({ "problem": e.to_string() }).to_string()),
+        }
+    }
+
+    // ── step 8 (S58, DP 2026-10-13 00:33 "Go ahead with Step 8"): the Mix's seats and attempts, for the page. The logic
+    // is lij-core's (tatara::store, tatara::phone — tested natively as whole pools of 3 and 6 and three wallets from Join
+    // to settlement); these only carry JSON. ──
+
+    /// Join: a seat on the provider's waiting list. `req` JSON {"provider_pk","endpoint","size","coins":[["txid",vout]…],
+    /// "payout":{"to":"this_wallet"}|{"to":"outside","address"},"rate_at_join","ts"}. The seat's key is fresh; the coins
+    /// are held from now. Answers {"seat_pk","body"} — POST body to the provider's /tatara/seat, signed by the node key.
+    #[wasm_bindgen]
+    pub fn mix_seat_new(&self, req: &str) -> Result<String, JsValue> {
+        #[derive(serde::Deserialize)]
+        struct Req { provider_pk: String, endpoint: String, size: u64, coins: Vec<(String, u32)>, payout: lij_core::tatara::wallet::PayoutChoice, rate_at_join: u64, ts: u64, #[serde(default)] route: Option<String> }
+        let r: Req = serde_json::from_str(req).map_err(|e| JsValue::from_str(&format!("mix_seat_new: bad request: {e}")))?;
+        // Phase 1b: the route — "chain" (the payout on-chain) or "channel" (the payout this wallet's channel's funding)
+        let route = match r.route.as_deref().unwrap_or("chain") { "chain" => "chain", "channel" => "channel", other => return Err(JsValue::from_str(&format!("mix_seat_new: no such route: {other}"))) }.to_string();
+        let wallet = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+        let (root_key, _independent, _network) = wallet.onchain_handles();
+        let storage = t2_storage(&root_key);
+        let seat = lij_core::tatara::store::Seat {
+            seat_id: String::new(), seat_secret_hex: String::new(), seat_pk: String::new(),
+            provider_pk: r.provider_pk.to_ascii_lowercase(), endpoint: r.endpoint, size: r.size, route,
+            coins: r.coins.into_iter().map(|(t, v)| (t.to_ascii_lowercase(), v)).collect(), coin_rows: vec![], payout: r.payout, rate_at_join: r.rate_at_join, since_ms: 0,   // v332: seat_new copies the rows
+        };
+        let seat = lij_core::tatara::store::seat_new(storage.as_ref(), seat, &lij_core::tatara::store::fresh32(), lij_core::tier2_wallet::now_ms())
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let node_pk = wallet.node_pubkey().map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let body = lij_core::tatara::store::seat_request(&seat, &node_pk, r.ts, &|m| wallet.sign_message(m))
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        log::info!("[mix] seat taken for {} sats{} — its coin held", seat.size, if seat.route == "channel" { " (a channel pool)" } else { "" });
+        Ok(serde_json::json!({ "seat_pk": seat.seat_pk, "body": body }).to_string())
+    }
+
+    /// The provider answered the seat request: its id.
+    #[wasm_bindgen]
+    pub fn mix_seat_confirm(&self, seat_pk: &str, seat_id: &str) -> Result<(), JsValue> {
+        let storage = mix_storage(&self.inner)?;
+        lij_core::tatara::store::seat_confirm(storage.as_ref(), seat_pk, seat_id).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Leave (or a refused or removed seat): the seat goes, its coins are freed (unless an unsettled record names one).
+    #[wasm_bindgen]
+    pub fn mix_seat_drop(&self, seat_pk: &str) -> Result<bool, JsValue> {
+        let storage = mix_storage(&self.inner)?;
+        let gone = lij_core::tatara::store::seat_drop(storage.as_ref(), seat_pk).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        if gone.is_some() { log::info!("[mix] seat left — its coin freed"); }
+        Ok(gone.is_some())
+    }
+
+    /// This phone's seats, without their secrets: [{"seat_pk","seat_id","provider_pk","endpoint","size","route","coins",
+    /// "payout","rate_at_join","since_ms"}…].
+    #[wasm_bindgen]
+    pub fn mix_seats(&self) -> Result<String, JsValue> {
+        let storage = mix_storage(&self.inner)?;
+        let all = lij_core::tatara::store::seats(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let v: Vec<serde_json::Value> = all.iter().map(|s| serde_json::json!({
+            "seat_pk": s.seat_pk, "seat_id": s.seat_id, "provider_pk": s.provider_pk, "endpoint": s.endpoint, "size": s.size,
+            "route": s.route, "coins": s.coins, "payout": s.payout, "rate_at_join": s.rate_at_join, "since_ms": s.since_ms,
+        })).collect();
+        Ok(serde_json::Value::Array(v).to_string())
+    }
+
+    /// A seat's request to its provider, signed by the seat key: `ask` JSON {"action": checkin|leave|pause|resume|open|
+    /// report|announce|backup, "attempt_id"?, "outcome"?, "announcement"?, "funding_hex"?, "exits"?}. Answers the POST body.
+    #[wasm_bindgen]
+    pub fn mix_seat_body(&self, seat_pk: &str, ask: &str, ts: u64) -> Result<String, JsValue> {
+        let a: lij_core::tatara::store::SeatAsk = serde_json::from_str(ask).map_err(|e| JsValue::from_str(&format!("mix_seat_body: bad request: {e}")))?;
+        let storage = mix_storage(&self.inner)?;
+        let seat = lij_core::tatara::store::seat_by_pk(storage.as_ref(), seat_pk).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let b = lij_core::tatara::store::seat_body(&seat, &a, ts).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(b.to_string())
+    }
+
+    /// A provider's notice {body, sig} for a seat, checked against the seat's provider's node key before anything in it
+    /// is read. Answers the notice (JSON, "type" first) or an error.
+    #[wasm_bindgen]
+    pub fn mix_notice(&self, seat_pk: &str, body: &str, sig: &str) -> Result<String, JsValue> {
+        let storage = mix_storage(&self.inner)?;
+        let seat = lij_core::tatara::store::seat_by_pk(storage.as_ref(), seat_pk).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let n = lij_core::tatara::store::read_notice(&seat, body, sig).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        serde_json::to_string(&n).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// The creating phone ("create" notice): `start` JSON {"seat_pk","attempt_id","size","peers","relay","sizes",
+    /// "max_fee_sat_vb","refused"?}, the pool's fee rate, and the other opened seats' keys (JSON array). Answers {"out",
+    /// "announcement","relay_filter","pool_pk"} — the page hands the announcement to the provider (announce), then joins
+    /// the relay with the token.
+    #[wasm_bindgen]
+    pub fn mix_attempt_create(&self, start: &str, fee_rate_sat_vb: u32, seat_pks: &str) -> Result<String, JsValue> {
+        let st: lij_core::tatara::store::AttemptStart = serde_json::from_str(start).map_err(|e| JsValue::from_str(&format!("mix_attempt_create: bad request: {e}")))?;
+        let others: Vec<String> = serde_json::from_str(seat_pks).map_err(|e| JsValue::from_str(&format!("mix_attempt_create: bad seat keys: {e}")))?;
+        let (root_key, storage, dirty) = mix_handles(&self.inner)?;
+        let now = mix_now();
+        let (_seat, c, note) = lij_core::tatara::store::attempt_common(storage.as_ref(), &root_key, &st, now).map_err(|e| JsValue::from_str(&e.to_string()))?;   // v332: the ledger note
+        let (mut phone, ann, out) = lij_core::tatara::phone::Phone::create(c, fee_rate_sat_vb as u64, &others).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let (out, d) = lij_core::tatara::store::after(storage.as_ref(), &mut phone, out, now).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        if d { dirty.store(true, std::sync::atomic::Ordering::Relaxed); }
+        let filter = phone.relay_filter();
+        let pool_pk = phone.pool_pk().to_string();
+        MIX_PHONES.with(|m| { m.borrow_mut().insert(st.attempt_id.clone(), phone); });
+        log::info!("[mix] pool created for attempt {}", &st.attempt_id[..8.min(st.attempt_id.len())]);
+        Ok(serde_json::json!({ "out": out, "announcement": ann, "relay_filter": filter, "pool_pk": pool_pk, "note": note }).to_string())
+    }
+
+    /// A joining phone ("announcement" notice): `start` as for create, and the announcement. Answers {"out",
+    /// "relay_filter","pool_pk"} — or the refusal in plain words (a pool not the provider's, fees above the limit…).
+    #[wasm_bindgen]
+    pub fn mix_attempt_join(&self, start: &str, announcement: &str) -> Result<String, JsValue> {
+        let st: lij_core::tatara::store::AttemptStart = serde_json::from_str(start).map_err(|e| JsValue::from_str(&format!("mix_attempt_join: bad request: {e}")))?;
+        let (root_key, storage, dirty) = mix_handles(&self.inner)?;
+        let now = mix_now();
+        let (seat, c, note) = lij_core::tatara::store::attempt_common(storage.as_ref(), &root_key, &st, now).map_err(|e| JsValue::from_str(&e.to_string()))?;   // v332: the ledger note
+        let sk = lij_core::tatara::store::seat_secret(&seat).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let (mut phone, out) = lij_core::tatara::phone::Phone::join(c, announcement, &sk).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let (out, d) = lij_core::tatara::store::after(storage.as_ref(), &mut phone, out, now).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        if d { dirty.store(true, std::sync::atomic::Ordering::Relaxed); }
+        let filter = phone.relay_filter();
+        let pool_pk = phone.pool_pk().to_string();
+        MIX_PHONES.with(|m| { m.borrow_mut().insert(st.attempt_id.clone(), phone); });
+        log::info!("[mix] joined the pool of attempt {}", &st.attempt_id[..8.min(st.attempt_id.len())]);
+        Ok(serde_json::json!({ "out": out, "relay_filter": filter, "pool_pk": pool_pk, "note": note }).to_string())
+    }
+
+    /// An event the page read from the pool's relay. Answers the Out JSON ({"relay","payout","checks","save"(null),
+    /// "funding_signed","complete","stopped","phase"}).
+    #[wasm_bindgen]
+    pub fn mix_attempt_event(&self, attempt_id: &str, event: &str) -> Result<String, JsValue> {
+        let (_root_key, storage, dirty) = mix_handles(&self.inner)?;
+        mix_step(attempt_id, storage.as_ref(), &dirty, &self.inner, |p, now| p.relay_event(event, now))
+    }
+
+    /// A coin check's answer (the filter server's /coin JSON through a provider) for one coin the Out asked about. v328:
+    /// an empty answer (or "{}") = no provider answered — the attempt stops without naming anyone (a phone that cannot
+    /// reach an answerer is the one with the problem); only an answer that came back can fail a coin.
+    #[wasm_bindgen]
+    pub fn mix_attempt_coin(&self, attempt_id: &str, ask: &str, answer: &str) -> Result<String, JsValue> {
+        let a: lij_core::tatara::phone::CoinAsk = serde_json::from_str(ask).map_err(|e| JsValue::from_str(&format!("mix_attempt_coin: bad ask: {e}")))?;
+        let t = answer.trim();
+        let ok = if t.is_empty() || t == "{}" { log::warn!("[mix] a coin check got no answer"); None } else { Some(lij_core::tatara::phone::coin_answer_ok(&a, answer)) };
+        if ok == Some(false) { log::warn!("[mix] a member's coin failed the coin check"); }
+        let (_root_key, storage, dirty) = mix_handles(&self.inner)?;
+        mix_step(attempt_id, storage.as_ref(), &dirty, &self.inner, |p, now| p.coin_result(&a.txid, a.vout, ok, now))
+    }
+
+    /// Phase 1b (v0.10 §6.2.1; step 11a): the answer to an Out's `open_channel` — the opened channel's funding script
+    /// (P2WSH, hex) is this phone's payout; the registration goes out.
+    #[wasm_bindgen]
+    pub fn mix_attempt_payout(&self, attempt_id: &str, funding_spk_hex: &str) -> Result<String, JsValue> {
+        let spk = bitcoin::ScriptBuf::from_bytes(hex::decode(funding_spk_hex.trim()).map_err(|e| JsValue::from_str(&format!("mix_attempt_payout: not hex: {e}")))?);
+        let (_root_key, storage, dirty) = mix_handles(&self.inner)?;
+        mix_step(attempt_id, storage.as_ref(), &dirty, &self.inner, |p, now| p.payout_given(spk.clone(), now))
+    }
+
+    /// Phase 1b (§6.2.3; step 11a): the answer to an Out's `fund_channel` — the channel is saved with the provider's
+    /// first-commitment signature; the coin signature may follow.
+    #[wasm_bindgen]
+    pub fn mix_attempt_channel_saved(&self, attempt_id: &str) -> Result<String, JsValue> {
+        let (_root_key, storage, dirty) = mix_handles(&self.inner)?;
+        mix_step(attempt_id, storage.as_ref(), &dirty, &self.inner, |p, now| p.channel_saved(now))
+    }
+
+    /// The clock, every second or so while the attempt runs. Phase 1b: and the pool channel's news from the node —
+    /// its funding script (→ the payout registered), the provider's signature with the manager written (→ the coin
+    /// signature may follow), a close (→ the attempt stops).
+    #[wasm_bindgen]
+    pub fn mix_attempt_tick(&self, attempt_id: &str) -> Result<String, JsValue> {
+        let (_root_key, storage, dirty) = mix_handles(&self.inner)?;
+        let nonce = MIX_POOL_CHANNELS.with(|c| c.borrow().get(attempt_id).copied());
+        let pc: Option<lij_core::node::PoolChannel> = match nonce {
+            Some(n) => { let w = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?; serde_json::from_str(&w.node().pool_channel_json(n)).ok() }
+            None => None,
+        };
+        mix_step(attempt_id, storage.as_ref(), &dirty, &self.inner, |p, now| -> Result<lij_core::tatara::phone::Out, String> {
+            let mut out = p.tick(now).map_err(|e| e.to_string())?;
+            if let Some(pc) = pc {
+                let phase = out.phase.clone();
+                if let Some(why) = pc.closed.as_ref().filter(|_| !p.signed() && phase != "stopped" && phase != "done") {
+                    out.merge(p.channel_failed(&format!("the channel closed ({why})"), now).map_err(|e| e.to_string())?);
+                } else if phase == "opening_channel" {
+                    if let Some(h) = pc.script.as_ref() {
+                        let spk = bitcoin::ScriptBuf::from_bytes(hex::decode(h).map_err(|e| e.to_string())?);
+                        out.merge(p.payout_given(spk, now).map_err(|e| e.to_string())?);
+                    }
+                } else if phase == "funding" && pc.saved {
+                    out.merge(p.channel_saved(now).map_err(|e| e.to_string())?);
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    /// Phase 1b (§6.2.1; step 11b): the answer to an Out's `open_channel` — open a channel of that size with the
+    /// provider for this attempt (the node's pool channel; its funding script reaches the attempt on the next tick).
+    /// A refusal (no provider connection, LDK's) stops the attempt; answers the Out JSON either way.
+    #[wasm_bindgen]
+    pub fn mix_attempt_channel_open(&self, attempt_id: &str, sats: u64) -> Result<String, JsValue> {
+        let (_root_key, storage, dirty) = mix_handles(&self.inner)?;
+        let opened = { let w = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?; w.node().open_pool_channel(sats) };
+        match opened {
+            Ok(n) => {
+                MIX_POOL_CHANNELS.with(|c| { c.borrow_mut().insert(attempt_id.to_string(), n); });
+                log::info!("[mix] attempt {}: pool channel #{n} opening ({sats} sats)", &attempt_id[..8.min(attempt_id.len())]);
+                mix_step(attempt_id, storage.as_ref(), &dirty, &self.inner, |p, now| p.tick(now))
+            }
+            Err(e) => {
+                log::warn!("[mix] the channel for the pool could not be opened: {e}");
+                mix_step(attempt_id, storage.as_ref(), &dirty, &self.inner, |p, now| p.channel_failed(&e.to_string(), now))
+            }
+        }
+    }
+
+    /// Phase 1b: the attempt's pool channel as the node sees it (PoolChannel JSON), or null — for the Mix screen.
+    #[wasm_bindgen]
+    pub fn mix_attempt_channel(&self, attempt_id: &str) -> Result<String, JsValue> {
+        let nonce = MIX_POOL_CHANNELS.with(|c| c.borrow().get(attempt_id).copied());
+        match nonce {
+            Some(n) => { let w = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?; Ok(w.node().pool_channel_json(n)) }
+            None => Ok("null".into()),
+        }
+    }
+
+    /// The attempt is over for this page (done, stopped, or the app moved on): its keys leave memory.
+    #[wasm_bindgen]
+    pub fn mix_attempt_end(&self, attempt_id: &str) -> bool {
+        MIX_POOL_CHANNELS.with(|c| { c.borrow_mut().remove(attempt_id); });   // the channel itself stays in the manager
+        MIX_PHONES.with(|m| m.borrow_mut().remove(attempt_id).is_some())
+    }
+
+    /// v325: what Join shows — `req` JSON {"size","coins":[["txid",vout]…],"fee_rate_sat_vb","peers"}: {"size","coin_sats",
+    /// "fee_sats","change_sats","covers","need_at_limit_sats","peers","fee_rate_sat_vb"} (covers = the coins cover the
+    /// pool at the fee limit, 1.5 × today's rate) — or {"problem"} in plain words. v327: and "to_miners_sats" (with no
+    /// change, what is left of the coin goes to the miners — named); and From Channel: {"size","close_sats",…} in place
+    /// of "coins" quotes the coin a cooperative close of a channel with that balance will pay, with "no_change_band"
+    /// ([low, top] — the balance that covers the pool at the limit and leaves no change at today's rate) when one exists.
+    #[wasm_bindgen]
+    pub fn mix_quote(&self, req: &str) -> Result<String, JsValue> {
+        #[derive(serde::Deserialize)]
+        struct Req { size: u64, #[serde(default)] coins: Vec<(String, u32)>, #[serde(default)] close_sats: Option<u64>, fee_rate_sat_vb: u64, peers: usize }
+        let r: Req = serde_json::from_str(req).map_err(|e| JsValue::from_str(&format!("mix_quote: bad request: {e}")))?;
+        if let (Some(v), true) = (r.close_sats, r.coins.is_empty()) {
+            return match lij_core::tatara::store::quote_close(r.size, v, r.fee_rate_sat_vb, r.peers.clamp(3, 6)) {
+                Ok(q) => serde_json::to_string(&q).map_err(|e| JsValue::from_str(&e.to_string())),
+                Err(e) => Ok(serde_json::json!({ "problem": e.to_string() }).to_string()),
+            };
+        }
+        let (root_key, storage, _dirty) = mix_handles(&self.inner)?;
+        match lij_core::tatara::store::quote(storage.as_ref(), &root_key, r.size, &r.coins, r.fee_rate_sat_vb, r.peers.clamp(3, 6)) {
+            Ok(q) => serde_json::to_string(&q).map_err(|e| JsValue::from_str(&e.to_string())),
+            Err(e) => Ok(serde_json::json!({ "problem": e.to_string() }).to_string()),
+        }
+    }
+
+    /// v326 (v0.10 §8 rule 10): "Keep my coin out of this pool" — `req` JSON {"coins":[["txid",vout]…],"fee_rate_sat_per_kw"}:
+    /// a coin a signed pool's record holds (the funding never came) is sent, alone, to a new address of this wallet's own
+    /// (the next change address), which ends that attempt for good; the record is wiped once that send is 6 deep. Only
+    /// when no setup is running (the page offers it then). Answers the send's result (SendResult JSON).
+    #[wasm_bindgen]
+    pub fn mix_keep_out(&self, req: &str) -> js_sys::Promise {
+        let inner = self.inner.clone();
+        let req = req.to_string();
+        future_to_promise(async move {
+            #[derive(serde::Deserialize)]
+            struct Req { coins: Vec<(String, u32)>, fee_rate_sat_per_kw: u32 }
+            let r: Req = serde_json::from_str(&req).map_err(|e| JsValue::from_str(&format!("mix_keep_out: bad request: {e}")))?;
+            let pins: Vec<(String, u32)> = r.coins.iter().map(|(t, v)| (t.to_ascii_lowercase(), *v)).collect();
+            let (root_key, independent, network) = {
+                let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                wallet.onchain_handles()
+            };
+            let storage = t2_storage(&root_key);
+            let (dest, change_index, free) = lij_core::tatara::store::keep_out_plan(storage.as_ref(), &root_key, &pins)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let view = lij_core::tier2_wallet::load_view(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let pending = lij_core::tier2_wallet::load_pending(storage.as_ref());
+            let result = lij_core::onchain_send::build_and_send_all_pinned(&root_key, independent, network, &dest, r.fee_rate_sat_per_kw, change_index, &view, &pending, &free, &pins)
+                .await
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let delta = -(result.fee_sats as i64);
+            if let Err(e) = lij_core::tier2_wallet::record_pending(
+                storage.as_ref(),
+                lij_core::tier2_wallet::PendingTx {
+                    txid: result.txid.clone(),
+                    spent_outpoints: result.spent_outpoints.clone(),
+                    delta_sats: delta,
+                    direction: lij_core::tier2_wallet::TxDirection::SelfTransfer,
+                    kind: lij_core::tier2_wallet::TxKind::Onchain,
+                    created_at_ms: lij_core::tier2_wallet::now_ms(),
+                    change_outpoint: result.change_outpoint.clone(),
+                    change_value_sats: result.change_sats,
+                    change_index: result.change_index,
+                    broadcast_seen: false,
+                    raw_tx_hex: None,
+                    dest_addr: Some(dest.clone()),
+                    dest_sats: Some(result.amount_sats),
+                    fee_sats: Some(result.fee_sats),
+                    fee_rate_sat_per_kw: Some(r.fee_rate_sat_per_kw),
+                    dests: Vec::new(),
+                },
+            ) {
+                log::error!("record pending keep-out send failed: {e}");
+            }
+            t2_note_send(storage.as_ref(), &result.txid, &result.raw_hex, Some(dest.as_str()), &[]);
+            match lij_core::tatara::store::drop_pool_rows_for(storage.as_ref(), &pins) {   // v329: the pool's rows leave ONCHAIN RECENT at once
+                Ok(n) => log::info!("[mix] a signed pool's coin kept out: sent to a new address of this wallet ({n} pool's rows dropped)"),
+                Err(e) => log::warn!("[mix] kept out, but the pool's rows could not be dropped: {e}"),
+            }
+            let json = result.to_json().map_err(|e| JsValue::from_str(&e.to_string()))?;
+            Ok(JsValue::from_str(&json))
+        })
+    }
+
+    /// v327 (From Channel — "Close channel and join"): a channel this phone is closing so that its coin joins a pool —
+    /// `req` JSON {"channel_id","provider_pk","endpoint","size","payout":{"to":"this_wallet"},"rate_at_join","balance_sats"}.
+    /// Sealed, this phone only; one per channel and, like a seat, one per pool size. The page starts the cooperative close
+    /// itself and, once the close is in a block, takes the seat with its coin (mix_seat_new) and drops this.
+    #[wasm_bindgen]
+    pub fn mix_close_join_add(&self, req: &str) -> Result<(), JsValue> {
+        #[derive(serde::Deserialize)]
+        struct Req { channel_id: String, provider_pk: String, endpoint: String, size: u64, payout: lij_core::tatara::wallet::PayoutChoice, rate_at_join: u64, balance_sats: u64 }
+        let r: Req = serde_json::from_str(req).map_err(|e| JsValue::from_str(&format!("mix_close_join_add: bad request: {e}")))?;
+        let (_root, storage, _dirty) = mix_handles(&self.inner)?;
+        let cj = lij_core::tatara::store::CloseJoin { channel_id: r.channel_id, provider_pk: r.provider_pk, endpoint: r.endpoint, size: r.size, payout: r.payout, rate_at_join: r.rate_at_join, balance_sats: r.balance_sats, since_ms: lij_core::tier2_wallet::now_ms() };
+        lij_core::tatara::store::close_join_add(storage.as_ref(), cj).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// v327: the close-joins on this phone, JSON [{"channel_id","provider_pk","endpoint","size","payout","rate_at_join",
+    /// "balance_sats","since_ms"}…].
+    #[wasm_bindgen]
+    pub fn mix_close_joins(&self) -> Result<String, JsValue> {
+        let (_root, storage, _dirty) = mix_handles(&self.inner)?;
+        let all = lij_core::tatara::store::close_joins(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        serde_json::to_string(&all).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// v327: drop a close-join (its seat taken, the person left, or the coin cannot cover the pool) — true if it existed.
+    #[wasm_bindgen]
+    pub fn mix_close_join_drop(&self, channel_id: &str) -> Result<bool, JsValue> {
+        let (_root, storage, _dirty) = mix_handles(&self.inner)?;
+        lij_core::tatara::store::close_join_drop(storage.as_ref(), channel_id).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// v327: what "Keep my coin out of this pool" costs — `req` JSON {"coins":[["txid",vout]…],"fee_rate_sat_per_kw"} →
+    /// {"coin_sats","fee_sats","arrives_sats","sat_per_vb"} or {"problem"} in plain words; nothing written (the send itself,
+    /// mix_keep_out, hands out the address).
+    #[wasm_bindgen]
+    pub fn mix_keep_out_quote(&self, req: &str) -> Result<String, JsValue> {
+        #[derive(serde::Deserialize)]
+        struct Req { coins: Vec<(String, u32)>, fee_rate_sat_per_kw: u32 }
+        let r: Req = serde_json::from_str(req).map_err(|e| JsValue::from_str(&format!("mix_keep_out_quote: bad request: {e}")))?;
+        let (root_key, storage, _dirty) = mix_handles(&self.inner)?;
+        match lij_core::tatara::store::keep_out_quote(storage.as_ref(), &root_key, &r.coins, r.fee_rate_sat_per_kw) {
+            Ok(q) => serde_json::to_string(&q).map_err(|e| JsValue::from_str(&e.to_string())),
+            Err(e) => Ok(serde_json::json!({ "problem": e.to_string() }).to_string()),
+        }
+    }
+
+    /// v325: the attempt records as the Mix screen shows them: [{"id","size","payout_index","saved_ms"}…]. v327: and
+    /// "inputs" (this phone's coins in the pool), "coin_sats", "state" ("waiting" | "funded" | "kept_out").
+    #[wasm_bindgen]
+    pub fn mix_records(&self) -> Result<String, JsValue> {
+        let storage = mix_storage(&self.inner)?;
+        let network = { let wallet = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?; wallet.onchain_handles().2 };
+        let v = lij_core::tatara::store::records_view(storage.as_ref(), network).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        serde_json::to_string(&v).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// v329: is this transaction known to the network? Asks the independent quorum (tx_known): {"known": true}
+    /// with "confirmed" and "height" (null in the mempool) — {"known": false} when a reachable server said definitively
+    /// that it has no such transaction — {"known": null} when the quorum could not answer (proves nothing). The Mix
+    /// screen offers "Pull my coin back" only on a definite false.
+    #[wasm_bindgen]
+    pub fn mix_tx_status(&self, txid: &str) -> js_sys::Promise {
+        let txid = txid.trim().to_ascii_lowercase();
+        if txid.len() != 64 || !txid.bytes().all(|b| b.is_ascii_hexdigit()) { return js_sys::Promise::reject(&JsValue::from_str("mix_tx_status: not a txid")); }
+        let independent = match self.inner.try_lock() {
+            Ok(w) => w.onchain_handles().1,
+            Err(_) => return js_sys::Promise::reject(&JsValue::from_str("WALLET_BUSY")),
+        };
+        future_to_promise(async move {
+            let known = independent.tx_known(&txid).await;
+            let (confirmed, height) = if known == Some(true) {
+                match independent.fetch_tx(&txid).await { Ok(t) => (t.confirmed, t.block_height), Err(_) => (false, None) }
+            } else { (false, None) };
+            Ok(JsValue::from_str(&serde_json::json!({ "known": known, "confirmed": confirmed, "height": height }).to_string()))
+        })
+    }
+
+    /// v325: send a complete pool — the funding, then each exit, in order (`txs` JSON ["hex"…]); "already known" counts as
+    /// sent; stops at the first refusal (the next spends it). Answers [{"ok","error"}…].
+    #[wasm_bindgen]
+    pub fn mix_send(&self, txs: &str) -> js_sys::Promise {
+        let list: Vec<String> = match serde_json::from_str(txs) { Ok(v) => v, Err(e) => return js_sys::Promise::reject(&JsValue::from_str(&format!("mix_send: bad request: {e}"))) };
+        let independent = match self.inner.try_lock() {
+            Ok(w) => w.onchain_handles().1,
+            Err(_) => return js_sys::Promise::reject(&JsValue::from_str("WALLET_BUSY")),
+        };
+        future_to_promise(async move {
+            let mut out: Vec<serde_json::Value> = Vec::new();
+            for h in &list {
+                let Ok(bytes) = hex::decode(h) else { out.push(serde_json::json!({ "ok": false, "error": "not hex" })); break };
+                match independent.broadcast_raw_tx(&bytes).await {
+                    Ok(()) => out.push(serde_json::json!({ "ok": true })),
+                    Err(e) if e.to_string().to_ascii_lowercase().contains("already") => out.push(serde_json::json!({ "ok": true, "already": true })),
+                    Err(e) => { out.push(serde_json::json!({ "ok": false, "error": e.to_string() })); break; }
+                }
+            }
+            let n_ok = out.iter().filter(|v| v["ok"] == true).count();
+            log::info!("[mix] sent {n_ok} of {} pool transactions", list.len());
+            Ok(JsValue::from_str(&serde_json::Value::Array(out).to_string()))
+        })
     }
 
     /// v284 (S50, silent payments — receive, the engine groundwork): the wallet's own
@@ -4946,6 +5659,104 @@ pub mod ws_transport {
         pub static WS_MAP: RefCell<HashMap<u64, WsEntry>> = RefCell::new(HashMap::new());
     }
 
+    /// v322 (S58, DP 2026-10-12 20:18 — the CHAIN dot): one WebSocket opened toward the provider while the start-up checks
+    /// run. It carries nothing until connect_to_peer adopts it (open_websocket below) and sends the handshake's first bytes.
+    pub struct Preopen {
+        pub url: String,
+        pub ws: WebSocket,
+        pub opened_ms: f64,
+        pub closed: std::rc::Rc<std::cell::Cell<bool>>,
+        pub _on_open: Closure<dyn FnMut()>,
+        pub _on_close: Closure<dyn FnMut(CloseEvent)>,
+        pub _on_error: Closure<dyn FnMut(ErrorEvent)>,
+    }
+
+    thread_local! {
+        pub static PREOPEN: RefCell<Option<Preopen>> = RefCell::new(None);
+    }
+
+    /// A pre-opened socket older than this is not adopted (it is closed and a fresh one opened).
+    pub const PREOPEN_MAX_AGE_MS: f64 = 60_000.0;
+
+    /// Unset a pre-opened socket's handlers before its closures are dropped, so the browser never calls a dropped one.
+    fn unhook(p: &Preopen) {
+        p.ws.set_onopen(None);
+        p.ws.set_onclose(None);
+        p.ws.set_onerror(None);
+        p.ws.set_onmessage(None);
+    }
+
+    pub fn preopen(url: &str) -> Result<(), JsValue> {
+        if !(url.starts_with("wss://") || url.starts_with("ws://127.0.0.1")) {
+            return Err(JsValue::from_str("ws_preopen: not a wss:// address"));
+        }
+        let keep = PREOPEN.with(|x| {
+            x.borrow().as_ref().map_or(false, |p| p.url == url && !p.closed.get() && js_sys::Date::now() - p.opened_ms < PREOPEN_MAX_AGE_MS)
+        });
+        if keep {
+            return Ok(());
+        }
+        drop_preopen();
+        let ws = WebSocket::new(url).map_err(|e| JsValue::from_str(&format!("WebSocket::new failed: {:?}", e)))?;
+        ws.set_binary_type(BinaryType::Arraybuffer);
+        let opened_ms = js_sys::Date::now();
+        let closed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let on_open = Closure::wrap(Box::new(move || {
+            log::info!("WebSocket pre-opened to the provider in {} ms (waiting for the start-up checks)", (js_sys::Date::now() - opened_ms) as u64);
+        }) as Box<dyn FnMut()>);
+        let c2 = closed.clone();
+        let on_close = Closure::wrap(Box::new(move |e: CloseEvent| {
+            c2.set(true);
+            log::info!("pre-opened WebSocket closed before use: code={}", e.code());
+        }) as Box<dyn FnMut(CloseEvent)>);
+        let on_error = Closure::wrap(Box::new(move |_e: ErrorEvent| {
+            log::warn!("pre-opened WebSocket error (a fresh socket will be opened at connect)");
+        }) as Box<dyn FnMut(ErrorEvent)>);
+        ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+        ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
+        ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+        PREOPEN.with(|x| {
+            *x.borrow_mut() = Some(Preopen { url: url.to_string(), ws, opened_ms, closed, _on_open: on_open, _on_close: on_close, _on_error: on_error });
+        });
+        Ok(())
+    }
+
+    /// Close and forget the pre-opened socket, if any (a start the checks stopped, or a stale one).
+    pub fn drop_preopen() {
+        if let Some(p) = PREOPEN.with(|x| x.borrow_mut().take()) {
+            unhook(&p);
+            let _ = p.ws.close();
+            drop(p);
+        }
+    }
+
+    /// Take the pre-opened socket for `url` when it can still be used: (the socket, already open, its age in ms).
+    fn adopt_preopen(url: &str) -> Option<(WebSocket, bool, f64)> {
+        let now = js_sys::Date::now();
+        let taken = PREOPEN.with(|x| {
+            let mut b = x.borrow_mut();
+            let usable = b.as_ref().map_or(false, |p| {
+                let rs = p.ws.ready_state();
+                p.url == url && !p.closed.get() && now - p.opened_ms < PREOPEN_MAX_AGE_MS && (rs == WebSocket::OPEN || rs == WebSocket::CONNECTING)
+            });
+            if usable { b.take() } else { None }
+        });
+        match taken {
+            Some(p) => {
+                unhook(&p);
+                let ws = p.ws.clone();
+                let open = ws.ready_state() == WebSocket::OPEN;
+                let age = now - p.opened_ms;
+                drop(p);
+                Some((ws, open, age))
+            }
+            None => {
+                drop_preopen();
+                None
+            }
+        }
+    }
+
     pub struct WsDispatcher;
 
     impl SocketDispatcher for WsDispatcher {
@@ -4986,8 +5797,15 @@ pub mod ws_transport {
     }
 
     pub fn open_websocket(url: &str, id: u64, first_bytes: Vec<u8>, pubkey_hex: &str) -> Result<(), JsValue> {
-        let ws = WebSocket::new(url)
-            .map_err(|e| JsValue::from_str(&format!("WebSocket::new failed: {:?}", e)))?;
+        // v322: the socket opened while the start-up checks ran, when it is still usable; else a fresh one, as before
+        let (ws, already_open, preopened_ms) = match adopt_preopen(url) {
+            Some((ws, open, age)) => (ws, open, Some(age)),
+            None => (
+                WebSocket::new(url).map_err(|e| JsValue::from_str(&format!("WebSocket::new failed: {:?}", e)))?,
+                false,
+                None,
+            ),
+        };
         ws.set_binary_type(BinaryType::Arraybuffer);
 
         let ws_clone_open = ws.clone();
@@ -5063,7 +5881,18 @@ pub mod ws_transport {
                 wasm_bindgen_futures::spawn_local(async move { drop(old); });
             }
         });
+        let ws_now = entry.ws.clone();
         WS_MAP.with(|map| { map.borrow_mut().insert(id, entry); });
+        if already_open {
+            // v322: adopted open — the open event has passed, so the handshake's first bytes go now (the line keeps the
+            // page's "socket open" bookend)
+            log::info!("WebSocket {id} opened, sending {} initial bytes (pre-opened {} ms before)", first_bytes.len(), preopened_ms.unwrap_or(0.0) as u64);
+            if let Err(e) = ws_now.send_with_u8_array(&first_bytes) {
+                log::error!("Failed to send initial bytes: {:?}", e);
+            }
+        } else if let Some(age) = preopened_ms {
+            log::info!("WebSocket {id} adopts the socket pre-opened {} ms before (still opening)", age as u64);
+        }
         Ok(())
     }
 
@@ -5148,6 +5977,10 @@ pub mod ws_transport {
         }
 
         pm.process_events();
+        // v321 (S58, DP 2026-10-12 — the CHAIN dot): the provider's chain messages are handled now, not on the next tick
+        // (the first ChainDataBundle waited up to a second in the inbound queue — DP's Performance report: socket open →
+        // bundle handled 2,567 ms while the provider answers the subscribe in 12 ms).
+        wallet.node().cooperative_process_inbound_now();
         drop(wallet);
 
         // v227 (S43, speed): run the ChannelManager event pass on the NEXT

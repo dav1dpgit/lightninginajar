@@ -1069,6 +1069,33 @@ export class LijWalletHandle {
         return ret;
     }
     /**
+     * v323 (§13): what an open WOULD spend — `req` JSON {"channel_sats","fee_rate_sat_per_vb","inputs"?:[{"txid","vout"}]}
+     * — answers {"inputs","fee_sats","mixed_inputs","links_mixed"} (the sheet's mixed-coin warning: links_mixed) or
+     * {"problem"} in plain words. The open's own pick.
+     * @param {string} req
+     * @returns {string}
+     */
+    lsp_channel_open_pick(req) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(req, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_lsp_channel_open_pick(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * Dev tool: manually mark a funding transaction as confirmed at a
      * given height. Synthesizes block headers and notifies LDK's chain
      * listeners — pre-Neutrino workaround for the stuck-channel case.
@@ -1172,6 +1199,734 @@ export class LijWalletHandle {
      */
     maybe_backup() {
         const ret = wasm.lijwallethandle_maybe_backup(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Phase 1b: the attempt's pool channel as the node sees it (PoolChannel JSON), or null — for the Mix screen.
+     * @param {string} attempt_id
+     * @returns {string}
+     */
+    mix_attempt_channel(attempt_id) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(attempt_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_mix_attempt_channel(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Phase 1b (§6.2.1; step 11b): the answer to an Out's `open_channel` — open a channel of that size with the
+     * provider for this attempt (the node's pool channel; its funding script reaches the attempt on the next tick).
+     * A refusal (no provider connection, LDK's) stops the attempt; answers the Out JSON either way.
+     * @param {string} attempt_id
+     * @param {bigint} sats
+     * @returns {string}
+     */
+    mix_attempt_channel_open(attempt_id, sats) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(attempt_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_mix_attempt_channel_open(this.__wbg_ptr, ptr0, len0, sats);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Phase 1b (§6.2.3; step 11a): the answer to an Out's `fund_channel` — the channel is saved with the provider's
+     * first-commitment signature; the coin signature may follow.
+     * @param {string} attempt_id
+     * @returns {string}
+     */
+    mix_attempt_channel_saved(attempt_id) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(attempt_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_mix_attempt_channel_saved(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * A coin check's answer (the filter server's /coin JSON through a provider) for one coin the Out asked about. v328:
+     * an empty answer (or "{}") = no provider answered — the attempt stops without naming anyone (a phone that cannot
+     * reach an answerer is the one with the problem); only an answer that came back can fail a coin.
+     * @param {string} attempt_id
+     * @param {string} ask
+     * @param {string} answer
+     * @returns {string}
+     */
+    mix_attempt_coin(attempt_id, ask, answer) {
+        let deferred5_0;
+        let deferred5_1;
+        try {
+            const ptr0 = passStringToWasm0(attempt_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(ask, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(answer, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_mix_attempt_coin(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+            var ptr4 = ret[0];
+            var len4 = ret[1];
+            if (ret[3]) {
+                ptr4 = 0; len4 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred5_0 = ptr4;
+            deferred5_1 = len4;
+            return getStringFromWasm0(ptr4, len4);
+        } finally {
+            wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+        }
+    }
+    /**
+     * The creating phone ("create" notice): `start` JSON {"seat_pk","attempt_id","size","peers","relay","sizes",
+     * "max_fee_sat_vb","refused"?}, the pool's fee rate, and the other opened seats' keys (JSON array). Answers {"out",
+     * "announcement","relay_filter","pool_pk"} — the page hands the announcement to the provider (announce), then joins
+     * the relay with the token.
+     * @param {string} start
+     * @param {number} fee_rate_sat_vb
+     * @param {string} seat_pks
+     * @returns {string}
+     */
+    mix_attempt_create(start, fee_rate_sat_vb, seat_pks) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(start, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(seat_pks, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_mix_attempt_create(this.__wbg_ptr, ptr0, len0, fee_rate_sat_vb, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * The attempt is over for this page (done, stopped, or the app moved on): its keys leave memory.
+     * @param {string} attempt_id
+     * @returns {boolean}
+     */
+    mix_attempt_end(attempt_id) {
+        const ptr0 = passStringToWasm0(attempt_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_mix_attempt_end(this.__wbg_ptr, ptr0, len0);
+        return ret !== 0;
+    }
+    /**
+     * An event the page read from the pool's relay. Answers the Out JSON ({"relay","payout","checks","save"(null),
+     * "funding_signed","complete","stopped","phase"}).
+     * @param {string} attempt_id
+     * @param {string} event
+     * @returns {string}
+     */
+    mix_attempt_event(attempt_id, event) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(attempt_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(event, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_mix_attempt_event(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * A joining phone ("announcement" notice): `start` as for create, and the announcement. Answers {"out",
+     * "relay_filter","pool_pk"} — or the refusal in plain words (a pool not the provider's, fees above the limit…).
+     * @param {string} start
+     * @param {string} announcement
+     * @returns {string}
+     */
+    mix_attempt_join(start, announcement) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(start, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(announcement, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_mix_attempt_join(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * Phase 1b (v0.10 §6.2.1; step 11a): the answer to an Out's `open_channel` — the opened channel's funding script
+     * (P2WSH, hex) is this phone's payout; the registration goes out.
+     * @param {string} attempt_id
+     * @param {string} funding_spk_hex
+     * @returns {string}
+     */
+    mix_attempt_payout(attempt_id, funding_spk_hex) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(attempt_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(funding_spk_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_mix_attempt_payout(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * The clock, every second or so while the attempt runs. Phase 1b: and the pool channel's news from the node —
+     * its funding script (→ the payout registered), the provider's signature with the manager written (→ the coin
+     * signature may follow), a close (→ the attempt stops).
+     * @param {string} attempt_id
+     * @returns {string}
+     */
+    mix_attempt_tick(attempt_id) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(attempt_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_mix_attempt_tick(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * v327 (From Channel — "Close channel and join"): a channel this phone is closing so that its coin joins a pool —
+     * `req` JSON {"channel_id","provider_pk","endpoint","size","payout":{"to":"this_wallet"},"rate_at_join","balance_sats"}.
+     * Sealed, this phone only; one per channel and, like a seat, one per pool size. The page starts the cooperative close
+     * itself and, once the close is in a block, takes the seat with its coin (mix_seat_new) and drops this.
+     * @param {string} req
+     */
+    mix_close_join_add(req) {
+        const ptr0 = passStringToWasm0(req, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_mix_close_join_add(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * v327: drop a close-join (its seat taken, the person left, or the coin cannot cover the pool) — true if it existed.
+     * @param {string} channel_id
+     * @returns {boolean}
+     */
+    mix_close_join_drop(channel_id) {
+        const ptr0 = passStringToWasm0(channel_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_mix_close_join_drop(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
+    }
+    /**
+     * v327: the close-joins on this phone, JSON [{"channel_id","provider_pk","endpoint","size","payout","rate_at_join",
+     * "balance_sats","since_ms"}…].
+     * @returns {string}
+     */
+    mix_close_joins() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_mix_close_joins(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * A new attempt's payout and change, handed out and marked together. `choice` is JSON {"to":"this_wallet"} or
+     * {"to":"outside","address":"bc1p…"} (another wallet's taproot address — the room DP asked for; the screen comes
+     * later). Answers {"payout_address","payout_spk_hex","payout_index","change_index","change_spk_hex"} or a refusal
+     * in plain words.
+     * @param {string} choice
+     * @returns {string}
+     */
+    mix_hand_out(choice) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(choice, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_mix_hand_out(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Hold coins for a Mix, or free them. `req` JSON {"coins":[["txid",vout],…],"hold":true|false}. Freeing leaves a coin
+     * an unsettled attempt record names held (only its settlement frees it). Answers {"held","freed"}.
+     * @param {string} req
+     * @returns {string}
+     */
+    mix_hold(req) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(req, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_mix_hold(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * v326 (v0.10 §8 rule 10): "Keep my coin out of this pool" — `req` JSON {"coins":[["txid",vout]…],"fee_rate_sat_per_kw"}:
+     * a coin a signed pool's record holds (the funding never came) is sent, alone, to a new address of this wallet's own
+     * (the next change address), which ends that attempt for good; the record is wiped once that send is 6 deep. Only
+     * when no setup is running (the page offers it then). Answers the send's result (SendResult JSON).
+     * @param {string} req
+     * @returns {Promise<any>}
+     */
+    mix_keep_out(req) {
+        const ptr0 = passStringToWasm0(req, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_mix_keep_out(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+    /**
+     * v327: what "Keep my coin out of this pool" costs — `req` JSON {"coins":[["txid",vout]…],"fee_rate_sat_per_kw"} →
+     * {"coin_sats","fee_sats","arrives_sats","sat_per_vb"} or {"problem"} in plain words; nothing written (the send itself,
+     * mix_keep_out, hands out the address).
+     * @param {string} req
+     * @returns {string}
+     */
+    mix_keep_out_quote(req) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(req, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_mix_keep_out_quote(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * A provider's notice {body, sig} for a seat, checked against the seat's provider's node key before anything in it
+     * is read. Answers the notice (JSON, "type" first) or an error.
+     * @param {string} seat_pk
+     * @param {string} body
+     * @param {string} sig
+     * @returns {string}
+     */
+    mix_notice(seat_pk, body, sig) {
+        let deferred5_0;
+        let deferred5_1;
+        try {
+            const ptr0 = passStringToWasm0(seat_pk, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(body, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(sig, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_mix_notice(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+            var ptr4 = ret[0];
+            var len4 = ret[1];
+            if (ret[3]) {
+                ptr4 = 0; len4 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred5_0 = ptr4;
+            deferred5_1 = len4;
+            return getStringFromWasm0(ptr4, len4);
+        } finally {
+            wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+        }
+    }
+    /**
+     * v325: what Join shows — `req` JSON {"size","coins":[["txid",vout]…],"fee_rate_sat_vb","peers"}: {"size","coin_sats",
+     * "fee_sats","change_sats","covers","need_at_limit_sats","peers","fee_rate_sat_vb"} (covers = the coins cover the
+     * pool at the fee limit, 1.5 × today's rate) — or {"problem"} in plain words. v327: and "to_miners_sats" (with no
+     * change, what is left of the coin goes to the miners — named); and From Channel: {"size","close_sats",…} in place
+     * of "coins" quotes the coin a cooperative close of a channel with that balance will pay, with "no_change_band"
+     * ([low, top] — the balance that covers the pool at the limit and leaves no change at today's rate) when one exists.
+     * @param {string} req
+     * @returns {string}
+     */
+    mix_quote(req) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(req, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_mix_quote(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * At start and after a restore (§9 rule 7): the holds become exactly the coins a seat on this phone
+     * (`seat_coins` JSON [["txid",vout],…]) or an unsettled record names. Answers {"freed","added"}.
+     * @param {string} seat_coins
+     * @returns {string}
+     */
+    mix_reconcile(seat_coins) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(seat_coins, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_mix_reconcile(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Wipe an attempt record and free its coins — at once for an attempt that ended before this phone's coin
+     * signature (§9 rule 3). Marks the backup dirty (a record wiped is an upload trigger); the page pushes a clean kit
+     * twice when this answers true.
+     * @param {string} id
+     * @returns {boolean}
+     */
+    mix_record_wipe(id) {
+        const ptr0 = passStringToWasm0(id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_mix_record_wipe(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
+    }
+    /**
+     * v325: the attempt records as the Mix screen shows them: [{"id","size","payout_index","saved_ms"}…]. v327: and
+     * "inputs" (this phone's coins in the pool), "coin_sats", "state" ("waiting" | "funded" | "kept_out").
+     * @returns {string}
+     */
+    mix_records() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_mix_records(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * How many attempt records this phone keeps (0 = the settle pass has nothing to do).
+     * @returns {number}
+     */
+    mix_records_count() {
+        const ret = wasm.lijwallethandle_mix_records_count(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * A seat's request to its provider, signed by the seat key: `ask` JSON {"action": checkin|leave|pause|resume|open|
+     * report|announce|backup, "attempt_id"?, "outcome"?, "announcement"?, "funding_hex"?, "exits"?}. Answers the POST body.
+     * @param {string} seat_pk
+     * @param {string} ask
+     * @param {bigint} ts
+     * @returns {string}
+     */
+    mix_seat_body(seat_pk, ask, ts) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(seat_pk, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(ask, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_mix_seat_body(this.__wbg_ptr, ptr0, len0, ptr1, len1, ts);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * The provider answered the seat request: its id.
+     * @param {string} seat_pk
+     * @param {string} seat_id
+     */
+    mix_seat_confirm(seat_pk, seat_id) {
+        const ptr0 = passStringToWasm0(seat_pk, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(seat_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_mix_seat_confirm(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Leave (or a refused or removed seat): the seat goes, its coins are freed (unless an unsettled record names one).
+     * @param {string} seat_pk
+     * @returns {boolean}
+     */
+    mix_seat_drop(seat_pk) {
+        const ptr0 = passStringToWasm0(seat_pk, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_mix_seat_drop(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
+    }
+    /**
+     * Join: a seat on the provider's waiting list. `req` JSON {"provider_pk","endpoint","size","coins":[["txid",vout]…],
+     * "payout":{"to":"this_wallet"}|{"to":"outside","address"},"rate_at_join","ts"}. The seat's key is fresh; the coins
+     * are held from now. Answers {"seat_pk","body"} — POST body to the provider's /tatara/seat, signed by the node key.
+     * @param {string} req
+     * @returns {string}
+     */
+    mix_seat_new(req) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(req, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_mix_seat_new(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * This phone's seats, without their secrets: [{"seat_pk","seat_id","provider_pk","endpoint","size","route","coins",
+     * "payout","rate_at_join","since_ms"}…].
+     * @returns {string}
+     */
+    mix_seats() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_mix_seats(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * v325: send a complete pool — the funding, then each exit, in order (`txs` JSON ["hex"…]); "already known" counts as
+     * sent; stops at the first refusal (the next spends it). Answers [{"ok","error"}…].
+     * @param {string} txs
+     * @returns {Promise<any>}
+     */
+    mix_send(txs) {
+        const ptr0 = passStringToWasm0(txs, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_mix_send(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+    /**
+     * The chain decides (§8 rule 6; §9 rule 4 — a restored record is watched, never resumed): every record is checked
+     * against the wallet's ledger — its exits SENT, in order, once its funding spent this phone's coin (again at most
+     * every 10 minutes until the payout is settled; "already known" is fine), WIPED once settled (its coins freed, the
+     * backup marked dirty), or watched. A payout to another wallet's address is not in this wallet's ledger: the depth
+     * of EVERY exit of that pool is asked of the chain servers, so the question does not single out the payout. Answers
+     * the report JSON {"send":[[id,[hex…]]…],"wiped":[[id,why]…],"watching","unreadable","sent":[[id,accepted,refused]…]};
+     * the page pushes a clean kit twice when "wiped" is not empty.
+     * @returns {Promise<any>}
+     */
+    mix_settle() {
+        const ret = wasm.lijwallethandle_mix_settle(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * The Tatara key's public half (33 bytes, hex) — what Mix on registers with the provider (door 1). From the 12 words
+     * on a path of its own (DP 23:21), never stored. Answers JSON {"tatara_pk", "join_message"} for `ts` (seconds): the
+     * page has the node key sign join_message (sign_message) and sends both.
+     * @param {bigint} ts
+     * @returns {string}
+     */
+    mix_tatara_pub(ts) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_mix_tatara_pub(this.__wbg_ptr, ts);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * v329: is this transaction known to the network? Asks the independent quorum (tx_known): {"known": true}
+     * with "confirmed" and "height" (null in the mempool) — {"known": false} when a reachable server said definitively
+     * that it has no such transaction — {"known": null} when the quorum could not answer (proves nothing). The Mix
+     * screen offers "Pull my coin back" only on a definite false.
+     * @param {string} txid
+     * @returns {Promise<any>}
+     */
+    mix_tx_status(txid) {
+        const ptr0 = passStringToWasm0(txid, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_mix_tx_status(this.__wbg_ptr, ptr0, len0);
         return ret;
     }
     /**
@@ -3171,6 +3926,28 @@ export function wrap_mnemonic(mnemonic, passphrase) {
         wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
     }
 }
+
+/**
+ * v322 (S58, DP 2026-10-12 20:18 — the CHAIN dot): open the WebSocket to the provider at `wss_url` now, while the
+ * start-up checks run; nothing is sent on it until connect_to_peer adopts it. Best-effort: an error is only logged by
+ * the page, which then connects as before.
+ * @param {string} wss_url
+ */
+export function ws_preopen(wss_url) {
+    const ptr0 = passStringToWasm0(wss_url, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.ws_preopen(ptr0, len0);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * v322: close the pre-opened socket (the start-up checks stopped the start).
+ */
+export function ws_preopen_drop() {
+    wasm.ws_preopen_drop();
+}
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
@@ -3537,27 +4314,27 @@ function __wbg_get_imports() {
             console.warn(arg0, arg1, arg2, arg3);
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1857, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2478, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed);
             return ret;
         },
         __wbindgen_generic_0000000000000002: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("CloseEvent")], shim_idx: 8, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965);
             return ret;
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("ErrorEvent")], shim_idx: 8, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c_161);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_196);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 8, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c_162);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_197);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 1557, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 2184, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f);
             return ret;
         },
@@ -3596,16 +4373,16 @@ function wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f(arg0, arg1);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c_161(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c_161(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_196(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_196(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c_162(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c_162(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_197(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_197(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed(arg0, arg1, arg2) {

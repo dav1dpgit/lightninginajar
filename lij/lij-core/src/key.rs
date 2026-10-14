@@ -204,6 +204,30 @@ impl RootKey {
         out
     }
 
+    /// v323 (S58, Mix step 7 — DP 2026-10-12 23:21 "Agreed the Tatara key comes from the 12 words on a path of its
+    /// own"): the Tatara key — this wallet's place in its provider's weekly ring of Mix-on wallets (door 1). DERIVED like
+    /// the LNURLp and push preimages (HKDF-SHA256 over the master secret) under its OWN salt, so it is apart from every
+    /// BIP32 path (no coin ever sits on it), from the persistence key and from every preimage; one-way, so the ring's
+    /// public key says nothing about the words. Never stored: a wallet restored from its 12 words finds the same key, and
+    /// so its place in the ring, again. A secp256k1 secret: the counter in `info` moves on in the (≈2⁻¹²⁸) case an
+    /// output is zero or not below the curve order.
+    pub fn tatara_key(&self) -> [u8; 32] {
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+        let hk = Hkdf::<Sha256>::new(Some(b"LiJ-Tatara-key-v1"), &self.master_xprv.private_key.secret_bytes());
+        let mut n: u32 = 0;
+        loop {
+            let mut out = [0u8; 32];
+            let mut info = b"ring".to_vec();
+            info.extend_from_slice(&n.to_be_bytes());
+            hk.expand(&info, &mut out).expect("32 bytes is well within HKDF-SHA256's output limit");
+            if bitcoin::secp256k1::SecretKey::from_slice(&out).is_ok() {
+                return out;
+            }
+            n += 1;
+        }
+    }
+
     /// Derive the legacy static_remotekey receive-chain xpriv at m/525h/0/0/0.
     ///
     /// Used by pre-v0.2.0 channels: children of this xpriv (n=0,1,2,...)
@@ -309,6 +333,25 @@ mod tests {
         assert_ne!(root.push_preimage(0), root.encryption_key(), "and neither is the persistence key");
         let (other, _) = RootKey::generate(Network::Bitcoin).unwrap();
         assert_ne!(other.push_preimage(0), root.push_preimage(0), "another seed, another key");
+    }
+
+    // v323 (S58, Mix step 7): the Tatara key is its own derivation, pinned to a value computed apart from this code (a
+    // Python HKDF over BIP32's master secret of the test words) — a changed derivation would lose every wallet's place
+    // in its ring after a restore, so this test must never be "updated".
+    #[test]
+    fn v323_the_tatara_key_is_its_own_stable_derivation() {
+        let mnemonic: Mnemonic = TEST_MNEMONIC.parse().unwrap();
+        let root = RootKey::from_mnemonic(&mnemonic, Network::Bitcoin).unwrap();
+        let k = root.tatara_key();
+        assert_eq!(hex::encode(k), "9099533d18040a9f6ef15d55d247ca229e4d29e2aaf3f5c36a4d188993fa372a");
+        assert_eq!(hex::encode(crate::tatara::client::tatara_pk(&k).unwrap()), "03cd7cfdfad0e77605373885cebd09b304efe0af4a3a39e3579fc7efd8495952eb");
+        assert_eq!(RootKey::from_mnemonic(&mnemonic, Network::Testnet).unwrap().tatara_key(), k, "the words decide it, not the network");
+        assert_ne!(k, root.push_preimage(0));
+        assert_ne!(k, root.lnurlp_preimage(0));
+        assert_ne!(k, root.encryption_key());
+        assert_ne!(k, root.lightning_node_key().unwrap().private_key.secret_bytes(), "not the identity key");
+        let (other, _) = RootKey::generate(Network::Bitcoin).unwrap();
+        assert_ne!(other.tatara_key(), k);
     }
 
     #[test]

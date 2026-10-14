@@ -1,0 +1,1121 @@
+--- a/src/keys.rs
++++ b/src/keys.rs
+@@ -31,6 +31,9 @@
+ 
+ impl PoolKeys {
+     pub fn new(mut keys: Vec<Point>) -> Result<Self> {
++        if keys.is_empty() {
++            return Err(anyhow!("a pool needs at least one key"));   // LiJ P7 (was a panic)
++        }
+         keys.sort_by_key(|k| k.serialize());
+         let base = KeyAggContext::new(keys.clone())?;
+         let agg: Point = base.aggregated_pubkey();
+@@ -120,8 +123,13 @@
+     })
+ }
+ 
++/// LiJ P8: 33-byte compressed points only, lowercase hex — no 65-byte uncompressed or hybrid forms, no upper case.
+ pub fn point_from_hex(s: &str) -> Result<Point> {
+-    Point::from_hex(s).map_err(|e| anyhow!("bad point {s}: {e}"))
++    let b = crate::util::strict_hex(s, 33).map_err(|e| anyhow!("bad point: {e}"))?;
++    if b[0] != 0x02 && b[0] != 0x03 {
++        return Err(anyhow!("bad point: not compressed"));
++    }
++    Point::from_slice(&b).map_err(|e| anyhow!("bad point: {e}"))
+ }
+ 
+ #[cfg(test)]
+@@ -162,7 +170,8 @@
+             ),
+         ];
+         for (keys, agg_hex, xpub) in vectors {
+-            let keys: Vec<Point> = keys.iter().map(|k| point_from_hex(k).unwrap()).collect();
++            // LiJ P8: the BIP's vectors are upper case; point_from_hex takes a peer's lowercase hex only
++            let keys: Vec<Point> = keys.iter().map(|k| point_from_hex(&k.to_lowercase()).unwrap()).collect();
+             let agg: Point = KeyAggContext::new(keys).unwrap().aggregated_pubkey();
+             assert_eq!(agg.to_string(), agg_hex);
+             assert_eq!(synthetic_xpub(&agg).unwrap().to_string(), xpub);
+--- a/src/sign.rs
++++ b/src/sign.rs
+@@ -9,15 +9,49 @@
+ 
+ use crate::keys::PoolKeys;
+ use crate::pool::{exit_sighash, PoolTxs};
+-use crate::util::random_bytes;
++use crate::util::tagged_hash;
+ 
++/// LiJ P7: the fields are private — an exit message comes only from `exit_messages`, so a caller can never sign a message
++/// it did not compute from the transactions.
+ pub struct ExitMessage {
+     /// Position of the exit in signing order.
+-    pub index: u32,
++    index: u32,
+     /// The pool output it spends, whose key `0/key` signs it.
+-    pub key: u32,
+-    pub msg: [u8; 32],
+-    pub output_key: XOnlyPublicKey,
++    key: u32,
++    msg: [u8; 32],
++    output_key: XOnlyPublicKey,
++}
++
++impl ExitMessage {
++    pub fn index(&self) -> u32 {
++        self.index
++    }
++    pub fn key(&self) -> u32 {
++        self.key
++    }
++    pub fn msg(&self) -> [u8; 32] {
++        self.msg
++    }
++    pub fn output_key(&self) -> XOnlyPublicKey {
++        self.output_key
++    }
++}
++
++/// LiJ P7: one member's secret nonces for one signing, each bound to the exit it was made for. No Clone, no Debug, no
++/// serialization, no accessor: the only way out is `partial_sign`, which consumes it — so a secret nonce can never be
++/// copied, printed, saved or used twice (the r7 §8 rules). (Its scalars cannot be wiped in place: secp's `Scalar` is Copy;
++/// dropping this is as far as the types allow.)
++pub struct ExitNonces {
++    nonces: Vec<(u32, [u8; 32], SecNonce)>,
++}
++
++impl ExitNonces {
++    pub fn len(&self) -> usize {
++        self.nonces.len()
++    }
++    pub fn is_empty(&self) -> bool {
++        self.nonces.is_empty()
++    }
+ }
+ 
+ /// The message and the spent pool output key of every exit.
+@@ -38,43 +72,70 @@
+         .collect()
+ }
+ 
+-/// One secret nonce per exit. They are only kept in memory and are consumed by signing.
++/// One secret nonce per exit. They are only kept in memory and are consumed by signing. LiJ P4: `aux` is 32 fresh random
++/// bytes from the caller, never reused; each exit's seed is a tagged hash of it and the exit's index, and musig2's
++/// NonceGen mixes in the secret key, the aggregate key, the exit's message and `extra`.
+ pub fn make_nonces(
+     seckey: Scalar,
+     keys: &PoolKeys,
+     msgs: &[ExitMessage],
+     id: &str,
+-) -> Result<(Vec<SecNonce>, Vec<PubNonce>)> {
++    aux: &[u8; 32],
++) -> Result<(ExitNonces, Vec<PubNonce>)> {
++    ensure!(!msgs.is_empty(), "no exits to sign");
++    ensure!(
++        keys.keys.contains(&seckey.base_point_mul()),
++        "this key is not one of the pool's keys"
++    );
+     let mut secs = Vec::new();
+     let mut pubs = Vec::new();
+     for m in msgs {
+         let aggpk: Point = keys.ctx(m.key)?.aggregated_pubkey();
+         let k = m.index + 1;
+         let extra = [id.as_bytes(), &k.to_le_bytes()].concat();
+-        let sec = SecNonce::generate(random_bytes(), seckey, aggpk, m.msg, extra);
++        let seed = tagged_hash("joinstr/v2/lij/nonce-seed", &[aux, &m.index.to_le_bytes()]);
++        let sec = SecNonce::generate(seed, seckey, aggpk, m.msg, extra);
+         pubs.push(sec.public_nonce());
+-        secs.push(sec);
++        secs.push((m.index, m.msg, sec));
+     }
+-    Ok((secs, pubs))
++    Ok((ExitNonces { nonces: secs }, pubs))
+ }
+ 
+ fn agg_nonce(nonces: &[&[PubNonce]], i: usize) -> AggNonce {
+     AggNonce::sum(nonces.iter().map(|v| v[i].clone()))
+ }
+ 
++/// LiJ P7: every list's length is checked (an Err, never a panic or a silently shorter result), and each secret nonce
++/// signs only the exit it was made for.
+ pub fn partial_sign(
+     seckey: Scalar,
+     keys: &PoolKeys,
+     msgs: &[ExitMessage],
+-    secnonces: Vec<SecNonce>,
++    secnonces: ExitNonces,
+     nonces: &[&[PubNonce]],
+ ) -> Result<Vec<PartialSignature>> {
+     ensure!(nonces.len() == keys.keys.len(), "missing nonces");
++    ensure!(
++        secnonces.nonces.len() == msgs.len(),
++        "{} secret nonces for {} exits",
++        secnonces.nonces.len(),
++        msgs.len()
++    );
++    ensure!(
++        nonces.iter().all(|v| v.len() == msgs.len()),
++        "a member's nonce list does not have one nonce per exit"
++    );
+     secnonces
++        .nonces
+         .into_iter()
+         .zip(msgs)
+         .enumerate()
+-        .map(|(i, (sec, m))| {
++        .map(|(i, ((index, msg, sec), m))| {
++            ensure!(
++                index == m.index && msg == m.msg,
++                "the nonce for exit {} was made for another message",
++                i + 1
++            );
+             let ctx = keys.ctx(m.key)?;
+             musig2::sign_partial(&ctx, seckey, sec, &agg_nonce(nonces, i), m.msg)
+                 .map_err(|e| anyhow!("sign exit {}: {e}", i + 1))
+@@ -84,21 +145,46 @@
+ 
+ /// Verify every partial signature, aggregate them and check the result against the
+ /// pool output key. `signers` holds each signer's key, nonces and partial signatures.
++///
++/// LiJ P7: the signers must be exactly the pool's keys, each once; every signer's lists must have one entry per exit;
++/// every bad signer of an exit is named, not only the first.
+ pub fn aggregate(
+     keys: &PoolKeys,
+     msgs: &[ExitMessage],
+     signers: &[(Point, &[PubNonce], &[PartialSignature])],
+ ) -> Result<Vec<[u8; 64]>> {
+     let secp = Secp256k1::verification_only();
++    {
++        let mut got: Vec<[u8; 33]> = signers.iter().map(|s| s.0.serialize()).collect();
++        got.sort();
++        let mut want: Vec<[u8; 33]> = keys.keys.iter().map(|k| k.serialize()).collect();
++        want.sort();
++        ensure!(got == want, "the signers are not exactly the pool's keys");
++    }
++    for (pk, pubnonces, sigs) in signers {
++        ensure!(
++            pubnonces.len() == msgs.len() && sigs.len() == msgs.len(),
++            "{pk} did not send one nonce and one partial signature per exit"
++        );
++    }
+     let nonces: Vec<&[PubNonce]> = signers.iter().map(|s| s.1).collect();
+     let mut out = Vec::new();
+     for (i, m) in msgs.iter().enumerate() {
+         let ctx = keys.ctx(m.key)?;
+         let agg = agg_nonce(&nonces, i);
+-        for (pk, pubnonces, sigs) in signers {
+-            musig2::verify_partial(&ctx, sigs[i], &agg, *pk, &pubnonces[i], m.msg)
+-                .map_err(|_| anyhow!("invalid partial signature for exit {} from {pk}", i + 1))?;
+-        }
++        let bad: Vec<String> = signers
++            .iter()
++            .filter(|(pk, pubnonces, sigs)| {
++                musig2::verify_partial(&ctx, sigs[i], &agg, *pk, &pubnonces[i], m.msg).is_err()
++            })
++            .map(|(pk, _, _)| pk.to_string())
++            .collect();
++        ensure!(
++            bad.is_empty(),
++            "invalid partial signature for exit {} from {}",
++            i + 1,
++            bad.join(", ")
++        );
+         let sig: CompactSignature =
+             musig2::aggregate_partial_signatures(&ctx, &agg, signers.iter().map(|s| s.2[i]), m.msg)
+                 .map_err(|e| anyhow!("aggregate exit {}: {e}", i + 1))?;
+@@ -114,28 +200,36 @@
+     Ok(out)
+ }
+ 
+-pub fn attach(txs: &mut PoolTxs, sigs: &[[u8; 64]]) {
++/// LiJ P7: one signature per exit, each exit with its one input — else an Err (was: a silent partial attach or a panic).
++pub fn attach(txs: &mut PoolTxs, sigs: &[[u8; 64]]) -> Result<()> {
++    ensure!(sigs.len() == txs.exits.len(), "{} signatures for {} exits", sigs.len(), txs.exits.len());
++    ensure!(txs.exits.iter().all(|tx| tx.input.len() == 1), "an exit without exactly one input");
+     for (tx, sig) in txs.exits.iter_mut().zip(sigs) {
+         let mut w = Witness::new();
+         w.push(sig);
+         tx.input[0].witness = w;
+     }
++    Ok(())
+ }
+ 
+ pub fn nonce_hex(n: &PubNonce) -> String {
+     hex::encode(n.serialize())
+ }
+ 
++/// LiJ P8: exactly 66 bytes of lowercase hex.
+ pub fn nonce_from_hex(s: &str) -> Result<PubNonce> {
+-    PubNonce::from_hex(s).map_err(|e| anyhow!("bad nonce: {e}"))
++    let b = crate::util::strict_hex(s, 66).map_err(|e| anyhow!("bad nonce: {e}"))?;
++    PubNonce::from_bytes(&b).map_err(|e| anyhow!("bad nonce: {e}"))
+ }
+ 
+ pub fn psig_hex(s: &PartialSignature) -> String {
+     hex::encode(s.serialize())
+ }
+ 
++/// LiJ P8: exactly 32 bytes of lowercase hex.
+ pub fn psig_from_hex(s: &str) -> Result<PartialSignature> {
+-    PartialSignature::from_hex(s).map_err(|e| anyhow!("bad partial signature: {e}"))
++    let b = crate::util::strict_hex(s, 32).map_err(|e| anyhow!("bad partial signature: {e}"))?;
++    PartialSignature::from_slice(&b).map_err(|e| anyhow!("bad partial signature: {e}"))
+ }
+ 
+ #[cfg(test)]
+@@ -157,9 +251,9 @@
+         let mut txs = build(&p, &regs, &payouts, &keys).unwrap();
+         let msgs = exit_messages(&keys, &txs).unwrap();
+ 
+-        let (secs, pubnonces): (Vec<Vec<SecNonce>>, Vec<Vec<PubNonce>>) = seckeys
++        let (secs, pubnonces): (Vec<ExitNonces>, Vec<Vec<PubNonce>>) = seckeys
+             .iter()
+-            .map(|sk| make_nonces(*sk, &keys, &msgs, &p.id).unwrap())
++            .map(|sk| make_nonces(*sk, &keys, &msgs, &p.id, &crate::util::random_bytes()).unwrap())
+             .unzip();
+         let pubs: Vec<&[PubNonce]> = pubnonces.iter().map(|v| v.as_slice()).collect();
+         let mut psigs = Vec::new();
+@@ -172,7 +266,7 @@
+             .map(|(i, sk)| (sk.base_point_mul(), pubs[i], psigs[i].as_slice()))
+             .collect();
+         let sigs = aggregate(&keys, &msgs, &signers).unwrap();
+-        attach(&mut txs, &sigs);
++        attach(&mut txs, &sigs).unwrap();
+         assert!(txs.exits.iter().all(|t| t.input[0].witness.len() == 1));
+ 
+         let mut bad = psigs.clone();
+@@ -203,15 +297,45 @@
+         let evil = build(&p, &regs, &other, &keys).unwrap();
+         let evil_msgs = exit_messages(&keys, &evil).unwrap();
+ 
+-        let (secs, pubnonces): (Vec<Vec<SecNonce>>, Vec<Vec<PubNonce>>) = seckeys
+-            .iter()
+-            .map(|sk| make_nonces(*sk, &keys, &msgs, &p.id).unwrap())
+-            .unzip();
++        // LiJ P7: member 1 signs the other chain. Through our API that is refused at once (its nonces were made for
++        // `msgs`); a dishonest member goes around it with musig2 directly, and the aggregation still names it.
++        let mut secs: Vec<Option<ExitNonces>> = Vec::new();
++        let mut pubnonces: Vec<Vec<PubNonce>> = Vec::new();
++        let mut raw1: Vec<SecNonce> = Vec::new();
++        for (i, sk) in seckeys.iter().enumerate() {
++            if i == 1 {
++                for m in &msgs {
++                    let aggpk: Point = keys.ctx(m.key).unwrap().aggregated_pubkey();
++                    raw1.push(SecNonce::generate(crate::util::random_bytes(), *sk, aggpk, m.msg, [0u8; 0]));
++                }
++                pubnonces.push(raw1.iter().map(|s| s.public_nonce()).collect());
++                secs.push(None);
++            } else {
++                let (s, p) = make_nonces(*sk, &keys, &msgs, &p.id, &crate::util::random_bytes()).unwrap();
++                pubnonces.push(p);
++                secs.push(Some(s));
++            }
++        }
+         let pubs: Vec<&[PubNonce]> = pubnonces.iter().map(|v| v.as_slice()).collect();
++        {
++            let (mine, _) = make_nonces(seckeys[1], &keys, &msgs, &p.id, &crate::util::random_bytes()).unwrap();
++            assert!(partial_sign(seckeys[1], &keys, &evil_msgs, mine, &pubs).is_err(), "our API refuses another chain");
++        }
+         let mut psigs = Vec::new();
+         for (i, (sk, secs)) in seckeys.iter().zip(secs).enumerate() {
+-            let m = if i == 1 { &evil_msgs } else { &msgs };
+-            psigs.push(partial_sign(*sk, &keys, m, secs, &pubs).unwrap());
++            if i == 1 {
++                let s: Vec<PartialSignature> = std::mem::take(&mut raw1)
++                    .into_iter()
++                    .zip(&evil_msgs)
++                    .enumerate()
++                    .map(|(j, (sec, m))| {
++                        musig2::sign_partial(&keys.ctx(m.key).unwrap(), *sk, sec, &agg_nonce(&pubs, j), m.msg).unwrap()
++                    })
++                    .collect();
++                psigs.push(s);
++            } else {
++                psigs.push(partial_sign(*sk, &keys, &msgs, secs.unwrap(), &pubs).unwrap());
++            }
+         }
+         let signers: Vec<_> = seckeys
+             .iter()
+--- a/src/ring.rs
++++ b/src/ring.rs
+@@ -5,9 +5,10 @@
+ use secp::{MaybePoint, MaybeScalar, Point, Scalar};
+ use serde::{Deserialize, Serialize};
+ 
+-use crate::util::{random_scalar, tagged_hash};
++use crate::util::{derive_scalar, tagged_hash};
+ 
+ #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]   // LiJ P8
+ pub struct RingSig {
+     pub key_image: String,
+     pub c0: String,
+@@ -30,6 +31,48 @@
+     sha256::Hash::hash(&bytes).to_byte_array()
+ }
+ 
++// ── LiJ P10: the same LSAG with a TAG (Tatara v0.9 §4.1; DP 2026-10-12 19:11 "weekly key image = ok") ──────────────────
++// joinstr's key image x·Hp(P) is the same for every signature by one key, so every signature a key makes links to every
++// other. With a tag, every member's Hp also takes the tag — Hp_t(P) = lift_x(H("joinstr/v2/lij/hash_to_point_tagged",
++// P ‖ len(t) ‖ t ‖ i)) — so the image x·Hp_t(P) links two signatures only when they carry the same tag (the same week,
++// in Tatara's seat requests), and the ring hash in every challenge is bound to the tag, so a signature made under one tag
++// (or none) verifies under no other. The equations are joinstr's, with a different hash-to-point for each tag. joinstr's
++// own untagged signatures are unchanged (its vectors still pass) — pools keep using them.
++
++pub fn hash_to_point_tagged(p: &Point, tag: &[u8]) -> Point {
++    let bytes = p.serialize();
++    let len = (tag.len() as u32).to_le_bytes();
++    for i in 0u32.. {
++        let t = tagged_hash("joinstr/v2/lij/hash_to_point_tagged", &[&bytes, &len, tag, &i.to_le_bytes()]);
++        if let Ok(point) = Point::lift_x(t) {
++            return point;
++        }
++    }
++    unreachable!()
++}
++
++fn ring_hash_tagged(ring: &[Point], tag: &[u8]) -> [u8; 32] {
++    tagged_hash(
++        "joinstr/v2/lij/ring_hash_tagged",
++        &[&ring_hash(ring), &(tag.len() as u32).to_le_bytes(), tag],
++    )
++}
++
++pub fn key_image_tagged(x: Scalar, tag: &[u8]) -> Point {
++    x * hash_to_point_tagged(&x.base_point_mul(), tag)
++}
++
++/// Sign `m` under `tag` (LiJ P10). Same rules as `sign`.
++pub fn sign_tagged(ring: &[Point], x: Scalar, m: &[u8; 32], aux: &[u8; 32], tag: &[u8]) -> Result<RingSig> {
++    check_ring(ring)?;
++    sign_core(ring, x, m, aux, &|p: &Point| hash_to_point_tagged(p, tag), ring_hash_tagged(ring, tag))
++}
++
++/// Verify a signature made under `tag` and return its key image (LiJ P10).
++pub fn verify_tagged(ring: &[Point], m: &[u8; 32], sig: &RingSig, tag: &[u8]) -> Result<Point> {
++    Ring::new_tagged(ring, tag)?.verify(m, sig)
++}
++
+ fn challenge(rh: &[u8; 32], image: &Point, m: &[u8; 32], l: &Point, r: &Point) -> MaybeScalar {
+     let h = tagged_hash(
+         "joinstr/v2/ring",
+@@ -49,25 +92,40 @@
+     x * hash_to_point(&x.base_point_mul())
+ }
+ 
+-/// Sign `m` with `x`, whose public key must be in `ring` (sorted by bytes).
+-pub fn sign(ring: &[Point], x: Scalar, m: &[u8; 32]) -> Result<RingSig> {
++/// Sign `m` with `x`, whose public key must be in `ring` (sorted by bytes). LiJ P4: `aux` is 32 fresh random bytes from
++/// the caller; the commitment and the decoy responses are derived from them together with the secret key, the message
++/// and the ring, so a weak `aux` never repeats a commitment across messages.
++pub fn sign(ring: &[Point], x: Scalar, m: &[u8; 32], aux: &[u8; 32]) -> Result<RingSig> {
++    check_ring(ring)?;   // LiJ P7
++    sign_core(ring, x, m, aux, &hash_to_point, ring_hash(ring))
++}
++
++/// The signing equations, shared by `sign` and `sign_tagged` (LiJ P10: only `hp` and the ring hash differ).
++fn sign_core(
++    ring: &[Point],
++    x: Scalar,
++    m: &[u8; 32],
++    aux: &[u8; 32],
++    hp: &dyn Fn(&Point) -> Point,
++    rh: [u8; 32],
++) -> Result<RingSig> {
+     let n = ring.len();
+     let pk = x.base_point_mul();
+     let Some(j) = ring.iter().position(|p| *p == pk) else {
+         bail!("own key not in ring");
+     };
+-    let rh = ring_hash(ring);
+-    let hp_j = hash_to_point(&pk);
++    let hp_j = hp(&pk);
+     let image = x * hp_j;
+-    let a = random_scalar();
++    let xb = x.serialize();
++    let a = derive_scalar("joinstr/v2/lij/ring-commit", &[aux, &xb, m, &rh]);
+     let mut c = vec![MaybeScalar::Zero; n];
+     let mut s = vec![MaybeScalar::Zero; n];
+     c[(j + 1) % n] = challenge(&rh, &image, m, &a.base_point_mul(), &(a * hp_j));
+     let mut i = (j + 1) % n;
+     while i != j {
+-        s[i] = random_scalar().into();
++        s[i] = derive_scalar("joinstr/v2/lij/ring-decoy", &[aux, &xb, m, &rh, &(i as u32).to_le_bytes()]).into();
+         let l = not_inf(s[i].base_point_mul() + c[i] * ring[i])?;
+-        let r = not_inf(s[i] * hash_to_point(&ring[i]) + c[i] * image)?;
++        let r = not_inf(s[i] * hp(&ring[i]) + c[i] * image)?;
+         c[(i + 1) % n] = challenge(&rh, &image, m, &l, &r);
+         i = (i + 1) % n;
+     }
+@@ -86,13 +144,35 @@
+     hash: [u8; 32],
+ }
+ 
++/// LiJ P7: a ring is non-empty, sorted by its keys' bytes and without duplicates — the shape `ring_hash` assumes.
++fn check_ring(keys: &[Point]) -> Result<()> {
++    if keys.is_empty() {
++        bail!("empty ring");
++    }
++    if !keys.windows(2).all(|w| w[0].serialize() < w[1].serialize()) {
++        bail!("ring not sorted, or a key twice");
++    }
++    Ok(())
++}
++
+ impl Ring {
+-    pub fn new(keys: &[Point]) -> Self {
+-        Ring {
++    pub fn new(keys: &[Point]) -> Result<Self> {
++        check_ring(keys)?;
++        Ok(Ring {
+             keys: keys.to_vec(),
+             hps: keys.iter().map(hash_to_point).collect(),
+             hash: ring_hash(keys),
+-        }
++        })
++    }
++
++    /// A ring for signatures made under `tag` (LiJ P10).
++    pub fn new_tagged(keys: &[Point], tag: &[u8]) -> Result<Self> {
++        check_ring(keys)?;
++        Ok(Ring {
++            keys: keys.to_vec(),
++            hps: keys.iter().map(|p| hash_to_point_tagged(p, tag)).collect(),
++            hash: ring_hash_tagged(keys, tag),
++        })
+     }
+ 
+     /// Verify a ring signature and return its key image.
+@@ -103,7 +183,7 @@
+ 
+ /// Verify a ring signature and return its key image.
+ pub fn verify(ring: &[Point], m: &[u8; 32], sig: &RingSig) -> Result<Point> {
+-    Ring::new(ring).verify(m, sig)
++    Ring::new(ring)?.verify(m, sig)
+ }
+ 
+ fn verify_with(
+@@ -116,13 +196,13 @@
+     if sig.s.len() != ring.len() || ring.is_empty() {
+         bail!("ring size mismatch");
+     }
+-    let image = Point::from_hex(&sig.key_image)?;
+-    let c0 = MaybeScalar::from_hex(&sig.c0)?;
+-    let s = sig
+-        .s
+-        .iter()
+-        .map(|v| MaybeScalar::from_hex(v))
+-        .collect::<Result<Vec<_>, _>>()?;
++    // LiJ P8: the key image a compressed point, every scalar exactly 32 bytes, all lowercase hex
++    let image = crate::keys::point_from_hex(&sig.key_image)?;
++    let scalar = |v: &str| -> Result<MaybeScalar> {
++        Ok(MaybeScalar::from_slice(&crate::util::strict_hex(v, 32)?)?)
++    };
++    let c0 = scalar(&sig.c0)?;
++    let s = sig.s.iter().map(|v| scalar(v)).collect::<Result<Vec<_>>>()?;
+     let mut c = c0;
+     for (i, p) in ring.iter().enumerate() {
+         let l = not_inf(s[i].base_point_mul() + c * *p)?;
+@@ -138,6 +218,7 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use crate::util::random_scalar;
+ 
+     fn ring_of(n: usize) -> (Vec<Scalar>, Vec<Point>) {
+         let mut xs: Vec<Scalar> = (0..n).map(|_| random_scalar()).collect();
+@@ -151,7 +232,7 @@
+         let (xs, ring) = ring_of(5);
+         let m = [7u8; 32];
+         for x in &xs {
+-            let sig = sign(&ring, *x, &m).unwrap();
++            let sig = sign(&ring, *x, &m, &crate::util::random_bytes()).unwrap();
+             let image = verify(&ring, &m, &sig).unwrap();
+             assert_eq!(image, key_image(*x));
+         }
+@@ -160,16 +241,16 @@
+     #[test]
+     fn single_member_ring() {
+         let (xs, ring) = ring_of(1);
+-        let sig = sign(&ring, xs[0], &[1u8; 32]).unwrap();
++        let sig = sign(&ring, xs[0], &[1u8; 32], &crate::util::random_bytes()).unwrap();
+         verify(&ring, &[1u8; 32], &sig).unwrap();
+     }
+ 
+     #[test]
+     fn key_image_links_two_signatures() {
+         let (xs, ring) = ring_of(4);
+-        let a = verify(&ring, &[1u8; 32], &sign(&ring, xs[2], &[1u8; 32]).unwrap()).unwrap();
+-        let b = verify(&ring, &[2u8; 32], &sign(&ring, xs[2], &[2u8; 32]).unwrap()).unwrap();
+-        let c = verify(&ring, &[2u8; 32], &sign(&ring, xs[1], &[2u8; 32]).unwrap()).unwrap();
++        let a = verify(&ring, &[1u8; 32], &sign(&ring, xs[2], &[1u8; 32], &crate::util::random_bytes()).unwrap()).unwrap();
++        let b = verify(&ring, &[2u8; 32], &sign(&ring, xs[2], &[2u8; 32], &crate::util::random_bytes()).unwrap()).unwrap();
++        let c = verify(&ring, &[2u8; 32], &sign(&ring, xs[1], &[2u8; 32], &crate::util::random_bytes()).unwrap()).unwrap();
+         assert_eq!(a, b);
+         assert_ne!(a, c);
+     }
+@@ -178,7 +259,7 @@
+     fn rejects_tampering() {
+         let (xs, ring) = ring_of(3);
+         let m = [9u8; 32];
+-        let sig = sign(&ring, xs[0], &m).unwrap();
++        let sig = sign(&ring, xs[0], &m, &crate::util::random_bytes()).unwrap();
+         assert!(verify(&ring, &[8u8; 32], &sig).is_err());
+         let mut bad = sig.clone();
+         bad.s[1] = hex::encode(random_scalar().serialize());
+@@ -186,7 +267,7 @@
+         let (_, other) = ring_of(3);
+         assert!(verify(&other, &m, &sig).is_err());
+         let outsider = random_scalar();
+-        assert!(sign(&ring, outsider, &m).is_err());
++        assert!(sign(&ring, outsider, &m, &crate::util::random_bytes()).is_err());
+     }
+ 
+     #[test]
+@@ -204,7 +285,7 @@
+     fn rejects_malformed_signatures() {
+         let (xs, ring) = ring_of(3);
+         let m = [5u8; 32];
+-        let sig = sign(&ring, xs[1], &m).unwrap();
++        let sig = sign(&ring, xs[1], &m, &crate::util::random_bytes()).unwrap();
+         verify(&ring, &m, &sig).unwrap();
+         let order = "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141";
+         let mut bad = sig.clone();
+--- a/src/pool.rs
++++ b/src/pool.rs
+@@ -33,12 +33,17 @@
+ pub const MAX_LOCKTIME_LAG: u32 = 100;
+ /// Largest pool that pre-signs every order of exits, 6139 transactions for 7 peers.
+ pub const MAX_ANY_ORDER: usize = 7;
++/// LiJ P6: caps that keep every sum and product below in range (no overflow: our release build has no overflow
++/// checks). 21 M BTC in sats; 1,000 sat/vB in thousandths; inputs per peer (LiJ's own pools allow 4 — Tatara S6).
++pub const MAX_MONEY_SAT: u64 = 2_100_000_000_000_000;
++pub const MAX_FEE_RATE_MILLI: u64 = 1_000_000;
++pub const MAX_INPUTS_PER_PEER: usize = 100;
+ 
+ pub fn p2a_script() -> ScriptBuf {
+     ScriptBuf::from_bytes(vec![0x51, 0x02, 0x4e, 0x73])
+ }
+ 
+-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(rename_all = "snake_case")]
+ pub enum FeeSplit {
+     /// Every payout is exactly the denomination and all peers share the exit fees.
+@@ -49,7 +54,18 @@
+ }
+ 
+ /// How the pre-signed exits leave the pool.
+-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
++/// P1 (LiJ, Tatara v0.10 §6.1): what every payout of the pool is. P2TR (joinstr's) or — a channel pool — P2WSH, a
++/// channel's 2-of-2, so a payout can be a channel's funding. A P2WSH output weighs what a P2TR output weighs (172 WU),
++/// so the fee rules are unchanged; a pool declares one type and every payout is checked against it by the peers.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum PayoutType {
++    #[default]
++    P2tr,
++    P2wsh,
++}
++
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(rename_all = "snake_case")]
+ pub enum Structure {
+     /// One chain in a fixed order. A peer who leaves early also pays out everyone before it.
+@@ -83,6 +99,8 @@
+     pub fee_split: FeeSplit,
+     pub anchor: bool,
+     pub structure: Structure,
++    /// P1: what every payout is (P2TR, or P2WSH for a channel pool).
++    pub payout_type: PayoutType,
+ }
+ 
+ pub fn fee(weight: u64, rate_milli: u64) -> u64 {
+@@ -265,6 +283,7 @@
+             fee_split: FeeSplit::Equal,
+             anchor: false,
+             structure: Structure::Chain,
++            payout_type: PayoutType::P2tr,
+         }
+     }
+ 
+@@ -278,6 +297,22 @@
+             "peers must be from 2 to {MAX_PEERS}"
+         );
+         ensure!(!self.classes.is_empty(), "no denomination");
++        // LiJ P6: each class bounded before anything sums them (a class of usize::MAX peers wrapped the sum)
++        ensure!(self.classes.len() <= MAX_PEERS, "too many denominations");
++        ensure!(
++            self.classes
++                .iter()
++                .all(|c| (1..=MAX_PEERS).contains(&c.peers) && (1..=MAX_MONEY_SAT).contains(&c.amount)),
++            "a denomination is out of range"
++        );
++        ensure!(
++            self.fee_rate_milli <= MAX_FEE_RATE_MILLI
++                && self.exit_rates_milli.0 <= MAX_FEE_RATE_MILLI
++                && self.exit_rates_milli.1 <= MAX_FEE_RATE_MILLI,
++            "fee rate above {} sat/vB",
++            MAX_FEE_RATE_MILLI / 1000
++        );
++        ensure!(self.exits.len() <= MAX_PEERS, "too many exits");
+         ensure!(
+             self.classes.iter().map(|c| c.peers).sum::<usize>() == self.peers,
+             "the denominations must add up to the number of peers"
+@@ -705,11 +740,18 @@
+         ensure!(keys.insert(r.musig.serialize()), "duplicate musig key");
+         ensure!(keys.insert(r.ring.serialize()), "duplicate ring key");
+         ensure!(!r.inputs.is_empty(), "registration without inputs");
++        // LiJ P6: bounded inputs and values, so the sums below cannot overflow
++        ensure!(
++            r.inputs.len() <= MAX_INPUTS_PER_PEER,
++            "more than {MAX_INPUTS_PER_PEER} inputs from one peer"
++        );
+         for (op, out) in &r.inputs {
+             ensure!(outpoints.insert(*op), "input {op} registered twice");
++            ensure!(out.value.to_sat() <= MAX_MONEY_SAT, "input {op} is larger than all bitcoin");
+             input_weight(&out.script_pubkey)?;
+         }
+         if let Some(c) = &r.change {
++            ensure!(c.value.to_sat() <= MAX_MONEY_SAT, "change larger than all bitcoin");
+             ensure!(
+                 scripts.insert(c.script_pubkey.clone()),
+                 "duplicate change script"
+@@ -987,7 +1029,13 @@
+         );
+     }
+     let set = params.exit_set(&txs.payout_amounts);
+-    let pool = &txs.funding.output[txs.pool_vout as usize];
++    // LiJ P9: every index below is checked — a short or out-of-range list from a peer is an Err, never a panic
++    // (our release build aborts on a panic).
++    let pool = txs
++        .funding
++        .output
++        .get(txs.pool_vout as usize)
++        .context("the pool output index is outside the funding")?;
+     ensure!(
+         pool.script_pubkey == keys.script_pubkey(0)?,
+         "funding pays the wrong pool key"
+@@ -999,11 +1047,24 @@
+     for i in &txs.funding.input {
+         ensure!(i.script_sig.is_empty(), "funding input with a script sig");
+     }
+-    let total_in: u64 = txs.funding_prevouts.iter().map(|o| o.value.to_sat()).sum();
+-    let total_out: u64 = txs.funding.output.iter().map(|o| o.value.to_sat()).sum();
++    let total_in = txs
++        .funding_prevouts
++        .iter()
++        .try_fold(0u64, |a, o| a.checked_add(o.value.to_sat()))
++        .context("funding inputs overflow")?;
++    let total_out = txs
++        .funding
++        .output
++        .iter()
++        .try_fold(0u64, |a, o| a.checked_add(o.value.to_sat()))
++        .context("funding outputs overflow")?;
+     ensure!(total_in > total_out, "funding pays no fee");
+ 
+     ensure!(txs.exits.len() == set.plans.len(), "wrong number of exits");
++    ensure!(
++        txs.spent.len() == txs.exits.len() && txs.links.len() == txs.exits.len(),
++        "wrong number of spent outputs or links"
++    );
+     let mut created: Vec<Option<(OutPoint, u64)>> = vec![None; set.pools.len()];
+     created[0] = Some((
+         OutPoint::new(txs.funding.compute_txid(), txs.pool_vout),
+@@ -1011,8 +1072,11 @@
+     ));
+     for (t, (tx, plan)) in txs.exits.iter().zip(&set.plans).enumerate() {
+         let k = t + 1;
+-        let (prev, prev_value) =
+-            created[plan.from as usize].context("exit spends an unknown pool output")?;
++        let (prev, prev_value) = created
++            .get(plan.from as usize)
++            .copied()
++            .flatten()
++            .context("exit spends an unknown pool output")?;
+         ensure!(
+             tx.input.len() == 1 && tx.input[0].previous_output == prev,
+             "exit {k} does not spend pool output {}",
+@@ -1028,17 +1092,26 @@
+             txs.links[t] == link_of(plan, &expected, keys, &txs.payouts)?,
+             "exit {k} is in the wrong place"
+         );
+-        let out: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
++        let out = tx
++            .output
++            .iter()
++            .try_fold(0u64, |a, o| a.checked_add(o.value.to_sat()))
++            .context("exit outputs overflow")?;
+         ensure!(
+             prev_value.checked_sub(out) == Some(plan.fee),
+             "exit {k} pays the wrong fee"
+         );
+         let txid = tx.compute_txid();
+         for &(index, vout) in &txs.links[t].to {
+-            created[index as usize] = Some((
+-                OutPoint::new(txid, vout),
+-                tx.output[vout as usize].value.to_sat(),
+-            ));
++            let value = tx
++                .output
++                .get(vout as usize)
++                .context("exit link names an output the exit does not have")?
++                .value
++                .to_sat();
++            *created
++                .get_mut(index as usize)
++                .context("exit link names an unknown pool output")? = Some((OutPoint::new(txid, vout), value));
+         }
+     }
+     Ok(())
+--- a/src/funding.rs
++++ b/src/funding.rs
+@@ -12,6 +12,7 @@
+ use crate::util::tagged_hash;
+ 
+ #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]   // LiJ P8
+ pub struct Proof {
+     pub sig: String,
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+@@ -36,11 +37,12 @@
+     Ok(XOnlyPublicKey::from_slice(&spk.as_bytes()[2..34])?)
+ }
+ 
+-pub fn prove(sk: &SecretKey, spk: &Script, msg: [u8; 32]) -> Result<Proof> {
++/// LiJ P4: `aux` is 32 fresh random bytes from the caller (BIP-340's auxiliary randomness).
++pub fn prove(sk: &SecretKey, spk: &Script, msg: [u8; 32], aux: &[u8; 32]) -> Result<Proof> {
+     let secp = Secp256k1::new();
+     let m = Message::from_digest(msg);
+     if spk.is_p2tr() {
+-        let sig = secp.sign_schnorr(&m, &tweaked_keypair(sk));
++        let sig = secp.sign_schnorr_with_aux_rand(&m, &tweaked_keypair(sk), aux);
+         Ok(Proof {
+             sig: hex::encode(sig.serialize()),
+             pubkey: None,
+@@ -70,7 +72,12 @@
+ pub fn verify_proof(spk: &Script, msg: [u8; 32], proof: &Proof) -> Result<()> {
+     let secp = Secp256k1::verification_only();
+     let m = Message::from_digest(msg);
+-    let sig = hex::decode(&proof.sig)?;
++    // LiJ P8: a Schnorr proof is exactly 64 bytes, an ECDSA proof 8 to 72 bytes of DER, a key 33 bytes — lowercase hex
++    let sig = if spk.is_p2tr() {
++        crate::util::strict_hex(&proof.sig, 64)?
++    } else {
++        crate::util::strict_hex_range(&proof.sig, 8, 72)?
++    };
+     if spk.is_p2tr() {
+         secp.verify_schnorr(
+             &schnorr::Signature::from_slice(&sig)?,
+@@ -79,7 +86,7 @@
+         )
+         .context("invalid ownership proof")?;
+     } else if spk.is_p2wpkh() {
+-        let pk = p2wpkh_pubkey(spk, &hex::decode(proof.pubkey.as_deref().unwrap_or(""))?)?;
++        let pk = p2wpkh_pubkey(spk, &crate::util::strict_hex(proof.pubkey.as_deref().unwrap_or(""), 33)?)?;
+         secp.verify_ecdsa(&m, &ecdsa::Signature::from_der(&sig)?, &pk.0)
+             .context("invalid ownership proof")?;
+     } else {
+@@ -88,11 +95,13 @@
+     Ok(())
+ }
+ 
++/// LiJ P4: `aux` is 32 fresh random bytes from the caller (BIP-340's auxiliary randomness; unused for P2WPKH).
+ pub fn sign_input(
+     tx: &Transaction,
+     index: usize,
+     prevouts: &[TxOut],
+     sk: &SecretKey,
++    aux: &[u8; 32],
+ ) -> Result<Witness> {
+     let secp = Secp256k1::new();
+     let spk = &prevouts[index].script_pubkey;
+@@ -103,9 +112,10 @@
+             &Prevouts::All(prevouts),
+             TapSighashType::Default,
+         )?;
+-        let sig = secp.sign_schnorr(
++        let sig = secp.sign_schnorr_with_aux_rand(
+             &Message::from_digest(h.to_byte_array()),
+             &tweaked_keypair(sk),
++            aux,
+         );
+         Ok(Witness::p2tr_key_spend(&bitcoin::taproot::Signature {
+             signature: sig,
+@@ -231,11 +241,11 @@
+             }],
+         };
+         for i in 0..2 {
+-            let w = sign_input(&tx, i, &prevouts, &keys[i]).unwrap();
++            let w = sign_input(&tx, i, &prevouts, &keys[i], &crate::util::random_bytes()).unwrap();
+             verify_input(&tx, i, &prevouts, &w).unwrap();
+             assert!(verify_input(&tx, 1 - i, &prevouts, &w).is_err());
+             let m = ownership_msg("pool", &[3; 32], &tx.input[i].previous_output);
+-            let p = prove(&keys[i], &prevouts[i].script_pubkey, m).unwrap();
++            let p = prove(&keys[i], &prevouts[i].script_pubkey, m, &crate::util::random_bytes()).unwrap();
+             verify_proof(&prevouts[i].script_pubkey, m, &p).unwrap();
+             assert!(verify_proof(&prevouts[i].script_pubkey, [0; 32], &p).is_err());
+             assert!(verify_proof(&prevouts[1 - i].script_pubkey, m, &p).is_err());
+@@ -313,9 +323,10 @@
+             let h = SighashCache::new(&tx)
+                 .taproot_key_spend_signature_hash(0, &Prevouts::All(&prevouts), t)
+                 .unwrap();
+-            let sig = secp.sign_schnorr(
++            let sig = secp.sign_schnorr_with_aux_rand(
+                 &Message::from_digest(h.to_byte_array()),
+                 &tweaked_keypair(&keys[0]),
++                &crate::util::random_bytes(),
+             );
+             let w = Witness::p2tr_key_spend(&bitcoin::taproot::Signature {
+                 signature: sig,
+@@ -380,7 +391,7 @@
+         let (keys, prevouts) = keys_and_prevouts();
+         let op = OutPoint::new(Txid::from_str(&"cd".repeat(32)).unwrap(), 0);
+         for (k, p) in keys.iter().zip(&prevouts) {
+-            let proof = prove(k, &p.script_pubkey, ownership_msg("pool", &[3; 32], &op)).unwrap();
++            let proof = prove(k, &p.script_pubkey, ownership_msg("pool", &[3; 32], &op), &crate::util::random_bytes()).unwrap();
+             verify_proof(
+                 &p.script_pubkey,
+                 ownership_msg("pool", &[3; 32], &op),
+--- a/src/msg.rs
++++ b/src/msg.rs
+@@ -5,13 +5,13 @@
+ use anyhow::{bail, Result};
+ 
+ use crate::funding::Proof;
+-use crate::pool::{default_exits, Class, FeeSplit, Params, Structure};
++use crate::pool::{default_exits, Class, FeeSplit, Params, PayoutType, Structure};
+ use crate::ring::RingSig;
+ 
+ pub const VERSION: &str = "2";
+ pub const POOL_KIND: u16 = 2022;
+ 
+-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(rename_all = "lowercase")]
+ pub enum Broadcast {
+     /// Broadcast the funding transaction and every exit at once, in waves.
+@@ -72,6 +72,9 @@
+     /// How the pre-signed exits leave the pool, a chain when absent.
+     #[serde(default, skip_serializing_if = "is_chain")]
+     pub structure: Structure,
++    /// P1 (LiJ): what every payout is — P2TR when absent, `"p2wsh"` for a channel pool (a channel's 2-of-2).
++    #[serde(default, skip_serializing_if = "is_p2tr")]
++    pub payout_type: PayoutType,
+     pub transport: Transport,
+ }
+ 
+@@ -79,13 +82,49 @@
+     *s == Structure::Chain
+ }
+ 
+-fn milli(rate: f64) -> u64 {
+-    (rate * 1000.0).round() as u64
++fn is_p2tr(p: &PayoutType) -> bool {
++    *p == PayoutType::P2tr
++}
++
++/// LiJ P6: a fee rate is finite, positive and at most the cap — 1e300 no longer becomes u64::MAX.
++fn milli(rate: f64) -> Result<u64> {
++    let cap = crate::pool::MAX_FEE_RATE_MILLI as f64;
++    if !(rate.is_finite() && rate > 0.0 && rate * 1000.0 <= cap) {
++        bail!("fee rate {rate} out of range");
++    }
++    Ok((rate * 1000.0).round() as u64)
+ }
+ 
+ impl PoolEvent {
++    /// LiJ P8: the strict parse a LiJ phone uses for a pool announcement — no field the event does not have (so no
++    /// `autct`), the pool id 32 lowercase hex characters (upstream makes 16 random bytes), the pool key a compressed
++    /// point, and whole sat/vB fee rates (Rust and Python round fractions differently — review finding 11).
++    pub fn parse_strict(s: &str) -> Result<PoolEvent> {
++        // P1 (v332, DP's first channel pool 2026-10-13): `payout_type` is a field of the event — the creating phone parses
++        // its own announcement with this list, and a channel pool's carries "p2wsh" (the list lacked it: every create
++        // stopped with "unknown field in the pool event").
++        const FIELDS: &[&str] = &["versions", "id", "network", "type", "public_key", "denomination", "peers", "timeout",
++            "relays", "fee_rate", "broadcast", "denominations", "exits", "exit_fee_rates", "fee_split", "anchor",
++            "structure", "payout_type", "transport"];
++        let v: serde_json::Value = serde_json::from_str(s)?;
++        let Some(o) = v.as_object() else { bail!("a pool event is a JSON object") };
++        for k in o.keys() {
++            if !FIELDS.contains(&k.as_str()) {
++                bail!("unknown field in the pool event");
++            }
++        }
++        let e: PoolEvent = serde_json::from_value(v)?;
++        crate::util::strict_hex(&e.id, 16).map_err(|_| anyhow::anyhow!("the pool id is not 32 lowercase hex characters"))?;
++        crate::keys::point_from_hex(&e.public_key)?;
++        let whole = |r: f64| r.fract() == 0.0;
++        if !whole(e.fee_rate) || !e.exit_fee_rates.map_or(true, |r| whole(r[0]) && whole(r[1])) {
++            bail!("fee rates are whole sat/vB");
++        }
++        Ok(e)
++    }
++
+     pub fn params(&self) -> Result<Params> {
+-        let fee_rate_milli = milli(self.fee_rate);
++        let fee_rate_milli = milli(self.fee_rate)?;
+         let rates = self
+             .exit_fee_rates
+             .unwrap_or([self.fee_rate, self.fee_rate]);
+@@ -108,7 +147,8 @@
+             .exits
+             .clone()
+             .unwrap_or_else(|| default_exits(self.peers));
+-        params.exit_rates_milli = (milli(rates[0]), milli(rates[1]));
++        params.exit_rates_milli = (milli(rates[0])?, milli(rates[1])?);
++        params.payout_type = self.payout_type;
+         params.fee_split = self.fee_split;
+         params.anchor = anchor;
+         params.structure = self.structure;
+@@ -118,6 +158,7 @@
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]   // LiJ P8
+ pub struct InputMsg {
+     pub txid: String,
+     pub vout: u32,
+@@ -127,12 +168,14 @@
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]   // LiJ P8
+ pub struct ChangeMsg {
+     pub address: String,
+     pub amount: u64,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]   // LiJ P8
+ pub struct WitnessMsg {
+     pub txid: String,
+     pub vout: u32,
+@@ -140,6 +183,7 @@
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]   // LiJ P8
+ pub struct Credentials {
+     pub id: String,
+     pub key: String,
+@@ -212,7 +256,40 @@
+     pub msg: Msg,
+ }
+ 
++/// LiJ P8: the fields each message type may carry (besides "version" and "type").
++fn allowed_fields(kind: &str) -> Option<&'static [&'static str]> {
++    Some(match kind {
++        "join_pool" => &[],
++        "credentials" => &["credentials"],
++        "reject" | "abort" => &["reason"],
++        "inputs" => &["musig_pubkey", "ring_pubkey", "inputs", "change", "height", "denomination"],
++        "output" => &["address", "ring_sig", "priority", "denomination"],
++        "nonces" => &["offset", "nonces"],
++        "partial_sigs" => &["offset", "sigs"],
++        "funding_sigs" => &["witnesses"],
++        _ => return None,
++    })
++}
++
+ impl Envelope {
++    /// LiJ P8: the strict parse a LiJ phone uses for every pool message — version "2" only, a known type, no field the
++    /// type does not have (serde cannot refuse unknown fields through `flatten`), then the ordinary parse.
++    pub fn parse_strict(s: &str) -> Result<Envelope> {
++        let v: serde_json::Value = serde_json::from_str(s)?;
++        let Some(o) = v.as_object() else { bail!("a message is a JSON object") };
++        if o.get("version").and_then(|x| x.as_str()) != Some(VERSION) {
++            bail!("unknown version");
++        }
++        let kind = o.get("type").and_then(|x| x.as_str()).unwrap_or("");
++        let Some(allowed) = allowed_fields(kind) else { bail!("unknown message type") };
++        for k in o.keys() {
++            if k != "version" && k != "type" && !allowed.contains(&k.as_str()) {
++                bail!("unknown field in a {kind} message");
++            }
++        }
++        Ok(serde_json::from_value(v)?)
++    }
++
+     pub fn json(msg: Msg) -> String {
+         serde_json::to_string(&Envelope {
+             version: VERSION.into(),
+--- a/src/util.rs
++++ b/src/util.rs
+@@ -1,7 +1,4 @@
+-use std::time::{SystemTime, UNIX_EPOCH};
+-
+ use bitcoin::hashes::{sha256, Hash, HashEngine};
+-use rand::RngCore;
+ 
+ /// BIP340 tagged hash over the concatenation of `parts`.
+ pub fn tagged_hash(tag: &str, parts: &[&[u8]]) -> [u8; 32] {
+@@ -15,12 +12,50 @@
+     sha256::Hash::from_engine(e).to_byte_array()
+ }
+ 
++// LiJ P4/P5 (docs/joinstr-patches.md): no randomness, clock or display helpers in the library — every random byte comes
++// from the caller (the engine's source, the one the 12 words come from). A secret scalar is derived from the caller's
++// bytes, hedged with the secret and the message, by `derive_scalar`.
++
++/// A non-zero scalar below the curve order from a tagged hash of `parts` (LiJ P4). The counter makes the (2^-128-rare)
++/// out-of-range case total, never a panic.
++pub fn derive_scalar(tag: &str, parts: &[&[u8]]) -> secp::Scalar {
++    let mut ctr: u32 = 0;
++    loop {
++        let c = ctr.to_le_bytes();
++        let mut all: Vec<&[u8]> = parts.to_vec();
++        all.push(&c);
++        if let Ok(s) = secp::Scalar::from_slice(&tagged_hash(tag, &all)) {
++            return s;
++        }
++        ctr = ctr.wrapping_add(1);
++    }
++}
++
++/// LiJ P8: hex from a peer is lowercase, exactly `bytes` long — nothing else is decoded.
++pub fn strict_hex(s: &str, bytes: usize) -> anyhow::Result<Vec<u8>> {
++    if s.len() != 2 * bytes || !s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
++        anyhow::bail!("expected {bytes} bytes of lowercase hex");
++    }
++    Ok(hex::decode(s)?)
++}
++
++/// LiJ P8: like `strict_hex` for a length within `min..=max` bytes (a DER signature).
++pub fn strict_hex_range(s: &str, min: usize, max: usize) -> anyhow::Result<Vec<u8>> {
++    if s.len() % 2 != 0 || s.len() < 2 * min || s.len() > 2 * max {
++        anyhow::bail!("expected {min} to {max} bytes of lowercase hex");
++    }
++    strict_hex(s, s.len() / 2)
++}
++
++#[cfg(test)]
+ pub fn random_bytes() -> [u8; 32] {
++    use rand::RngCore;
+     let mut b = [0u8; 32];
+     rand::rngs::OsRng.fill_bytes(&mut b);
+     b
+ }
+ 
++#[cfg(test)]
+ pub fn random_scalar() -> secp::Scalar {
+     loop {
+         if let Ok(s) = secp::Scalar::from_slice(&random_bytes()) {
+@@ -28,18 +63,3 @@
+         }
+     }
+ }
+-
+-pub fn now() -> u64 {
+-    SystemTime::now()
+-        .duration_since(UNIX_EPOCH)
+-        .expect("clock after epoch")
+-        .as_secs()
+-}
+-
+-pub fn short(s: &str) -> String {
+-    if s.len() <= 16 {
+-        s.to_string()
+-    } else {
+-        format!("{}...{}", &s[..8], &s[s.len() - 8..])
+-    }
+-}

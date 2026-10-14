@@ -337,6 +337,12 @@ export class LijWalletHandle {
      */
     lsp_channel_open_estimate_with(req: string): Promise<any>;
     /**
+     * v323 (§13): what an open WOULD spend — `req` JSON {"channel_sats","fee_rate_sat_per_vb","inputs"?:[{"txid","vout"}]}
+     * — answers {"inputs","fee_sats","mixed_inputs","links_mixed"} (the sheet's mixed-coin warning: links_mixed) or
+     * {"problem"} in plain words. The open's own pick.
+     */
+    lsp_channel_open_pick(req: string): string;
+    /**
      * Dev tool: manually mark a funding transaction as confirmed at a
      * given height. Synthesizes block headers and notifies LDK's chain
      * listeners — pre-Neutrino workaround for the stuck-channel case.
@@ -374,6 +380,186 @@ export class LijWalletHandle {
      */
     max_sendable_sats(): bigint;
     maybe_backup(): Promise<any>;
+    /**
+     * Phase 1b: the attempt's pool channel as the node sees it (PoolChannel JSON), or null — for the Mix screen.
+     */
+    mix_attempt_channel(attempt_id: string): string;
+    /**
+     * Phase 1b (§6.2.1; step 11b): the answer to an Out's `open_channel` — open a channel of that size with the
+     * provider for this attempt (the node's pool channel; its funding script reaches the attempt on the next tick).
+     * A refusal (no provider connection, LDK's) stops the attempt; answers the Out JSON either way.
+     */
+    mix_attempt_channel_open(attempt_id: string, sats: bigint): string;
+    /**
+     * Phase 1b (§6.2.3; step 11a): the answer to an Out's `fund_channel` — the channel is saved with the provider's
+     * first-commitment signature; the coin signature may follow.
+     */
+    mix_attempt_channel_saved(attempt_id: string): string;
+    /**
+     * A coin check's answer (the filter server's /coin JSON through a provider) for one coin the Out asked about. v328:
+     * an empty answer (or "{}") = no provider answered — the attempt stops without naming anyone (a phone that cannot
+     * reach an answerer is the one with the problem); only an answer that came back can fail a coin.
+     */
+    mix_attempt_coin(attempt_id: string, ask: string, answer: string): string;
+    /**
+     * The creating phone ("create" notice): `start` JSON {"seat_pk","attempt_id","size","peers","relay","sizes",
+     * "max_fee_sat_vb","refused"?}, the pool's fee rate, and the other opened seats' keys (JSON array). Answers {"out",
+     * "announcement","relay_filter","pool_pk"} — the page hands the announcement to the provider (announce), then joins
+     * the relay with the token.
+     */
+    mix_attempt_create(start: string, fee_rate_sat_vb: number, seat_pks: string): string;
+    /**
+     * The attempt is over for this page (done, stopped, or the app moved on): its keys leave memory.
+     */
+    mix_attempt_end(attempt_id: string): boolean;
+    /**
+     * An event the page read from the pool's relay. Answers the Out JSON ({"relay","payout","checks","save"(null),
+     * "funding_signed","complete","stopped","phase"}).
+     */
+    mix_attempt_event(attempt_id: string, event: string): string;
+    /**
+     * A joining phone ("announcement" notice): `start` as for create, and the announcement. Answers {"out",
+     * "relay_filter","pool_pk"} — or the refusal in plain words (a pool not the provider's, fees above the limit…).
+     */
+    mix_attempt_join(start: string, announcement: string): string;
+    /**
+     * Phase 1b (v0.10 §6.2.1; step 11a): the answer to an Out's `open_channel` — the opened channel's funding script
+     * (P2WSH, hex) is this phone's payout; the registration goes out.
+     */
+    mix_attempt_payout(attempt_id: string, funding_spk_hex: string): string;
+    /**
+     * The clock, every second or so while the attempt runs. Phase 1b: and the pool channel's news from the node —
+     * its funding script (→ the payout registered), the provider's signature with the manager written (→ the coin
+     * signature may follow), a close (→ the attempt stops).
+     */
+    mix_attempt_tick(attempt_id: string): string;
+    /**
+     * v327 (From Channel — "Close channel and join"): a channel this phone is closing so that its coin joins a pool —
+     * `req` JSON {"channel_id","provider_pk","endpoint","size","payout":{"to":"this_wallet"},"rate_at_join","balance_sats"}.
+     * Sealed, this phone only; one per channel and, like a seat, one per pool size. The page starts the cooperative close
+     * itself and, once the close is in a block, takes the seat with its coin (mix_seat_new) and drops this.
+     */
+    mix_close_join_add(req: string): void;
+    /**
+     * v327: drop a close-join (its seat taken, the person left, or the coin cannot cover the pool) — true if it existed.
+     */
+    mix_close_join_drop(channel_id: string): boolean;
+    /**
+     * v327: the close-joins on this phone, JSON [{"channel_id","provider_pk","endpoint","size","payout","rate_at_join",
+     * "balance_sats","since_ms"}…].
+     */
+    mix_close_joins(): string;
+    /**
+     * A new attempt's payout and change, handed out and marked together. `choice` is JSON {"to":"this_wallet"} or
+     * {"to":"outside","address":"bc1p…"} (another wallet's taproot address — the room DP asked for; the screen comes
+     * later). Answers {"payout_address","payout_spk_hex","payout_index","change_index","change_spk_hex"} or a refusal
+     * in plain words.
+     */
+    mix_hand_out(choice: string): string;
+    /**
+     * Hold coins for a Mix, or free them. `req` JSON {"coins":[["txid",vout],…],"hold":true|false}. Freeing leaves a coin
+     * an unsettled attempt record names held (only its settlement frees it). Answers {"held","freed"}.
+     */
+    mix_hold(req: string): string;
+    /**
+     * v326 (v0.10 §8 rule 10): "Keep my coin out of this pool" — `req` JSON {"coins":[["txid",vout]…],"fee_rate_sat_per_kw"}:
+     * a coin a signed pool's record holds (the funding never came) is sent, alone, to a new address of this wallet's own
+     * (the next change address), which ends that attempt for good; the record is wiped once that send is 6 deep. Only
+     * when no setup is running (the page offers it then). Answers the send's result (SendResult JSON).
+     */
+    mix_keep_out(req: string): Promise<any>;
+    /**
+     * v327: what "Keep my coin out of this pool" costs — `req` JSON {"coins":[["txid",vout]…],"fee_rate_sat_per_kw"} →
+     * {"coin_sats","fee_sats","arrives_sats","sat_per_vb"} or {"problem"} in plain words; nothing written (the send itself,
+     * mix_keep_out, hands out the address).
+     */
+    mix_keep_out_quote(req: string): string;
+    /**
+     * A provider's notice {body, sig} for a seat, checked against the seat's provider's node key before anything in it
+     * is read. Answers the notice (JSON, "type" first) or an error.
+     */
+    mix_notice(seat_pk: string, body: string, sig: string): string;
+    /**
+     * v325: what Join shows — `req` JSON {"size","coins":[["txid",vout]…],"fee_rate_sat_vb","peers"}: {"size","coin_sats",
+     * "fee_sats","change_sats","covers","need_at_limit_sats","peers","fee_rate_sat_vb"} (covers = the coins cover the
+     * pool at the fee limit, 1.5 × today's rate) — or {"problem"} in plain words. v327: and "to_miners_sats" (with no
+     * change, what is left of the coin goes to the miners — named); and From Channel: {"size","close_sats",…} in place
+     * of "coins" quotes the coin a cooperative close of a channel with that balance will pay, with "no_change_band"
+     * ([low, top] — the balance that covers the pool at the limit and leaves no change at today's rate) when one exists.
+     */
+    mix_quote(req: string): string;
+    /**
+     * At start and after a restore (§9 rule 7): the holds become exactly the coins a seat on this phone
+     * (`seat_coins` JSON [["txid",vout],…]) or an unsettled record names. Answers {"freed","added"}.
+     */
+    mix_reconcile(seat_coins: string): string;
+    /**
+     * Wipe an attempt record and free its coins — at once for an attempt that ended before this phone's coin
+     * signature (§9 rule 3). Marks the backup dirty (a record wiped is an upload trigger); the page pushes a clean kit
+     * twice when this answers true.
+     */
+    mix_record_wipe(id: string): boolean;
+    /**
+     * v325: the attempt records as the Mix screen shows them: [{"id","size","payout_index","saved_ms"}…]. v327: and
+     * "inputs" (this phone's coins in the pool), "coin_sats", "state" ("waiting" | "funded" | "kept_out").
+     */
+    mix_records(): string;
+    /**
+     * How many attempt records this phone keeps (0 = the settle pass has nothing to do).
+     */
+    mix_records_count(): number;
+    /**
+     * A seat's request to its provider, signed by the seat key: `ask` JSON {"action": checkin|leave|pause|resume|open|
+     * report|announce|backup, "attempt_id"?, "outcome"?, "announcement"?, "funding_hex"?, "exits"?}. Answers the POST body.
+     */
+    mix_seat_body(seat_pk: string, ask: string, ts: bigint): string;
+    /**
+     * The provider answered the seat request: its id.
+     */
+    mix_seat_confirm(seat_pk: string, seat_id: string): void;
+    /**
+     * Leave (or a refused or removed seat): the seat goes, its coins are freed (unless an unsettled record names one).
+     */
+    mix_seat_drop(seat_pk: string): boolean;
+    /**
+     * Join: a seat on the provider's waiting list. `req` JSON {"provider_pk","endpoint","size","coins":[["txid",vout]…],
+     * "payout":{"to":"this_wallet"}|{"to":"outside","address"},"rate_at_join","ts"}. The seat's key is fresh; the coins
+     * are held from now. Answers {"seat_pk","body"} — POST body to the provider's /tatara/seat, signed by the node key.
+     */
+    mix_seat_new(req: string): string;
+    /**
+     * This phone's seats, without their secrets: [{"seat_pk","seat_id","provider_pk","endpoint","size","route","coins",
+     * "payout","rate_at_join","since_ms"}…].
+     */
+    mix_seats(): string;
+    /**
+     * v325: send a complete pool — the funding, then each exit, in order (`txs` JSON ["hex"…]); "already known" counts as
+     * sent; stops at the first refusal (the next spends it). Answers [{"ok","error"}…].
+     */
+    mix_send(txs: string): Promise<any>;
+    /**
+     * The chain decides (§8 rule 6; §9 rule 4 — a restored record is watched, never resumed): every record is checked
+     * against the wallet's ledger — its exits SENT, in order, once its funding spent this phone's coin (again at most
+     * every 10 minutes until the payout is settled; "already known" is fine), WIPED once settled (its coins freed, the
+     * backup marked dirty), or watched. A payout to another wallet's address is not in this wallet's ledger: the depth
+     * of EVERY exit of that pool is asked of the chain servers, so the question does not single out the payout. Answers
+     * the report JSON {"send":[[id,[hex…]]…],"wiped":[[id,why]…],"watching","unreadable","sent":[[id,accepted,refused]…]};
+     * the page pushes a clean kit twice when "wiped" is not empty.
+     */
+    mix_settle(): Promise<any>;
+    /**
+     * The Tatara key's public half (33 bytes, hex) — what Mix on registers with the provider (door 1). From the 12 words
+     * on a path of its own (DP 23:21), never stored. Answers JSON {"tatara_pk", "join_message"} for `ts` (seconds): the
+     * page has the node key sign join_message (sign_message) and sends both.
+     */
+    mix_tatara_pub(ts: bigint): string;
+    /**
+     * v329: is this transaction known to the network? Asks the independent quorum (tx_known): {"known": true}
+     * with "confirmed" and "height" (null in the mempool) — {"known": false} when a reachable server said definitively
+     * that it has no such transaction — {"known": null} when the quorum could not answer (proves nothing). The Mix
+     * screen offers "Pull my coin back" only on a definite false.
+     */
+    mix_tx_status(txid: string): Promise<any>;
     /**
      * Network-free receive address at `index` (BIP84 m/84'/{coin}'/0'/0/index).
      * Synchronous + offline: derives from the seed only, so receiving never
@@ -1008,6 +1194,18 @@ export function wasm_build_version(): string;
  */
 export function wrap_mnemonic(mnemonic: string, passphrase: string): string;
 
+/**
+ * v322 (S58, DP 2026-10-12 20:18 — the CHAIN dot): open the WebSocket to the provider at `wss_url` now, while the
+ * start-up checks run; nothing is sent on it until connect_to_peer adopts it. Best-effort: an error is only logged by
+ * the page, which then connects as before.
+ */
+export function ws_preopen(wss_url: string): void;
+
+/**
+ * v322: close the pre-opened socket (the start-up checks stopped the start).
+ */
+export function ws_preopen_drop(): void;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
@@ -1079,11 +1277,44 @@ export interface InitOutput {
     readonly lijwallethandle_lnurlp_prepare_hashes: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_lsp_channel_open_estimate: (a: number, b: number) => any;
     readonly lijwallethandle_lsp_channel_open_estimate_with: (a: number, b: number, c: number) => any;
+    readonly lijwallethandle_lsp_channel_open_pick: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_mark_funding_confirmed: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly lijwallethandle_maturing_balances_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_maturing_outputs: (a: number) => [number, number, number, number];
     readonly lijwallethandle_max_sendable_sats: (a: number) => bigint;
     readonly lijwallethandle_maybe_backup: (a: number) => any;
+    readonly lijwallethandle_mix_attempt_channel: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_attempt_channel_open: (a: number, b: number, c: number, d: bigint) => [number, number, number, number];
+    readonly lijwallethandle_mix_attempt_channel_saved: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_attempt_coin: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_attempt_create: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_attempt_end: (a: number, b: number, c: number) => number;
+    readonly lijwallethandle_mix_attempt_event: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_attempt_join: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_attempt_payout: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_attempt_tick: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_close_join_add: (a: number, b: number, c: number) => [number, number];
+    readonly lijwallethandle_mix_close_join_drop: (a: number, b: number, c: number) => [number, number, number];
+    readonly lijwallethandle_mix_close_joins: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_hand_out: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_hold: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_keep_out: (a: number, b: number, c: number) => any;
+    readonly lijwallethandle_mix_keep_out_quote: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_notice: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_quote: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_reconcile: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_record_wipe: (a: number, b: number, c: number) => [number, number, number];
+    readonly lijwallethandle_mix_records: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_records_count: (a: number) => [number, number, number];
+    readonly lijwallethandle_mix_seat_body: (a: number, b: number, c: number, d: number, e: number, f: bigint) => [number, number, number, number];
+    readonly lijwallethandle_mix_seat_confirm: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly lijwallethandle_mix_seat_drop: (a: number, b: number, c: number) => [number, number, number];
+    readonly lijwallethandle_mix_seat_new: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_seats: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_send: (a: number, b: number, c: number) => any;
+    readonly lijwallethandle_mix_settle: (a: number) => any;
+    readonly lijwallethandle_mix_tatara_pub: (a: number, b: bigint) => [number, number, number, number];
+    readonly lijwallethandle_mix_tx_status: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_next_receive_address: (a: number, b: number) => [number, number, number, number];
     readonly lijwallethandle_node_pubkey: (a: number) => [number, number, number, number];
     readonly lijwallethandle_note_background: (a: number) => void;
@@ -1171,6 +1402,8 @@ export interface InitOutput {
     readonly validate_mnemonic: (a: number, b: number) => [number, number];
     readonly wasm_build_version: () => [number, number];
     readonly wrap_mnemonic: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly ws_preopen: (a: number, b: number) => [number, number];
+    readonly ws_preopen_drop: () => void;
     readonly rustsecp256k1_v0_11_context_create: (a: number) => number;
     readonly rustsecp256k1_v0_11_context_destroy: (a: number) => void;
     readonly rustsecp256k1_v0_11_default_illegal_callback_fn: (a: number, b: number) => void;
@@ -1181,9 +1414,9 @@ export interface InitOutput {
     readonly rustsecp256k1_v0_10_0_default_error_callback_fn: (a: number, b: number) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c_161: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h4e5bbd474c38391c_162: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_196: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_197: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

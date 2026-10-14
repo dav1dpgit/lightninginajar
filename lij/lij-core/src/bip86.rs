@@ -53,6 +53,16 @@ pub fn secret_and_script(root: &RootKey, branch: u32, index: u32) -> LijResult<(
     Ok((sk, addr.script_pubkey()))
 }
 
+/// v323 (S58, Mix step 7): the UNTWEAKED secret and the prevout script of a coin at m/86'/{coin}'/0'/{branch}/{index} —
+/// what joinstr v2's ownership proof and input signature take (they apply the BIP341 tweak themselves, funding.rs
+/// tweaked_keypair), so a mixed coin can go into another pool. The tweaked secret (`secret_and_script`) is the wallet's own
+/// signer's.
+pub fn internal_secret_and_script(root: &RootKey, branch: u32, index: u32) -> LijResult<(bitcoin::secp256k1::SecretKey, bitcoin::ScriptBuf)> {
+    let sk = keypair_at(root, branch, index)?.secret_key();
+    let (addr, _) = address_at(root, branch, index)?;
+    Ok((sk, addr.script_pubkey()))
+}
+
 /// v317 (the walk's net): the branch's parent key m/86'/{coin}'/0'/{branch}, derived once per net.
 pub fn branch_xpriv(root: &RootKey, branch: u32) -> LijResult<bitcoin::bip32::Xpriv> {
     let coin = if root.network == Network::Bitcoin { 0 } else { 1 };

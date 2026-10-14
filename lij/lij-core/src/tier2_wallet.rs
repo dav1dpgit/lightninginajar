@@ -39,7 +39,7 @@ pub const MARKS_KEY: &str = "tier2_marks";
 /// read them. v256 encrypted the view but left four readers on plain storage (the on-chain
 /// send, the fee bump, the channel-open estimate and the funding build) — each failed with
 /// "tier2 view parse: expected value at line 1 column 1". Every reader goes through this.
-pub const ENCRYPTED_KEYS: &[&str] = &[VIEW_KEY, MARKS_KEY, crate::nwc::NWC_KEY, crate::tx_store::TX_STORE_KEY];   // v298: the wallet's own transactions too   // the pending list stays plain: node.rs reads it in four places · v286: the NWC connections (service secrets) are encrypted at rest too
+pub const ENCRYPTED_KEYS: &[&str] = &[VIEW_KEY, MARKS_KEY, crate::nwc::NWC_KEY, crate::tx_store::TX_STORE_KEY, crate::tatara::records::RECORDS_KEY, crate::tatara::store::SEATS_KEY, crate::tatara::store::CLOSE_JOINS_KEY];   // v327: the close-joins (a channel linked to a pool size; this phone only)   // v323 (S58, Mix step 7 — v0.10 §9 rule 2): the attempt records (they link a coin to its payout) · step 8: the seats (their keys; this phone only)   // v298: the wallet's own transactions too   // the pending list stays plain: node.rs reads it in four places · v286: the NWC connections (service secrets) are encrypted at rest too
 pub fn encrypted<S: LijStorage>(inner: S, key: [u8; 32]) -> crate::storage::EncryptedKeys<S> {
     crate::storage::EncryptedKeys::new(inner, key, ENCRYPTED_KEYS)
 }   // v220: pub — the blob packs it (D3)
@@ -148,6 +148,17 @@ pub struct CoinMarks {
     /// rescan. A words-only restore has no marks: its taproot coins read as plain until a backup brings them.
     #[serde(default)]
     pub mix_exits: std::collections::BTreeSet<u32>,
+    /// v323 (S58, Mix step 7 — v0.10 §8 rule 4): the coins a Mix holds, by outpoint key ("<txid>:<vout>") → since (ms).
+    /// Held from Join until the chain settles the attempt; leaving the list frees them. No Send, Max, channel open or
+    /// other pool may use one (`held_set`, which every picker reads). Here so every picker sees it through the marks it
+    /// already loads. A copy restored on another phone keeps only the holds of an unsettled attempt record
+    /// (tatara::wallet::reconcile_locks): the waiting list never comes back from a copy (§9 rule 7).
+    #[serde(default)]
+    pub mix_locks: std::collections::BTreeMap<String, u64>,
+    /// v323 (§5.3, §8 rule 1): the m/84 change indexes handed to a pool's funding — counted as used
+    /// (`next_change_index_marked`), so no later send's change goes to an address the pool's other members have seen.
+    #[serde(default)]
+    pub mix_change: std::collections::BTreeSet<u32>,
 }
 
 impl CoinMarks {
@@ -184,7 +195,7 @@ pub const SP_LABEL_NAME_MAX_CHARS: usize = 40;
 fn default_true() -> bool { true }
 
 impl Default for CoinMarks {
-    fn default() -> Self { Self { marks: Default::default(), sp_enabled: true, sp_sends: Default::default(), send_dests: Default::default(), tx_keep_cap: 0, sp_labels: Vec::new(), sp_labels_unknown: false, mix_exits: Default::default() } }
+    fn default() -> Self { Self { marks: Default::default(), sp_enabled: true, sp_sends: Default::default(), send_dests: Default::default(), tx_keep_cap: 0, sp_labels: Vec::new(), sp_labels_unknown: false, mix_exits: Default::default(), mix_locks: Default::default(), mix_change: Default::default() } }
 }
 
 /// v281: the cap on a coin note, in code points (the address note's and the Push Key
@@ -275,6 +286,40 @@ impl CoinMarks {
     }
     pub fn frozen_count(&self) -> usize {
         self.marks.values().filter(|m| m.frozen).count()
+    }
+
+    // ── v323 (S58, Mix step 7): the coin lock ──
+
+    /// The outpoints a Mix holds, as a set (lower-case txids, like `frozen_set`).
+    pub fn mix_locked_set(&self) -> std::collections::HashSet<(String, u32)> {
+        self.mix_locks
+            .keys()
+            .filter_map(|k| {
+                let (txid, vout) = k.rsplit_once(':')?;
+                Some((txid.to_string(), vout.parse().ok()?))
+            })
+            .collect()
+    }
+    /// Every coin no picker may take: the user's freezes and the Mix's holds (v0.10 §8 rule 4).
+    pub fn held_set(&self) -> std::collections::HashSet<(String, u32)> {
+        let mut s = self.frozen_set();
+        s.extend(self.mix_locked_set());
+        s
+    }
+    pub fn is_mix_locked(&self, txid: &str, vout: u32) -> bool {
+        self.mix_locks.contains_key(&Self::key(txid, vout))
+    }
+    /// Hold these coins for a Mix (Join). A coin already held keeps its first time.
+    pub fn mix_lock(&mut self, coins: &[(String, u32)], now_ms: u64) {
+        for (txid, vout) in coins {
+            self.mix_locks.entry(Self::key(txid, *vout)).or_insert(now_ms);
+        }
+    }
+    /// Free these coins (the person left the list; the attempt ended before this phone's coin signature; settled).
+    pub fn mix_unlock(&mut self, coins: &[(String, u32)]) {
+        for (txid, vout) in coins {
+            self.mix_locks.remove(&Self::key(txid, *vout));
+        }
     }
 
     // ── v304 (S54): silent-payment labels ──
@@ -380,6 +425,9 @@ pub struct CoinRow {
     /// v304: the silent-payment label the coin was paid to (see OnchainUtxo::sp_label).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sp_label: Option<u32>,
+    /// v325 (S58, Mix step 8): a Mix pool holds this coin (CoinMarks::mix_locks) — no Send, Max or open may use it.
+    #[serde(default)]
+    pub mix_held: bool,
 }
 
 /// v281: the tag for a coin, from the chain and the ledger's records. v318: and the marks — a BIP86 coin is `mix` when
@@ -418,6 +466,7 @@ impl CoinRow {
             frozen: m.map(|m| m.frozen).unwrap_or(false),
             note: m.map(|m| m.note.clone()).unwrap_or_default(),
             sp_label: u.sp_label,
+            mix_held: marks.is_mix_locked(&u.txid, u.vout),
         }
     }
 }
@@ -440,6 +489,8 @@ pub enum TxKind {
     ChannelOpen,
     /// On-chain return from a channel close/sweep ("Withdrawing Lightning capacity").
     ChannelClose,
+    /// v329 (S58): a Mix pool's transaction — the funding this wallet's coin went into, or the exit that pays it.
+    Mix,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1088,6 +1139,39 @@ pub const PENDING_KEY: &str = "tier2_pending";   // v220: pub — the blob packs
 /// as long as it doesn't outrun the gap window.
 pub fn next_change_index(view: &Tier2View, pending: &[PendingTx]) -> u32 {
     next_index_for_chain(view, pending, CHAIN_CHANGE)
+}
+
+/// v323 (S58, Mix step 7 — v0.10 §5.3, §8 rule 1): the next change index, past every index a pool's funding was given
+/// as well (CoinMarks::mix_change): a pool that stopped never reached the chain, but its other members saw the address.
+pub fn next_change_index_marked(view: &Tier2View, pending: &[PendingTx], marks: &CoinMarks) -> u32 {
+    let handed = marks.mix_change.iter().next_back().map_or(0, |m| m + 1);
+    next_change_index(view, pending).max(handed)
+}
+
+/// v323: which kinds of hold a picker's left-out set has — (a freeze, a Mix pool's hold). A coin both frozen and held
+/// counts as the Mix's.
+pub fn held_kinds(held: &std::collections::HashSet<(String, u32)>, locked: &std::collections::HashSet<(String, u32)>) -> (bool, bool) {
+    (held.iter().any(|k| !locked.contains(k)), held.iter().any(|k| locked.contains(k)))
+}
+
+/// v323: the tail a picker's refusal carries when coins were left out — the user's freezes, the Mix's holds, or both.
+pub fn held_note(held: &std::collections::HashSet<(String, u32)>, locked: &std::collections::HashSet<(String, u32)>) -> &'static str {
+    match held_kinds(held, locked) {
+        (false, false) => "",
+        (true, false) => " — frozen coins are not counted",
+        (false, true) => " — coins in a Mix pool are not counted",
+        (true, true) => " — frozen coins and coins in a Mix pool are not counted",
+    }
+}
+
+/// v323: a chosen coin a picker refuses because it is held — in plain words, the Mix's hold named apart from a freeze.
+pub fn held_refusal(txid: &str, vout: u32, locked: &std::collections::HashSet<(String, u32)>) -> String {
+    let short = &txid[..8.min(txid.len())];
+    if locked.contains(&(txid.to_ascii_lowercase(), vout)) {
+        format!("a chosen coin is in a Mix pool ({short}…:{vout}) — it stays there until the pool settles or you leave the list")
+    } else {
+        format!("a chosen coin is frozen ({short}…:{vout}) — unfreeze it first")
+    }
 }
 
 /// Next unused index for ANY chain (receive / change / legacy): the highest index
