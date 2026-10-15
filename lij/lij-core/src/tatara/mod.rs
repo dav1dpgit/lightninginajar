@@ -34,6 +34,7 @@ pub mod wallet;
 pub mod wire;
 pub mod rederive;
 pub mod records;
+pub mod bump;
 pub mod store;
 
 #[cfg(test)]
@@ -42,6 +43,8 @@ mod fuzz_tests;
 mod machine_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod jproof;   // S59: the compatibility proof with the public joinstr v2 code (ignored; run by jproof/run_proof.sh)
 
 /// A BIP-340 tagged hash, our own (the NIP's `H(tag, x)`) — kept apart from joinstr's util so the re-derivation shares
 /// no code with the builder it checks.

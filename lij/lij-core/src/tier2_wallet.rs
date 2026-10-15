@@ -491,6 +491,9 @@ pub enum TxKind {
     ChannelClose,
     /// v329 (S58): a Mix pool's transaction — the funding this wallet's coin went into, or the exit that pays it.
     Mix,
+    /// v333 (S59): a Mix speed-up — this wallet's payout spent alone to a fresh address of its own, with the fee that
+    /// lifts the pool's chain (tatara::bump).
+    MixSpeedUp,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

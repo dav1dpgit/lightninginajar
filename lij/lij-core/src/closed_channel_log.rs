@@ -111,6 +111,16 @@ pub struct ClosedChannelRecord {
     /// A backfilled record below the current version is redone once.
     #[serde(default)]
     pub owned_backfill_ver: Option<u8>,
+    /// v334 (S59, DP 2026-10-14 "Mixing from onchain into a lightning channel doesn't [show in RECENT]"): a Mix pool's
+    /// exit funded this channel (the UCID bit at ChannelClosed). RECENT draws the "moved to Lightning" line of such a
+    /// channel from the channel records themselves — the pool's exit pays no address of the wallet's, so the chain
+    /// walk never sees it and no ChannelOpen row exists. None for records written before v334.
+    #[serde(default)]
+    pub pool_funded: Option<bool>,
+    /// v334: the block the funding was in, as last listed while the channel lived (the short channel id's height) —
+    /// the line's place among the payments once the channel is gone. None when never confirmed while listed.
+    #[serde(default)]
+    pub funding_height: Option<u32>,
     /// Hex-encoded funding outpoint (txid:vout). Used to locate the
     /// closing tx via onchain watch (8c.2b).
     pub funding_txo_hex: Option<String>,
@@ -436,6 +446,8 @@ mod tests {
             our_owned_msat_at_close: None,
             owned_backfill_done: false,
             owned_backfill_ver: None,
+            pool_funded: None,
+            funding_height: None,
             funding_txo_hex: Some("c".repeat(64) + ":0"),
             closing_txid_hex: None,
             destination_address: None,

@@ -97,8 +97,9 @@ fn milli(rate: f64) -> Result<u64> {
 
 impl PoolEvent {
     /// LiJ P8: the strict parse a LiJ phone uses for a pool announcement — no field the event does not have (so no
-    /// `autct`), the pool id 32 lowercase hex characters (upstream makes 16 random bytes), the pool key a compressed
-    /// point, and whole sat/vB fee rates (Rust and Python round fractions differently — review finding 11).
+    /// `autct`), the pool id 32 lowercase hex characters (upstream makes 16 random bytes), the pool key the pool's nostr
+    /// key (32 bytes x-only — P11), and fee rates in whole thousandths of a sat/vB (P11; review finding 11 had asked for
+    /// whole numbers, which the public code does not keep to).
     pub fn parse_strict(s: &str) -> Result<PoolEvent> {
         // P1 (v332, DP's first channel pool 2026-10-13): `payout_type` is a field of the event — the creating phone parses
         // its own announcement with this list, and a channel pool's carries "p2wsh" (the list lacked it: every create
@@ -115,10 +116,15 @@ impl PoolEvent {
         }
         let e: PoolEvent = serde_json::from_value(v)?;
         crate::util::strict_hex(&e.id, 16).map_err(|_| anyhow::anyhow!("the pool id is not 32 lowercase hex characters"))?;
-        crate::keys::point_from_hex(&e.public_key)?;
-        let whole = |r: f64| r.fract() == 0.0;
-        if !whole(e.fee_rate) || !e.exit_fee_rates.map_or(true, |r| whole(r[0]) && whole(r[1])) {
-            bail!("fee rates are whole sat/vB");
+        // P11 (LiJ S59, the compatibility proof): `public_key` is the pool's NOSTR key — 32 bytes, x-only, as upstream's
+        // peer writes it (`keys.public_key().to_hex()`) and checks it (the announcement's author must equal it); P8 had
+        // asked for a compressed point, which no upstream pool carries. Fee rates: a finite, positive number with at most
+        // three decimals (upstream takes any f64; the builders work in thousandths of a sat/vB, so a rate that is not a
+        // whole number of thousandths would round differently on different sides).
+        crate::util::strict_hex(&e.public_key, 32).map_err(|_| anyhow::anyhow!("the pool key is not 32 bytes of lowercase hex"))?;
+        let milli_ok = |r: f64| r.is_finite() && r > 0.0 && ((r * 1000.0) - (r * 1000.0).round()).abs() < 1e-6;   // 1.001 × 1000 is not exactly 1001 in binary
+        if !milli_ok(e.fee_rate) || !e.exit_fee_rates.map_or(true, |r| milli_ok(r[0]) && milli_ok(r[1])) {
+            bail!("fee rates are sat/vB with at most three decimals");
         }
         Ok(e)
     }

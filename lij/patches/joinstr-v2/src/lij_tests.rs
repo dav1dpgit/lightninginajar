@@ -440,7 +440,8 @@ fn p8_envelopes_are_parsed_strictly() {
 #[test]
 fn p8_pool_events_are_parsed_strictly() {
     use crate::msg::PoolEvent;
-    let pk = hex::encode(random_scalar().base_point_mul().serialize());
+    let pk33 = hex::encode(random_scalar().base_point_mul().serialize());
+    let pk = pk33[2..].to_string();   // P11: the pool's nostr key (x-only), as upstream writes it
     let ev = |id: &str, pk: &str, rate: &str, extra: &str| {
         format!(
             r#"{{"versions":["2"],"id":"{id}","network":"bitcoin","type":"new_pool","public_key":"{pk}","denomination":100000,"peers":3,"timeout":1900000000,"relays":["wss://r.example"],"fee_rate":{rate},"transport":{{"vpn":{{"enable":false,"vpn_gateway":null}},"tor":{{"enable":false}}}}{extra}}}"#
@@ -452,9 +453,16 @@ fn p8_pool_events_are_parsed_strictly() {
     assert!(PoolEvent::parse_strict(&ev("x", &pk, "2", "")).is_err(), "id not 32 hex");
     assert!(PoolEvent::parse_strict(&ev(&id.to_uppercase(), &pk, "2", "")).is_err(), "id upper case");
     assert!(PoolEvent::parse_strict(&ev("../../etc/passwd/0123456789abcd", &pk, "2", "")).is_err(), "id a path");
-    assert!(PoolEvent::parse_strict(&ev(id, "ab", "2", "")).is_err(), "pool key not a point");
-    assert!(PoolEvent::parse_strict(&ev(id, &pk, "2.5", "")).is_err(), "fractional fee rate");
-    assert!(PoolEvent::parse_strict(&ev(id, &pk, "2", r#","exit_fee_rates":[3,2.25]"#)).is_err(), "fractional exit rate");
+    assert!(PoolEvent::parse_strict(&ev(id, "ab", "2", "")).is_err(), "pool key not 32 bytes");
+    assert!(PoolEvent::parse_strict(&ev(id, &pk33, "2", "")).is_err(), "pool key a 33-byte point (P8's old demand; upstream never writes one)");
+    assert!(PoolEvent::parse_strict(&ev(id, &pk.to_uppercase(), "2", "")).is_err(), "pool key upper case");
+    assert!(PoolEvent::parse_strict(&ev(id, &pk, "2.5", "")).is_ok(), "P11: a fractional fee rate is a pool option (upstream's demo runs at 1.5)");
+    assert!(PoolEvent::parse_strict(&ev(id, &pk, "1.001", "")).is_ok(), "thousandths");
+    assert!(PoolEvent::parse_strict(&ev(id, &pk, "2.0005", "")).is_err(), "finer than a thousandth");
+    assert!(PoolEvent::parse_strict(&ev(id, &pk, "0", "")).is_err(), "zero");
+    assert!(PoolEvent::parse_strict(&ev(id, &pk, "-1", "")).is_err(), "negative");
+    assert!(PoolEvent::parse_strict(&ev(id, &pk, "2", r#","exit_fee_rates":[3,2.25]"#)).is_ok(), "fractional exit rates");
+    assert!(PoolEvent::parse_strict(&ev(id, &pk, "2", r#","exit_fee_rates":[3,2.0001]"#)).is_err(), "exit rate finer than a thousandth");
 }
 
 // ── P10: the tagged ring signature (a key image per tag — Tatara's weekly seat image) ──────────────────────────────────

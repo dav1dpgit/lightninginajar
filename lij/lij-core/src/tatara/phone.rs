@@ -71,6 +71,8 @@ pub struct Common {
     /// Coins of sessions that stalled or misbehaved in an earlier try (§8 rule 2).
     pub refused: Vec<OutPoint>,
     pub network: Network,
+    /// v335 (Phase 2): a public pool — other joinstr clients at the table, who send no `lij_view` (machine.rs `public`).
+    pub public: bool,
 }
 
 /// A coin the page must check (v0.10 §7): through a provider's coin check, then `coin_result`.
@@ -200,7 +202,7 @@ fn make_announcement(c: &Common, fee_rate_sat_vb: u64, seat_pks: &[String], pool
     let timeout = c.now + POOL_TIMEOUT_S.min(c.declared.max_timeout_s);
     let ev = serde_json::json!({
         "versions": ["2"], "id": pool_id, "network": c.declared.network, "type": "new_pool",
-        "public_key": hex::encode(pool_pub.serialize()), "denomination": c.size, "peers": c.peers, "timeout": timeout,
+        "public_key": hex::encode(pool_pub.x_only_public_key().0.serialize()), "denomination": c.size, "peers": c.peers, "timeout": timeout,   // v335 (the proof): the pool's nostr key, as the public code writes and checks it (P11)
         "relays": [c.declared.relay], "fee_rate": fee_rate_sat_vb,
         "transport": {"vpn": {"enable": false, "vpn_gateway": null}, "tor": {"enable": false}}
     });
@@ -226,14 +228,13 @@ pub fn open_announcement(announcement: &str, seat_sk: &SecretKey) -> Result<(Poo
     ensure!(e.kind == ANNOUNCE_KIND, "not a pool announcement");
     nwc::verify_event(&e).map_err(|err| anyhow::anyhow!("the announcement's signature: {err}"))?;
     let pe = PoolEvent::parse_strict(&e.content)?;
-    let pool_pub = PublicKey::from_slice(&hex::decode(&pe.public_key)?).context("the pool key")?;
-    ensure!(hex::encode(pool_pub.x_only_public_key().0.serialize()) == e.pubkey, "the announcement is not signed by the pool's key");
+    ensure!(pe.public_key == e.pubkey, "the announcement is not signed by the pool's key");   // v335 (P11): the pool event's key is the author's nostr key
     let me = hex::encode(xonly(seat_sk));
     let tag = e.tags.iter().find(|t| t.len() == 3 && t[0] == "lij_key" && t[1] == me).context("the announcement holds no key for this seat")?;
     let shared = nwc::ecdh_x(seat_sk, &nwc::pubkey_from_hex(&e.pubkey).map_err(|err| anyhow::anyhow!("{err}"))?).map_err(|err| anyhow::anyhow!("{err}"))?;
     let sk_hex = nwc::nip04_decrypt(&shared, &tag[2]).map_err(|err| anyhow::anyhow!("this seat's key copy: {err}"))?;
     let pool_sk = SecretKey::from_slice(&hex::decode(sk_hex.trim()).context("the pool key copy")?).context("the pool key copy")?;
-    ensure!(PublicKey::from_secret_key(&Secp256k1::new(), &pool_sk) == pool_pub, "this seat's key copy is not the pool's key");
+    ensure!(hex::encode(pool_sk.x_only_public_key(&Secp256k1::new()).0.serialize()) == pe.public_key, "this seat's key copy is not the pool's key");   // v335
     Ok((pe, pool_sk))
 }
 
@@ -263,8 +264,8 @@ impl Phone {
         ensure!(pe.denomination == c.size, "the pool's size is not the provider's");
         ensure!((params.payout_type == joinstr_v2::pool::PayoutType::P2wsh) == c.payout.is_none(), "the pool's payout type is not this seat's route");
         ensure!(pe.peers == c.peers, "the pool's number of people is not the provider's");
-        let rate = pe.fee_rate as u64;
-        ensure!(caps::within_fee_limit(rate, c.rate_at_join, c.declared.max_fee_sat_vb), "fees rose since you joined — the pool's rate is {rate} sat/vB, you agreed to up to {}", c.rate_at_join.saturating_mul(3) / 2);
+        let rate = pe.fee_rate;
+        ensure!(caps::within_fee_limit_milli((rate * 1000.0).round() as u64, c.rate_at_join, c.declared.max_fee_sat_vb), "fees rose since you joined — the pool's rate is {rate} sat/vB, you agreed to up to {}", c.rate_at_join.saturating_mul(3) / 2);
         ensure!(!c.coins.is_empty(), "no coin");
         let total_in: u64 = c.coins.iter().map(|(_, o, _)| o.value.to_sat()).sum();
         let spks: Vec<&bitcoin::Script> = c.coins.iter().map(|(_, o, _)| o.script_pubkey.as_script()).collect();
@@ -283,7 +284,7 @@ impl Phone {
             rate_at_join: c.rate_at_join,
         };
         let (machine, acts) = Attempt::new(params, c.network, me, c.now, Timeouts { phase_s: PHASE_S })?;
-        let machine = machine.refusing(c.refused);
+        let machine = machine.refusing(c.refused).public(c.public);
         let pool_x = hex::encode(pool_sk.x_only_public_key(&Secp256k1::new()).0.serialize());
         let mut p = Phone {
             attempt_id: c.attempt_id,
@@ -599,6 +600,7 @@ mod tests {
             payout: Some(p2tr(&sk("payout", i))),
             payout_index: Some(i),
             change_spk: p2wpkh(&sk("change", i)),
+            public: false,
             change_index: i,
             tip: 970_000,
             rate_at_join: 2,

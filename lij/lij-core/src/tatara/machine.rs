@@ -102,6 +102,8 @@ pub struct Record {
     /// A channel pool: the payout is this phone's channel's funding (§6.2) — the exit paying it is the channel's funding
     /// transaction; the channel id is derived from that outpoint.
     pub channel: bool,
+    /// v333 (S59): the pool's fee rate (milli-sat per vB, the pool event's), kept so a speed-up can price the chain.
+    pub rate_milli: u64,
 }
 
 pub enum Input {
@@ -161,6 +163,12 @@ pub struct Attempt {
     /// Coins this phone refuses (v0.10 §8 rule 2; the NIP's "Failure handling"): coins of sessions that stalled or sent
     /// a bad message in an earlier attempt.
     refused: HashSet<OutPoint>,
+    /// v335 (S59, Phase 2 — the compatibility proof): a public pool, with other joinstr clients at the table. They send
+    /// no `lij_view`, so S3's check covers the members who sent one (every LiJ member) and signing waits for every
+    /// member's nonces only; a partial signature that does not verify then names no one — a public member never
+    /// confirmed its view, so a bad signature cannot be told from a different view of the pool (the mis-blame S3 was
+    /// written against, review finding 2). A LiJ pool keeps S3 whole: a view from every member, or no signing.
+    public: bool,
 }
 
 fn post(msg: Msg) -> Action {
@@ -203,6 +211,7 @@ impl Attempt {
             recheck_ok: false,
             channel_saved: false,
             refused: HashSet::new(),
+            public: false,
         };
         ensure!(a.me.payout.is_some() == (a.params.payout_type == PayoutType::P2tr), "a channel pool takes its payout from the channel; an on-chain pool brings its own");
         let msg = a.my_registration()?;
@@ -217,6 +226,12 @@ impl Attempt {
     /// its session.
     pub fn refusing(mut self, coins: impl IntoIterator<Item = OutPoint>) -> Self {
         self.refused.extend(coins);
+        self
+    }
+
+    /// v335: a public pool (other joinstr clients at the table) — see `public`.
+    pub fn public(mut self, public: bool) -> Self {
+        self.public = public;
         self
     }
 
@@ -236,7 +251,7 @@ impl Attempt {
             Phase::View => self
                 .regs
                 .keys()
-                .filter(|s| !self.views.contains_key(*s) || !self.nonces.contains_key(*s))
+                .filter(|s| (!self.public && !self.views.contains_key(*s)) || !self.nonces.contains_key(*s))   // v335: a public member owes no view
                 .copied()
                 .collect(),
             Phase::Signing => self.regs.keys().filter(|s| !self.psigs.contains_key(*s)).copied().collect(),
@@ -613,10 +628,10 @@ impl Attempt {
 
     fn try_sign(&mut self) -> Result<Vec<Action>> {
         let n = self.params.peers;
-        if self.phase != Phase::View || self.views.len() < n || self.nonces.len() < n {
+        if self.phase != Phase::View || (!self.public && self.views.len() < n) || self.nonces.len() < n {
             return Ok(vec![]);
         }
-        // S3: every member's view must be ours
+        // S3: every member's view must be ours (v335: in a public pool, every view that came — the public members send none)
         let mine = self.my_view.context("no view")?;
         if self.views.values().any(|v| *v != mine) {
             return Ok(self.stop("the members do not see the same pool", vec![]));
@@ -663,6 +678,9 @@ impl Attempt {
                 // P7 names every bad signer by its musig key; map them back to session keys
                 let text = e.to_string();
                 let named: Vec<[u8; 32]> = order.iter().filter(|s| text.contains(&self.regs[*s].0.musig.to_string())).copied().collect();
+                if self.public {
+                    return Ok(self.stop("a member's partial signature is invalid", vec![]));   // v335: no view from the public members — blame no one
+                }
                 return Ok(self.stop("a member's partial signature is invalid", named));
             }
         };
@@ -675,6 +693,7 @@ impl Attempt {
             payout: self.me.payout.clone().context("no payout")?,
             inputs: self.me.coins.iter().map(|(op, _, _)| *op).collect(),
             channel: self.params.payout_type == PayoutType::P2wsh,
+            rate_milli: self.rate_milli,
         };
         let mine: Vec<(OutPoint, TxOut)> = self.me.coins.iter().map(|(op, o, _)| (*op, o.clone())).collect();
         self.built = Some(built);

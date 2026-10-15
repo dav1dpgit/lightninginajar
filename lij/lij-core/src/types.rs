@@ -88,6 +88,10 @@ pub struct ChannelInfo {
     /// is "Opening — waiting for the pool" (§6.3.1).
     #[serde(default)]
     pub pool_funded: bool,
+    /// v334 (S59, DP 2026-10-14 — a pool-funded channel's "moved to Lightning" line): the block the funding is in, read
+    /// from the channel's short channel id (its upper 24 bits); None until the funding is in a block.
+    #[serde(default)]
+    pub funding_height: Option<u32>,
     /// On-chain funding txid (the value to look up on a block explorer), if the
     /// channel has a funding outpoint yet. Distinct from channel_id.
     pub funding_txid: Option<String>,

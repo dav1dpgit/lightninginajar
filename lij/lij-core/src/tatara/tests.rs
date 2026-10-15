@@ -223,7 +223,7 @@ fn declared() -> Declared {
 fn event(changes: &[(&str, serde_json::Value)], drop: &[&str]) -> String {
     let mut v = serde_json::json!({
         "versions": ["2"], "id": "0123456789abcdef0123456789abcdef", "network": "bitcoin", "type": "new_pool",
-        "public_key": hex::encode(scalar("poolkey", 1).base_point_mul().serialize()),
+        "public_key": hex::encode(&scalar("poolkey", 1).base_point_mul().serialize()[1..]),   // v335: the pool's nostr key (x-only)
         "denomination": 100_000, "peers": 4, "timeout": 1_000_600, "relays": ["wss://relay.lsp.example"], "fee_rate": 3,
         "transport": {"vpn": {"enable": false, "vpn_gateway": null}, "tor": {"enable": false}}
     });

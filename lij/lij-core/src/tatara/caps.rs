@@ -58,8 +58,12 @@ pub fn phase1_pool(ev: &PoolEvent, d: &Declared, now_s: u64) -> Result<Params> {
     ensure!(ev.anchor.is_none(), "no anchor (v0.10 §6.4)");
     ensure!(!ev.transport.tor.enable && !ev.transport.vpn.enable, "no Tor or VPN transport in Phase 1");
     ensure!(ev.relays == vec![d.relay.clone()], "the pool must use the declared relay");
+    // v335 (S59, DP 2026-10-14 11:50 "why are we limiting to integer fee rates if we already have sub-integer fee rates in
+    // practice in the wallet"): a fraction is a pool option like any other — the builders work in thousandths of a
+    // sat/vB (P6 milli), the public code's pools carry fractions (its default demo runs at 1.5); the limit is the cap,
+    // the floor the relay minimum.
     let rate = ev.fee_rate;
-    ensure!(rate.is_finite() && rate.fract() == 0.0, "fee rate must be whole sat/vB");
+    ensure!(rate.is_finite() && ((rate * 1000.0) - (rate * 1000.0).round()).abs() < 1e-6, "fee rate must be a whole number of thousandths of a sat/vB");
     ensure!(
         rate >= RELAY_MIN_SAT_VB as f64 && rate <= d.max_fee_sat_vb as f64,
         "fee rate {rate} outside {RELAY_MIN_SAT_VB}..={} sat/vB",
@@ -72,6 +76,12 @@ pub fn phase1_pool(ev: &PoolEvent, d: &Declared, now_s: u64) -> Result<Params> {
         bail!("pool options parsed to something else");
     }
     Ok(p)
+}
+
+/// v335: the same limit for a pool's rate with a fraction — compared in thousandths.
+pub fn within_fee_limit_milli(pool_rate_milli: u64, shown_at_join_sat_vb: u64, cap_sat_vb: u64) -> bool {
+    let limit = shown_at_join_sat_vb.saturating_mul(1500);
+    pool_rate_milli <= limit && pool_rate_milli <= cap_sat_vb.saturating_mul(1000)
 }
 
 /// The fee limit (v0.10 §8.7, D6): the pool's rate may be at most 1.5 × the rate shown when the person joined, and

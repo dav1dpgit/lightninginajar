@@ -96,7 +96,9 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v332".to_string()  // v332 (S58, DP's first channel pool 2026-10-13 23:27 "Go"): (1) the creating phone's strict parse of its own announcement (P8's allowlist) takes `payout_type` — a channel pool's event carries "p2wsh" and the list lacked it, so every create stopped with "unknown field in the pool event" (phone test p1b: the announcement round trip for a channel pool). (2) A seat keeps its coins' ledger rows (Seat.coin_rows) when it is taken; an attempt's start uses the ledger's row when the list holds it and the seat's copy when it does not (a rebuild or a reorg rollback rewrites the list and re-derives a coin within a minute — one phone's "the seat's coin is not in the wallet's ledger" cost the pool a retry); mix_attempt_create / mix_attempt_join answer a "note" for the Mix log when the copy was used.
+    "phase11-v335".to_string()  // v335 (S59, DP 2026-10-14 17:51 "Phase 2 … the compatibility proof with fractional fee rates first"): what the proof found, in the engine — (1) P11: the pool event's `public_key` is the pool's NOSTR key (32 bytes x-only), as the public Joinstr code writes and checks it; P8 had demanded a 33-byte point, so no public pool parsed and no LiJ pool would have been found by a public client (msg.rs parse_strict, phone.rs make_announcement/open_announcement, tests); (2) fee rates with up to three decimals are pool options (msg.rs, caps.rs phase1_pool, within_fee_limit_milli; the public demo runs at 1.5 sat/vB; DP 3(b)); (3) a public pool (machine.rs `public`, Common.public): other joinstr clients send no lij_view, so S3 covers the LiJ members' views, signing waits for every member's nonces, and a partial signature that does not verify names no one (tatara-engine-r2's "rule of their own — written then"); (4) the dead "close" route word of v334 is gone (adapter 0.105.1). The proof: the public Joinstr v2 code, built unchanged, as pool members through a capture relay against this engine — our seat joining its pool (rate 2 and 1.5) and its members joining ours (rate 2): every message type both ways, three funded pools, every exit chain complete (lij-core/src/tatara/jproof.rs, ignored tests). // v334 (S59, DP 2026-10-14 14:39 — the per-route sizes (item 20) and the RECENT line of a pool-funded channel): (1) mix_seat_new takes route "close" — a channel's coin, after its cooperative close, seated in the provider's close pools (adapter 0.105.0 TATARA_CLOSE_SIZES: their own queue and sizes, lifted from the on-chain list; channel sizes no longer need to be among the on-chain sizes either) — on-chain in every other respect, so the engine treats it as the chain route; (2) ChannelInfo.funding_height (the scid's block) and ClosedChannelRecord.pool_funded / funding_height, written at ChannelClosed from the UCID bit and the cached height: the page draws a pool-funded channel's "moved to Lightning" line from the channel records (the pool's exit pays no address of the wallet's, so the chain walk never sees it and no ChannelOpen row exists; the line used to be missing — DP: "Mixing from onchain into a lightning channel doesn't [show in RECENT]")
+    // "phase11-v333".to_string()  // v333 (S59, DP 2026-10-14 "Bump stuck Mix exits is now-work"; spec v0.10 §6.4): SPEED UP A STUCK POOL — lij_core::tatara::bump: a child spending this phone's payout alone (P2TR key-path, the payout's own m/86 key) to a fresh m/86 address of this wallet's (marked mixed, as the payout was), with a fee that lifts every unconfirmed transaction of the chain up to this phone's exit — the funding and the exits before it — to the target rate (miners take a transaction by its ancestor fee rate, so the whole pool moves and every member benefits; the fee comes out of this phone's new coin). mix_bump_quote(id, sat_vb) asks the chain servers about each transaction of the chain and prices the child (the exits' fees exact from the record's bytes, the funding's from the pool's rate, now kept on the record — StoredRecord.rate_sat_vb; an older record reads it from its first exit); mix_bump(id, sat_vb) takes the quote afresh, builds, signs, broadcasts and records the child among the sends still confirming (TxKind::MixSpeedUp; the record view carries sped_up_txid/sped_up_fee_sats). Refused in words: a channel pool (its payout is a 2-of-2), another wallet's payout, an exit already in a block, a rate below today's, a coin too small, a funding not on the network, a speed-up already on its way. The settle check is untouched (the payout's exit settles the pool). Tests b1–b4 (the child's exact size 111 vB measured; the Schnorr signature verified against the payout's key). lij-core 451 + 1 ignored.
+    // "phase11-v332".to_string()  // v332 (S58, DP's first channel pool 2026-10-13 23:27 "Go"): (1) the creating phone's strict parse of its own announcement (P8's allowlist) takes `payout_type` — a channel pool's event carries "p2wsh" and the list lacked it, so every create stopped with "unknown field in the pool event" (phone test p1b: the announcement round trip for a channel pool). (2) A seat keeps its coins' ledger rows (Seat.coin_rows) when it is taken; an attempt's start uses the ledger's row when the list holds it and the seat's copy when it does not (a rebuild or a reorg rollback rewrites the list and re-derives a coin within a minute — one phone's "the seat's coin is not in the wallet's ledger" cost the pool a retry); mix_attempt_create / mix_attempt_join answer a "note" for the Mix log when the copy was used.
     // "phase11-v331".to_string()  // v331 (S58, Phase 1b step 11c's engine half): the seat's route in the signed seat request — mix_seat_new takes "route" ("chain" | "channel"); seat_message_v1 / seat_body_v1 / ring_seat_digest / ring_seat_body carry the route (a chain seat signs exactly what it signed before; adapter 0.103.0 checks the same); ChannelInfo.pool_funded (the UCID bit) so Connections can say "Opening — waiting for the pool". lij-core 445 + 1 ignored.
     // "phase11-v330".to_string()  // v330 (S58, DP 2026-10-13 18:08 "Proceed with onchain to pool to channel (1b) now" — steps 11a/11b): THE CHANNEL ROUTE — joinstr P1 payout_type (p2tr | p2wsh; the vendored diff regenerated, the gate green); the pool machine's Channel phase (OpenChannel → PayoutGiven → the ring-signed registration; every payout checked against the pool's declared type; FundChannel names the exit that pays this phone's channel exactly the size; the coin signature waits for ChannelSaved; ChannelFailed stops with nobody named); the node's pool channels (UCID_POOL_FUNDED_BIT: open_pool_channel with the provider — static remote key, no anchors, private, a fresh nonce per attempt; FundingGenerationReady keeps the funding script for the pool instead of building a transaction; fund_pool_channel hands LDK the exit's outpoint (unsafe_manual_funding_transaction_generated); FundingTxBroadcastSafe = the provider's signature, saved once the manager is written; a stop before the coin signature drops the half-open channel, never filed as a close; a channel record wiped for "the coin went elsewhere" drops its channel); the wasm: mix_attempt_channel_open / mix_attempt_payout / mix_attempt_channel_saved / mix_attempt_channel, the tick carries the channel's news into the attempt. StoredRecord.channel, channel_id() = LDK's v1 id of the exit's outpoint (test r0); a channel record puts the funding row only. Tests c1–c3, r0, s1b. lij-core 445 + 1 ignored.
     // "phase11-v329".to_string()  // v329 (S58, DP 2026-10-13 17:12 — his first mainnet pool, three phones, in a block): THE POOL IS SEEN LIKE ANY SEND OF THIS WALLET'S, AND ITS RECORD NAMES ITS TRANSACTIONS — store::record_save puts the funding (this phone's coins reserved, its change back) and this phone's exit (received) among the sends still confirming (PendingTx, TxKind::Mix) the moment the record is written, so ONCHAIN RECENT and ONCHAIN COINS show the pool before its block; the rows go with the record, or at once when "Keep my coin out" spends the coin elsewhere (drop_pool_rows_for); records_view names the funding txid, every exit's txid, this phone's exit and output, the payout's address and the change (and a record's own funding row is not a keep-out); mix_tx_status asks the quorum whether a txid is known (tx_known: true / false / null) and, when known, whether it is in a block — the Mix screen's "Pull my coin back" shows only for a funding the network has not seen. The record keeps the change script and index (StoredRecord v329). Test s1b. lij-core 441 + 1 ignored.
@@ -287,6 +289,43 @@ fn mix_handles(inner: &Arc<std::sync::Mutex<LijWallet>>) -> Result<(Arc<lij_core
     let (root_key, _independent, _network) = wallet.onchain_handles();
     let storage = t2_storage(&root_key);
     Ok((root_key, storage, wallet.node().backup_dirty_handle()))
+}
+
+/// v333: the speed-up quote with the chain servers asked about each transaction of the chain (tx_known, then fetch_tx
+/// for its block) — and a speed-up already confirming for this payout answered as a problem.
+async fn mix_bump_quote_inner(storage: &dyn lij_core::storage::LijStorage, independent: Arc<lij_core::independent::IndependentClient>, id: &str, target_sat_vb: u64) -> Result<lij_core::tatara::bump::BumpQuote, JsValue> {
+    let rec = lij_core::tatara::records::load(storage).map_err(|e| JsValue::from_str(&e.to_string()))?
+        .into_iter().find(|r| r.id == id).ok_or_else(|| JsValue::from_str("no such pool"))?;
+    // what the servers say about each transaction of the chain up to this phone's exit
+    let mut seen: std::collections::HashMap<String, Option<bool>> = std::collections::HashMap::new();
+    let ids: Vec<String> = {
+        let mut v = vec![rec.funding().map_err(|e| JsValue::from_str(&e.to_string()))?.compute_txid().to_string()];
+        let (mine, _) = rec.my_exit().map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let mine = mine.compute_txid().to_string();
+        for e in rec.exits().map_err(|e| JsValue::from_str(&e.to_string()))? { let t = e.compute_txid().to_string(); v.push(t.clone()); if t == mine { break; } }
+        v
+    };
+    for t in &ids {
+        let known = independent.tx_known(t).await;
+        let c = match known {
+            Some(true) => match independent.fetch_tx(t).await { Ok(x) => Some(x.confirmed), Err(_) => None },
+            Some(false) => Some(false),
+            None => None,
+        };
+        seen.insert(t.clone(), c);
+    }
+    let mut q = lij_core::tatara::bump::bump_quote(&rec, &|t: &str| seen.get(t).copied().flatten(), target_sat_vb).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    if q.problem.is_none() {
+        if seen.get(&ids[0]).copied().flatten().is_none() && independent.tx_known(&ids[0]).await == Some(false) {
+            q.problem = Some("The pool's funding is not on the network, so a speed-up cannot help. If it never arrives, you can pull your coin back.".into());
+        } else {
+            let pending = lij_core::tier2_wallet::load_pending(storage);
+            if let Some(p) = pending.iter().find(|p| p.kind == lij_core::tier2_wallet::TxKind::MixSpeedUp && p.spent_outpoints.iter().any(|(t, v)| t.eq_ignore_ascii_case(&q.exit_txid) && *v == q.exit_vout)) {
+                q.problem = Some(format!("A speed-up is already on its way ({}).", &p.txid[..12]));
+            }
+        }
+    }
+    Ok(q)
 }
 
 fn mix_now() -> u64 {
@@ -2122,6 +2161,8 @@ impl LijWalletHandle {
         struct Req { provider_pk: String, endpoint: String, size: u64, coins: Vec<(String, u32)>, payout: lij_core::tatara::wallet::PayoutChoice, rate_at_join: u64, ts: u64, #[serde(default)] route: Option<String> }
         let r: Req = serde_json::from_str(req).map_err(|e| JsValue::from_str(&format!("mix_seat_new: bad request: {e}")))?;
         // Phase 1b: the route — "chain" (the payout on-chain) or "channel" (the payout this wallet's channel's funding)
+        // v335 (S59, DP 16:19 — the close pools were stepped back; a closed channel's coin sits in the on-chain pools): the
+        // route is "chain" or "channel"; v334's "close" word is gone with adapter 0.105.1 (which answers it 400)
         let route = match r.route.as_deref().unwrap_or("chain") { "chain" => "chain", "channel" => "channel", other => return Err(JsValue::from_str(&format!("mix_seat_new: no such route: {other}"))) }.to_string();
         let wallet = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
         let (root_key, _independent, _network) = wallet.onchain_handles();
@@ -2461,6 +2502,83 @@ impl LijWalletHandle {
             Ok(q) => serde_json::to_string(&q).map_err(|e| JsValue::from_str(&e.to_string())),
             Err(e) => Ok(serde_json::json!({ "problem": e.to_string() }).to_string()),
         }
+    }
+
+    /// v333 (S59, DP 2026-10-14 "Bump stuck Mix exits is now-work"; spec v0.10 §6.4): what a speed-up of a record's pool
+    /// costs at `target_sat_vb` — the unconfirmed part of the chain (the funding and the exits up to this phone's, each
+    /// asked of the chain servers), the fee it carries, the child's fee that lifts it to the target, and what the new
+    /// coin carries. Nothing written. Answers the quote JSON (tatara::bump::BumpQuote; "problem" set when no child can
+    /// be offered — a channel pool, another wallet's payout, an exit already in a block, a rate below today's, a coin too
+    /// small, a speed-up already on its way).
+    #[wasm_bindgen]
+    pub fn mix_bump_quote(&self, record_id: &str, target_sat_vb: u64) -> js_sys::Promise {
+        let id = record_id.to_string();
+        let (root_key, independent) = match self.inner.try_lock() {
+            Ok(w) => { let (r, i, _) = w.onchain_handles(); (r, i) },
+            Err(_) => return js_sys::Promise::reject(&JsValue::from_str("WALLET_BUSY")),
+        };
+        future_to_promise(async move {
+            let storage = t2_storage(&root_key);
+            let q = mix_bump_quote_inner(storage.as_ref(), independent, &id, target_sat_vb).await?;
+            Ok(JsValue::from_str(&serde_json::to_string(&q).map_err(|e| JsValue::from_str(&e.to_string()))?))
+        })
+    }
+
+    /// v333: the speed-up itself — the quote taken afresh, this phone's payout spent alone to a fresh m/86 address of
+    /// this wallet's (marked mixed, as the payout was), signed with the payout's own key, broadcast, and recorded among
+    /// the sends still confirming (TxKind::MixSpeedUp — the row reads "Mix speed-up"). The record's settle check is
+    /// untouched: the payout's exit still settles the pool. Answers {"txid","child_fee_sats","arrives_sats","address"}.
+    #[wasm_bindgen]
+    pub fn mix_bump(&self, record_id: &str, target_sat_vb: u64) -> js_sys::Promise {
+        let id = record_id.to_string();
+        let (root_key, independent, network, dirty) = match self.inner.try_lock() {
+            Ok(w) => { let (r, i, n) = w.onchain_handles(); (r, i, n, w.node().backup_dirty_handle()) },
+            Err(_) => return js_sys::Promise::reject(&JsValue::from_str("WALLET_BUSY")),
+        };
+        future_to_promise(async move {
+            let storage = t2_storage(&root_key);
+            let q = mix_bump_quote_inner(storage.as_ref(), independent.clone(), &id, target_sat_vb).await?;
+            if let Some(p) = &q.problem { return Err(JsValue::from_str(p)); }
+            let rec = lij_core::tatara::records::load(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?
+                .into_iter().find(|r| r.id == id).ok_or_else(|| JsValue::from_str("no such pool"))?;
+            // the new coin's address: the next m/86 receive index, marked mixed (the payout's own rule — wallet::next_payout)
+            let view = lij_core::tier2_wallet::load_view(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let mut marks = lij_core::tier2_wallet::load_marks(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let p = lij_core::tatara::wallet::next_payout(&root_key, &view, &mut marks).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let (tx, raw) = lij_core::tatara::bump::build_bump(&root_key, &rec, &q, &p.script).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            independent.broadcast_raw_tx(&raw).await.map_err(|e| JsValue::from_str(&e.to_string()))?;
+            lij_core::tier2_wallet::save_marks(storage.as_ref(), &marks).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let txid = tx.compute_txid().to_string();
+            let raw_hex = hex::encode(&raw);
+            if let Err(e) = lij_core::tier2_wallet::record_pending(
+                storage.as_ref(),
+                lij_core::tier2_wallet::PendingTx {
+                    txid: txid.clone(),
+                    spent_outpoints: vec![(q.exit_txid.clone(), q.exit_vout)],
+                    delta_sats: -(q.child_fee_sats as i64),
+                    direction: lij_core::tier2_wallet::TxDirection::SelfTransfer,
+                    kind: lij_core::tier2_wallet::TxKind::MixSpeedUp,
+                    created_at_ms: lij_core::tier2_wallet::now_ms(),
+                    change_outpoint: None,
+                    change_value_sats: 0,
+                    change_index: 0,
+                    broadcast_seen: false,
+                    raw_tx_hex: Some(raw_hex.clone()),
+                    dest_addr: Some(p.address.clone()),
+                    dest_sats: Some(q.arrives_sats),
+                    fee_sats: Some(q.child_fee_sats),
+                    fee_rate_sat_per_kw: Some((target_sat_vb as u32).saturating_mul(250)),
+                    dests: Vec::new(),
+                },
+            ) {
+                log::error!("record pending speed-up failed: {e}");
+            }
+            t2_note_send(storage.as_ref(), &txid, &raw_hex, Some(p.address.as_str()), &[]);
+            dirty.store(true, std::sync::atomic::Ordering::Relaxed);   // the marks moved (a new mixed index)
+            let _ = network;
+            log::info!("[mix] speed-up {txid}: the payout of pool {} spent to m/86 #{} with a {}-sat fee (the chain lifted to {} sat/vB)", id, p.index.unwrap_or(0), q.child_fee_sats, target_sat_vb);
+            Ok(JsValue::from_str(&serde_json::json!({ "txid": txid, "child_fee_sats": q.child_fee_sats, "arrives_sats": q.arrives_sats, "address": p.address }).to_string()))
+        })
     }
 
     /// v325: the attempt records as the Mix screen shows them: [{"id","size","payout_index","saved_ms"}…]. v327: and

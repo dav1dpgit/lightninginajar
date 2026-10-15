@@ -1471,6 +1471,38 @@ export class LijWalletHandle {
         }
     }
     /**
+     * v333: the speed-up itself — the quote taken afresh, this phone's payout spent alone to a fresh m/86 address of
+     * this wallet's (marked mixed, as the payout was), signed with the payout's own key, broadcast, and recorded among
+     * the sends still confirming (TxKind::MixSpeedUp — the row reads "Mix speed-up"). The record's settle check is
+     * untouched: the payout's exit still settles the pool. Answers {"txid","child_fee_sats","arrives_sats","address"}.
+     * @param {string} record_id
+     * @param {bigint} target_sat_vb
+     * @returns {Promise<any>}
+     */
+    mix_bump(record_id, target_sat_vb) {
+        const ptr0 = passStringToWasm0(record_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_mix_bump(this.__wbg_ptr, ptr0, len0, target_sat_vb);
+        return ret;
+    }
+    /**
+     * v333 (S59, DP 2026-10-14 "Bump stuck Mix exits is now-work"; spec v0.10 §6.4): what a speed-up of a record's pool
+     * costs at `target_sat_vb` — the unconfirmed part of the chain (the funding and the exits up to this phone's, each
+     * asked of the chain servers), the fee it carries, the child's fee that lifts it to the target, and what the new
+     * coin carries. Nothing written. Answers the quote JSON (tatara::bump::BumpQuote; "problem" set when no child can
+     * be offered — a channel pool, another wallet's payout, an exit already in a block, a rate below today's, a coin too
+     * small, a speed-up already on its way).
+     * @param {string} record_id
+     * @param {bigint} target_sat_vb
+     * @returns {Promise<any>}
+     */
+    mix_bump_quote(record_id, target_sat_vb) {
+        const ptr0 = passStringToWasm0(record_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_mix_bump_quote(this.__wbg_ptr, ptr0, len0, target_sat_vb);
+        return ret;
+    }
+    /**
      * v327 (From Channel — "Close channel and join"): a channel this phone is closing so that its coin joins a pool —
      * `req` JSON {"channel_id","provider_pk","endpoint","size","payout":{"to":"this_wallet"},"rate_at_join","balance_sats"}.
      * Sealed, this phone only; one per channel and, like a seat, one per pool size. The page starts the cooperative close
@@ -4314,7 +4346,7 @@ function __wbg_get_imports() {
             console.warn(arg0, arg1, arg2, arg3);
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2478, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2494, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed);
             return ret;
         },
@@ -4325,16 +4357,16 @@ function __wbg_get_imports() {
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("ErrorEvent")], shim_idx: 8, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_196);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_198);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 8, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_197);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_199);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 2184, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 2200, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f);
             return ret;
         },
@@ -4377,12 +4409,12 @@ function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_196(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_196(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_198(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_198(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_197(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_197(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_199(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_199(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed(arg0, arg1, arg2) {

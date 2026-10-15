@@ -434,6 +434,22 @@ export class LijWalletHandle {
      */
     mix_attempt_tick(attempt_id: string): string;
     /**
+     * v333: the speed-up itself — the quote taken afresh, this phone's payout spent alone to a fresh m/86 address of
+     * this wallet's (marked mixed, as the payout was), signed with the payout's own key, broadcast, and recorded among
+     * the sends still confirming (TxKind::MixSpeedUp — the row reads "Mix speed-up"). The record's settle check is
+     * untouched: the payout's exit still settles the pool. Answers {"txid","child_fee_sats","arrives_sats","address"}.
+     */
+    mix_bump(record_id: string, target_sat_vb: bigint): Promise<any>;
+    /**
+     * v333 (S59, DP 2026-10-14 "Bump stuck Mix exits is now-work"; spec v0.10 §6.4): what a speed-up of a record's pool
+     * costs at `target_sat_vb` — the unconfirmed part of the chain (the funding and the exits up to this phone's, each
+     * asked of the chain servers), the fee it carries, the child's fee that lifts it to the target, and what the new
+     * coin carries. Nothing written. Answers the quote JSON (tatara::bump::BumpQuote; "problem" set when no child can
+     * be offered — a channel pool, another wallet's payout, an exit already in a block, a rate below today's, a coin too
+     * small, a speed-up already on its way).
+     */
+    mix_bump_quote(record_id: string, target_sat_vb: bigint): Promise<any>;
+    /**
      * v327 (From Channel — "Close channel and join"): a channel this phone is closing so that its coin joins a pool —
      * `req` JSON {"channel_id","provider_pk","endpoint","size","payout":{"to":"this_wallet"},"rate_at_join","balance_sats"}.
      * Sealed, this phone only; one per channel and, like a seat, one per pool size. The page starts the cooperative close
@@ -1293,6 +1309,8 @@ export interface InitOutput {
     readonly lijwallethandle_mix_attempt_join: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly lijwallethandle_mix_attempt_payout: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly lijwallethandle_mix_attempt_tick: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_bump: (a: number, b: number, c: number, d: bigint) => any;
+    readonly lijwallethandle_mix_bump_quote: (a: number, b: number, c: number, d: bigint) => any;
     readonly lijwallethandle_mix_close_join_add: (a: number, b: number, c: number) => [number, number];
     readonly lijwallethandle_mix_close_join_drop: (a: number, b: number, c: number) => [number, number, number];
     readonly lijwallethandle_mix_close_joins: (a: number) => [number, number, number, number];
@@ -1415,8 +1433,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_196: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_197: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_198: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_199: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

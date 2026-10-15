@@ -186,6 +186,12 @@ impl Net {
         }
     }
 
+    /// v335: every phone takes the pool as public (other joinstr clients at the table — machine.rs `public`).
+    fn public(mut self) -> Net {
+        self.phones = self.phones.drain(..).map(|p| p.public(true)).collect();
+        self
+    }
+
     fn run(&mut self) {
         let mut steps = 0;
         while let Some((j, input)) = self.queue.pop_front() {
@@ -360,6 +366,78 @@ fn s3_a_member_whose_view_differs_stops_the_pool_and_is_not_named() {
     assert!(net.signed.is_empty());
     let others: Vec<_> = net.stops.iter().filter(|(i, _, _)| *i != 2).collect();
     assert!(!others.is_empty() && others.iter().all(|(_, r, named)| r.contains("same pool") && named.is_empty()), "{:?}", net.stops);
+}
+
+// ── v335 (S59, Phase 2): public pools — members who send no `lij_view` ──────────────────────────────────────────────
+
+/// Member 2 is a public joinstr client: it never sends a view. A LiJ pool waits for it (nobody signs); a public pool
+/// signs on every member's nonces, with S3 covering the views that came.
+#[test]
+fn s3_a_public_pool_signs_without_a_view_from_its_public_members_a_lij_pool_waits() {
+    let drop_view = || -> Box<dyn Fn(usize, &str) -> Option<Vec<String>>> { Box::new(|i, json| if i == 2 && json.contains("\"lij_view\"") { Some(vec![]) } else { None }) };
+    let mut lij = Net::new(3);
+    lij.tamper = Some(drop_view());
+    lij.run();
+    assert!(lij.signed.is_empty() && lij.stops.is_empty(), "a LiJ pool waits at View for member 2's view: {:?}", lij.stops);
+    let mut pub_ = Net::new(3).public();
+    pub_.tamper = Some(drop_view());
+    pub_.run();
+    assert_eq!(pub_.signed.len(), 3, "every member signs the funding: {:?}", pub_.stops);
+    assert!(pub_.stops.is_empty());
+}
+
+/// A LiJ member's view still counts in a public pool: a different hash stops the pool, no one named.
+#[test]
+fn s3_a_public_pool_still_stops_on_a_lij_members_differing_view() {
+    let mut net = Net::new(3).public();
+    net.tamper = Some(Box::new(|i, json| {
+        if i == 2 && json.contains("\"lij_view\"") {
+            Some(vec![serde_json::json!({ "version": "2", "type": "lij_view", "hash": "ab".repeat(32) }).to_string()])
+        } else {
+            None
+        }
+    }));
+    net.run();
+    assert!(net.signed.is_empty());
+    let others: Vec<_> = net.stops.iter().filter(|(i, _, _)| *i != 2).collect();
+    assert!(!others.is_empty() && others.iter().all(|(_, r, named)| r.contains("same pool") && named.is_empty()), "{:?}", net.stops);
+}
+
+/// In a public pool a partial signature that does not verify stops the pool and names no one (the public members
+/// never confirmed their view, so a bad signature cannot be told from a different view); a View timeout names only
+/// the members whose nonces are missing.
+#[test]
+fn s3_a_public_pools_bad_partial_signature_names_no_one() {
+    let mut net = Net::new(4).public();
+    net.tamper = Some(Box::new(|i, json| {
+        if json.contains("\"lij_view\"") && i != 0 {
+            return Some(vec![]);   // members 1–3 are public clients
+        }
+        if i != 3 || !json.contains("\"partial_sigs\"") {
+            return None;
+        }
+        let env = Envelope::parse_strict(json).unwrap();
+        let Msg::PartialSigs { offset, mut sigs } = env.msg else { return None };
+        sigs.swap(0, 1);
+        Some(vec![Envelope::json(Msg::PartialSigs { offset, sigs })])
+    }));
+    net.run();
+    assert!(net.signed.is_empty(), "nobody signs the funding");
+    let stops: Vec<_> = net.stops.iter().filter(|(i, _, _)| *i != 3).collect();
+    assert!(!stops.is_empty() && stops.iter().all(|(_, r, n)| r.contains("partial signature") && n.is_empty()), "{:?}", net.stops);
+    // the timeout: a public member that withheld its nonces is still named; one that sent them but no view is not
+    let mut late = Net::new(3).public();
+    late.tamper = Some(Box::new(|i, json| if (i == 2 && json.contains("\"nonces\"")) || (i == 1 && json.contains("\"lij_view\"")) { Some(vec![]) } else { None }));
+    late.run();
+    assert!(late.signed.is_empty() && late.stops.is_empty());
+    for j in 0..3 {
+        let acts = late.phones[j].on(Input::Tick { now: 5_000 });
+        late.act(j, acts);
+        let acts = late.phones[j].on(Input::Tick { now: 5_700 });
+        late.act(j, acts);
+    }
+    let others: Vec<_> = late.stops.iter().filter(|(i, _, _)| *i != 2).collect();
+    assert!(others.len() == 2 && others.iter().all(|(_, r, n)| r.contains("timed out at View") && *n == vec![session(2)]), "{:?}", late.stops);
 }
 
 #[test]

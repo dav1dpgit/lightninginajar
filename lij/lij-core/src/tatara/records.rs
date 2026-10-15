@@ -55,6 +55,11 @@ pub struct StoredRecord {
     /// transaction (its id: `channel_id()`); the wallet's ledger never holds the payout.
     #[serde(default)]
     pub channel: bool,
+    /// v333 (S59, the speed-up): the pool's fee rate (whole sat/vB) every transaction of the chain was built at, so a
+    /// speed-up can price the funding's fee (its inputs are every member's). Absent on records written before v333 —
+    /// bump.rs then reads the rate from the first exit's own fee.
+    #[serde(default)]
+    pub rate_sat_vb: Option<u64>,
 }
 
 impl StoredRecord {
@@ -71,6 +76,7 @@ impl StoredRecord {
             change_spk_hex: change.map(|(s, _)| hex::encode(s.as_bytes())),
             change_index: change.map(|(_, i)| i),
             channel: r.channel,
+            rate_sat_vb: (r.rate_milli / 1000 > 0).then_some(r.rate_milli / 1000),
         }
     }
 
@@ -86,11 +92,11 @@ impl StoredRecord {
         Some(hex::encode(id))
     }
 
-    pub(crate) fn funding(&self) -> LijResult<Transaction> {
+    pub fn funding(&self) -> LijResult<Transaction> {
         deserialize_hex(&self.funding_hex).map_err(|e| LijError::Storage(format!("attempt record {}: funding: {e}", self.id)))
     }
 
-    pub(crate) fn exits(&self) -> LijResult<Vec<Transaction>> {
+    pub fn exits(&self) -> LijResult<Vec<Transaction>> {
         self.exits_hex
             .iter()
             .map(|h| deserialize_hex(h).map_err(|e| LijError::Storage(format!("attempt record {}: exit: {e}", self.id))))
@@ -98,7 +104,7 @@ impl StoredRecord {
     }
 
     /// The exit that pays this record's payout, and the output's index in it.
-    pub(crate) fn my_exit(&self) -> LijResult<(Transaction, u32)> {
+    pub fn my_exit(&self) -> LijResult<(Transaction, u32)> {
         let spk = ScriptBuf::from_bytes(hex::decode(&self.payout_spk_hex).map_err(|e| LijError::Storage(format!("attempt record {}: payout: {e}", self.id)))?);
         for tx in self.exits()? {
             if let Some(v) = tx.output.iter().position(|o| o.script_pubkey == spk) {
@@ -259,6 +265,7 @@ pub(crate) mod tests {
             payout: mine,
             inputs: vec![OutPoint { txid: my_coin, vout: 0 }],
             channel: false,
+            rate_milli: 0,
         };
         (StoredRecord::from_machine(&rec, payout_index, None, 7), funding, e1)
     }
@@ -300,7 +307,7 @@ pub(crate) mod tests {
         let v: serde_json::Value = serde_json::to_value(&r).unwrap();
         let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(|k| k.as_str()).collect();
         keys.sort();
-        assert_eq!(keys, vec!["change_index", "change_spk_hex", "channel", "exits_hex", "funding_hex", "id", "inputs", "payout_index", "payout_spk_hex", "saved_ms"]);   // v329: the change address and its index (no secret)
+        assert_eq!(keys, vec!["change_index", "change_spk_hex", "channel", "exits_hex", "funding_hex", "id", "inputs", "payout_index", "payout_spk_hex", "rate_sat_vb", "saved_ms"]);   // v329: the change address and its index; v333: the pool's rate (no secret)
         assert_eq!(wipe(&s, "att-1").unwrap(), Some(r));
         assert_eq!(wipe(&s, "att-1").unwrap(), None);
         assert!(s.get(RECORDS_KEY).unwrap().is_some());

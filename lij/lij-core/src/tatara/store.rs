@@ -167,6 +167,12 @@ pub struct RecordView {
     pub change_sats: u64,
     /// Phase 1b: the payout is this phone's channel — its id (hex). None for an on-chain pool.
     pub channel_id: Option<String>,
+    /// v333 (S59, the speed-up): a child of this wallet's spending the payout is still confirming — its txid and the
+    /// fee it carries (tatara::bump; a send of this wallet's whose spent outpoints name the payout). None otherwise.
+    pub sped_up_txid: Option<String>,
+    pub sped_up_fee_sats: Option<u64>,
+    /// v333: the pool's fee rate (whole sat/vB) when the record kept it.
+    pub rate_sat_vb: Option<u64>,
 }
 
 /// The pool's transactions of one record: (funding txid, every exit's txid in chain order, my exit's txid and output
@@ -271,7 +277,8 @@ pub fn records_view(storage: &dyn LijStorage, network: bitcoin::Network) -> LijR
     let view = load_view(storage)?;
     // v329: a record's own funding row (pool_rows) is not "this wallet's own send" — only another send is a keep-out
     let own: HashSet<String> = all.iter().map(|r| record_txids(r).0.to_ascii_lowercase()).collect();
-    let sending: HashSet<(String, u32)> = load_pending(storage)
+    let pending = load_pending(storage);
+    let sending: HashSet<(String, u32)> = pending
         .iter()
         .filter(|p| !own.contains(&p.txid.to_ascii_lowercase()))
         .flat_map(|p| p.spent_outpoints.iter().map(|(t, v)| (t.to_ascii_lowercase(), *v)))
@@ -308,7 +315,9 @@ pub fn records_view(storage: &dyn LijStorage, network: bitcoin::Network) -> LijR
         let (funding_txid, exit_txids, my_exit_txid, my_exit_vout) = record_txids(r);
         let payout_address = bitcoin::Address::from_script(bitcoin::Script::from_bytes(&spk), network).map(|a| a.to_string()).unwrap_or_default();
         let change_sats = record_change(r).map(|(_, s)| s).unwrap_or(0);
-        out.push(RecordView { id: r.id.clone(), size, payout_index: r.payout_index, saved_ms: r.saved_ms, inputs: r.inputs.clone(), coin_sats, state, funding_txid, exit_txids, my_exit_txid, my_exit_vout, payout_address, change_sats, channel_id: r.channel_id() });
+        // v333: a speed-up still confirming — the pending row whose spent outpoints name this phone's payout
+        let sped = pending.iter().find(|p| p.kind == TxKind::MixSpeedUp && p.spent_outpoints.iter().any(|(t, v)| t.eq_ignore_ascii_case(&my_exit_txid) && *v == my_exit_vout));
+        out.push(RecordView { id: r.id.clone(), size, payout_index: r.payout_index, saved_ms: r.saved_ms, inputs: r.inputs.clone(), coin_sats, state, funding_txid, exit_txids, my_exit_txid, my_exit_vout, payout_address, change_sats, channel_id: r.channel_id(), sped_up_txid: sped.map(|p| p.txid.clone()), sped_up_fee_sats: sped.and_then(|p| p.fee_sats), rate_sat_vb: r.rate_sat_vb });
     }
     Ok(out)
 }
@@ -774,6 +783,7 @@ pub fn attempt_common(storage: &dyn LijStorage, root: &RootKey, st: &AttemptStar
         now,
         refused,
         network: root.network,
+        public: false,
     };
     Ok((seat, c, note))
 }
@@ -825,7 +835,7 @@ mod tests {
     }
 
     fn rec(id: &str, coin: &str) -> StoredRecord {
-        StoredRecord { id: id.into(), funding_hex: String::new(), exits_hex: vec![], payout_spk_hex: String::new(), payout_index: Some(0), inputs: vec![(coin.into(), 0)], saved_ms: 1, change_spk_hex: None, change_index: None, channel: false }
+        StoredRecord { id: id.into(), funding_hex: String::new(), exits_hex: vec![], payout_spk_hex: String::new(), payout_index: Some(0), inputs: vec![(coin.into(), 0)], saved_ms: 1, change_spk_hex: None, change_index: None, channel: false, rate_sat_vb: None }
     }
 
     #[test]

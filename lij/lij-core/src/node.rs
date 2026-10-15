@@ -497,6 +497,9 @@ pub struct LijNode {
     /// v274: our reserve per channel id hex as last listed — written into the closed-channel record
     /// at ChannelClosed (the channel is gone from list_channels by then).
     chan_reserves: Arc<Mutex<std::collections::HashMap<String, u64>>>,
+    /// v334: the funding's block height per channel id hex as last listed (from the short channel id) — written into
+    /// the closed-channel record at ChannelClosed, when the channel is gone from list_channels.
+    chan_funding_heights: Arc<Mutex<std::collections::HashMap<String, u32>>>,
     /// v267 (S47, DP): self-funded opens whose funding tx could not be built this session —
     /// `(temp channel id hex, channel value sats, reason, ms)`. The page's open-retry loop reads
     /// them to stop retrying an open that will fail the same way again, and to clear its
@@ -810,6 +813,7 @@ impl LijNode {
             claimed_payments: Arc::new(Mutex::new(std::collections::HashMap::new())),
             sent_parts: Arc::new(Mutex::new(std::collections::HashMap::new())),
             chan_reserves: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            chan_funding_heights: Arc::new(Mutex::new(std::collections::HashMap::new())),
             open_failures: Arc::new(Mutex::new(Vec::new())),
             pool_channels: Arc::new(Mutex::new(std::collections::HashMap::new())),
             pool_drops: Arc::new(Mutex::new(std::collections::HashSet::new())),
@@ -1162,6 +1166,7 @@ impl LijNode {
             claimed_payments: Arc::new(Mutex::new(std::collections::HashMap::new())),
             sent_parts: Arc::new(Mutex::new(std::collections::HashMap::new())),
             chan_reserves: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            chan_funding_heights: Arc::new(Mutex::new(std::collections::HashMap::new())),
             open_failures: Arc::new(Mutex::new(Vec::new())),
             pool_channels: Arc::new(Mutex::new(std::collections::HashMap::new())),
             pool_drops: Arc::new(Mutex::new(std::collections::HashSet::new())),
@@ -2631,6 +2636,8 @@ impl LijNode {
                             our_owned_msat_at_close: last_local_balance_msat,   // v277: the books' one figure for this close
                             owned_backfill_done: false,   // v278: "done" means a backfill produced the value; the event's figure is never redone
                             owned_backfill_ver: None,
+                            pool_funded: Some((user_channel_id & UCID_POOL_FUNDED_BIT) != 0),   // v334: a Mix pool's exit funded it — RECENT's "moved to Lightning" line outlives the pool record
+                            funding_height: self.chan_funding_heights.lock().ok().and_then(|m| m.get(&channel_id_hex).cloned()),   // v334
                         };
                         let log = ClosedChannelLog::new(self.storage.clone());
                         if let Err(e) = log.append(record) {
@@ -5769,6 +5776,10 @@ impl LijNode {
             if let Ok(mut m) = self.chan_reserves.lock() {
                 for c in listed.iter() { if let Some(r) = c.unspendable_punishment_reserve { m.insert(hex::encode(c.channel_id.0), r); } }
             }
+            // v334: and the funding's block, for the closed-channel record of a pool-funded channel
+            if let Ok(mut m) = self.chan_funding_heights.lock() {
+                for c in listed.iter() { if let Some(h) = c.short_channel_id.map(|s| (s >> 40) as u32).filter(|h| *h > 0) { m.insert(hex::encode(c.channel_id.0), h); } }
+            }
             listed.iter().map(|c| ChannelInfo {
                 channel_id: hex::encode(c.channel_id.0),
                 counterparty_pubkey: hex::encode(c.counterparty.node_id.serialize()),
@@ -5797,6 +5808,7 @@ impl LijNode {
                 }),
                 terminus_pinned: (c.user_channel_id & crate::signer::UCID_TERMINUS_PIN_BIT) != 0,
                 pool_funded: (c.user_channel_id & UCID_POOL_FUNDED_BIT) != 0,   // Phase 1b: a Mix pool's exit funds it
+                funding_height: c.short_channel_id.map(|s| (s >> 40) as u32).filter(|h| *h > 0),   // v334: the funding's block, from the scid
                 funding_txid: c.funding_txo.map(|o| o.txid.to_string()),
                 confirmations: c.confirmations,
                 is_channel_ready: c.is_channel_ready,
