@@ -123,6 +123,11 @@ pub enum Input {
     /// could not reach it) — the attempt stops, nothing moved, nobody named.
     ChannelFailed(String),
     Tick { now: u64 },
+    /// v339 (DP 2026-10-14 22:29 "can one leave a public pool before the hour is up?"): this phone leaves on purpose
+    /// before its coin signature — the attempt stops (an abort goes to the members if this phone had registered: the
+    /// room cannot go on without its registration, so they learn at once instead of waiting out the clock), nothing has
+    /// moved, nobody is named. After the coin signature there is no leaving (the exit is signed; the record watches).
+    Leave,
 }
 
 /// Seconds each phase may take before the attempt stops.
@@ -222,6 +227,16 @@ impl Attempt {
         &self.phase
     }
 
+    /// v336: the pool's number of people.
+    pub fn peers(&self) -> usize {
+        self.params.peers
+    }
+
+    /// v337: the registrations in so far (this phone's once the relay echoed it).
+    pub fn registered(&self) -> usize {
+        self.regs.len()
+    }
+
     /// Refuse these coins (from earlier attempts' stops): a registration that carries one stops this attempt and names
     /// its session.
     pub fn refusing(mut self, coins: impl IntoIterator<Item = OutPoint>) -> Self {
@@ -232,6 +247,16 @@ impl Attempt {
     /// v335: a public pool (other joinstr clients at the table) — see `public`.
     pub fn public(mut self, public: bool) -> Self {
         self.public = public;
+        self
+    }
+
+    /// v338 (the clocks, DP 2026-10-14 21:39): the registration phase's own deadline — a public room fills while its
+    /// announcement is open (the public code's join window, then one step for the last registrations), not within
+    /// PHASE_S of this phone's own registration. Every later phase keeps the phase clock.
+    pub fn first_phase_until(mut self, deadline: u64) -> Self {
+        if self.phase == Phase::Inputs && deadline > self.deadline {
+            self.deadline = deadline;
+        }
         self
     }
 
@@ -367,6 +392,10 @@ impl Attempt {
             Input::ChannelFailed(why) => {
                 if self.params.payout_type != PayoutType::P2wsh { return Ok(vec![]); }
                 Ok(self.stop(&format!("the channel for this pool failed: {why}"), vec![]))
+            }
+            Input::Leave => {
+                if matches!(self.phase, Phase::FundingSigned | Phase::Stopped) { return Ok(vec![]); }
+                Ok(self.stop("you left the pool", vec![]))
             }
             Input::Msg { from, json } => self.on_msg(from, json),
         }

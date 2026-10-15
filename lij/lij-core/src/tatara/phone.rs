@@ -130,6 +130,9 @@ pub struct Out {
     /// is saved with the provider's signature, call `channel_saved`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fund_channel: Option<(String, u32)>,
+    /// v337: the members registered so far, this phone included (a public room's "2 of 3" on the card).
+    #[serde(default)]
+    pub members: usize,
 }
 
 impl Out {
@@ -187,11 +190,19 @@ pub struct Phone {
     record_saved: bool,
     signed: bool,
     done: bool,
+    /// v336 (Phase 2a): a public pool — this phone created it on a public relay and answers `join_pool` with the pool's
+    /// key while seats remain (the public code's handshake), or joined one that way (PublicJoin).
+    public: bool,
+    /// v336: the joiners this creating phone has answered (their keys); at most peers − 1.
+    joiners: Vec<[u8; 32]>,
+    /// v336: this phone created the pool (only the creator answers join requests — the public code's pool_sender).
+    creator: bool,
 }
 
 /// The creating phone's pool: the pool event with the declared Phase 1 options, and the announcement for the provider.
 fn make_announcement(c: &Common, fee_rate_sat_vb: u64, seat_pks: &[String], pool_sk: &SecretKey, pool_id: &str) -> Result<String> {
-    ensure!(seat_pks.len() + 1 == c.peers, "{} other seats for a pool of {}", seat_pks.len(), c.peers);
+    ensure!(c.public || seat_pks.len() + 1 == c.peers, "{} other seats for a pool of {}", seat_pks.len(), c.peers);   // v336: a public pool's seats come by join_pool
+    ensure!(!c.public || seat_pks.is_empty(), "a public pool names no seats");
     let mut uniq = HashSet::new();
     for k in seat_pks {
         ensure!(k.len() == 64 && k.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)), "a seat key is not 32 bytes of lowercase hex");
@@ -220,6 +231,125 @@ fn make_announcement(c: &Common, fee_rate_sat_vb: u64, seat_pks: &[String], pool
     serde_json::to_string(&e).context("announcement")
 }
 
+/// v336 (Phase 2a): what a pool announcement found on a public relay says — for the page's list of public pools, from
+/// the engine's strict parse (a pool the engine would refuse is not listed). `lij` is true for a provider's pool
+/// (lij_key tags: joined through the provider, never by the handshake).
+#[derive(Clone, Debug, Serialize)]
+pub struct PoolSummary {
+    pub id: String,
+    pub pool_pk: String,
+    pub peers: usize,
+    pub denomination: u64,
+    pub fee_rate: f64,
+    pub timeout: u64,
+    pub network: String,
+    pub lij: bool,
+}
+
+pub fn public_pool_summary(pool_event_json: &str) -> Result<PoolSummary> {
+    ensure!(pool_event_json.len() <= 64 * 1024, "pool event too large");
+    let e: Event = serde_json::from_str(pool_event_json).context("the pool event")?;
+    ensure!(e.kind == ANNOUNCE_KIND, "not a pool announcement");
+    nwc::verify_event(&e).map_err(|e| anyhow::anyhow!("the announcement's id or signature: {e}"))?;
+    let pe = PoolEvent::parse_strict(&e.content)?;
+    ensure!(pe.public_key == e.pubkey, "the announcement is not signed by the pool's key");
+    let lij = e.tags.iter().any(|t| !t.is_empty() && t[0] == "lij_key");
+    Ok(PoolSummary { id: pe.id.clone(), pool_pk: pe.public_key.clone(), peers: pe.peers, denomination: pe.denomination, fee_rate: pe.fee_rate, timeout: pe.timeout, network: pe.network.clone(), lij })
+}
+
+/// v336 (Phase 2a): the public handshake, the joiner's side. A pool found on a public relay (a signed kind-2022 event
+/// — the public Joinstr code's, or another LiJ's public pool) is joined the way the public code joins: a `join_pool`
+/// message under a key made for this one pool, sealed to the pool's key; the creator answers with `credentials`, the
+/// pool's secret key, sealed to that key. With the key in hand the phone starts as any joining phone does. The same
+/// checks a LiJ join makes come first (the pool's size, network, timeout, the fee limit), before anything is sent.
+pub struct PublicJoin {
+    c: Common,
+    pe: PoolEvent,
+    eph_sk: SecretKey,
+    eph_x: String,
+    since: u64,
+}
+
+/// How long a public join waits for its credentials (the public code's creator answers within its poll interval).
+pub const JOIN_WAIT_S: u64 = 90;
+
+/// What a public join's relay event led to.
+pub enum Joined {
+    /// The credentials came: the phone, and its first Out (the registration).
+    Phone(Phone, Out),
+    /// Not the answer yet — keep waiting.
+    Waiting(PublicJoin),
+    /// The creator refused (its reason is not shown — S7).
+    Rejected,
+}
+
+impl PublicJoin {
+    pub fn new(c: Common, pool_event_json: &str) -> Result<(PublicJoin, Out)> {
+        ensure!(c.public, "a public join needs a public seat");
+        ensure!(pool_event_json.len() <= 64 * 1024, "pool event too large");
+        let e: Event = serde_json::from_str(pool_event_json).context("the pool event")?;
+        ensure!(e.kind == ANNOUNCE_KIND, "not a pool announcement");
+        nwc::verify_event(&e).map_err(|e| anyhow::anyhow!("the announcement's id or signature: {e}"))?;
+        let pe = PoolEvent::parse_strict(&e.content)?;
+        ensure!(pe.public_key == e.pubkey, "the announcement is not signed by the pool's key");
+        ensure!(!e.tags.iter().any(|t| t.len() >= 1 && t[0] == "lij_key"), "a provider's pool: joined through the provider, not the public handshake");
+        Phone::checks(&c, &pe)?;
+        let eph_sk = secret(&c.entropy, "public-join", 0)?;
+        let eph_x = hex::encode(xonly(&eph_sk));
+        let iv: [u8; 16] = derive(&c.entropy, "join-iv", 0)[..16].try_into().expect("16 bytes");
+        let jp = wire::seal(&eph_sk, &pe.public_key, &Envelope::json(Msg::JoinPool {}), c.now, &iv)?;
+        let out = Out { relay: vec![serde_json::to_string(&jp)?], phase: "joining".into(), ..Default::default() };
+        let since = c.now;
+        Ok((PublicJoin { c, pe, eph_sk, eph_x, since }, out))
+    }
+
+    /// The relay subscription while waiting: messages to this join's key.
+    pub fn relay_filter(&self) -> String {
+        serde_json::json!({ "kinds": [wire::KIND], "#p": [self.eph_x] }).to_string()
+    }
+
+    pub fn pool_id(&self) -> &str {
+        &self.pe.id
+    }
+
+    pub fn pool_pk(&self) -> &str {
+        &self.pe.public_key
+    }
+
+    /// An event the page read under this join's filter.
+    pub fn relay_event(self, event_json: &str, now: u64) -> Result<Joined> {
+        if event_json.len() > 64 * 1024 { return Ok(Joined::Waiting(self)); }
+        let e: Event = match serde_json::from_str(event_json) { Ok(e) => e, Err(_) => return Ok(Joined::Waiting(self)) };
+        if e.kind != wire::KIND || e.pubkey != self.pe.public_key || !e.tags.iter().any(|t| t.len() >= 2 && t[0] == "p" && t[1] == self.eph_x) || e.content.len() > wire::MAX_CONTENT {
+            return Ok(Joined::Waiting(self));
+        }
+        if nwc::verify_event(&e).is_err() { return Ok(Joined::Waiting(self)); }
+        let pool_pub = match nwc::pubkey_from_hex(&e.pubkey) { Ok(p) => p, Err(_) => return Ok(Joined::Waiting(self)) };
+        let json = match nwc::ecdh_x(&self.eph_sk, &pool_pub).and_then(|s| nwc::nip04_decrypt(&s, &e.content)) { Ok(j) => j, Err(_) => return Ok(Joined::Waiting(self)) };
+        if json.len() > caps::MAX_MESSAGE_BYTES { return Ok(Joined::Waiting(self)); }
+        match Envelope::parse_strict(&json).map(|e| e.msg) {
+            Ok(Msg::Credentials { credentials }) => {
+                ensure!(credentials.id == self.pe.id, "credentials for another pool");
+                let pool_sk = SecretKey::from_slice(&hex::decode(&credentials.key).context("the pool key")?).context("the pool key")?;
+                ensure!(hex::encode(pool_sk.x_only_public_key(&Secp256k1::new()).0.serialize()) == self.pe.public_key, "the credentials are not the pool's key");
+                let mut c = self.c;
+                c.now = now;
+                let (p, out) = Phone::start(c, self.pe, pool_sk)?;
+                Ok(Joined::Phone(p, out))
+            }
+            Ok(Msg::Reject { .. }) => Ok(Joined::Rejected),
+            _ => Ok(Joined::Waiting(self)),
+        }
+    }
+
+    /// Some(reason) when this join has waited too long or the pool's own timeout passed.
+    pub fn timed_out(&self, now: u64) -> Option<String> {
+        if now >= self.pe.timeout { return Some("the pool's time ran out before it answered".into()); }
+        if now.saturating_sub(self.since) > JOIN_WAIT_S { return Some("the pool did not answer the join request".into()); }
+        None
+    }
+}
+
 /// A joining phone's copy of the pool's key, from the announcement: the event checked, its author the pool event's key,
 /// this seat's copy opened and matching. Returns the pool event and the pool's secret key.
 pub fn open_announcement(announcement: &str, seat_sk: &SecretKey) -> Result<(PoolEvent, SecretKey)> {
@@ -242,6 +372,19 @@ impl Phone {
     /// The creating phone (the provider's "create" notice): the pool, its announcement for the provider, and the start
     /// of its own part.
     pub fn create(c: Common, fee_rate_sat_vb: u64, seat_pks: &[String]) -> Result<(Phone, String, Out)> {
+        ensure!(!c.public, "a public pool is created with create_public");
+        Phone::create_any(c, fee_rate_sat_vb, seat_pks)
+    }
+
+    /// v336 (Phase 2a): a public pool on a public relay — the announcement names no seats; the other members arrive by
+    /// the public code's handshake (`join_pool` → `credentials`, answered by this phone while seats remain). `c.public`
+    /// must be set (the machine's public rules apply: S3 covers the LiJ members' views only).
+    pub fn create_public(c: Common, fee_rate_sat_vb: u64) -> Result<(Phone, String, Out)> {
+        ensure!(c.public, "a public pool needs a public seat");
+        Phone::create_any(c, fee_rate_sat_vb, &[])
+    }
+
+    fn create_any(c: Common, fee_rate_sat_vb: u64, seat_pks: &[String]) -> Result<(Phone, String, Out)> {
         ensure!(fee_rate_sat_vb >= caps::RELAY_MIN_SAT_VB && fee_rate_sat_vb <= c.declared.max_fee_sat_vb, "the fee rate is outside what the provider declared");
         ensure!(caps::within_fee_limit(fee_rate_sat_vb, c.rate_at_join, c.declared.max_fee_sat_vb), "fees rose since you joined");
         let pool_sk = secret(&c.entropy, "pool", 0)?;
@@ -249,7 +392,8 @@ impl Phone {
         let ann = make_announcement(&c, fee_rate_sat_vb, seat_pks, &pool_sk, &pool_id)?;
         let e: Event = serde_json::from_str(&ann)?;
         let pe = PoolEvent::parse_strict(&e.content)?;
-        let (phone, out) = Phone::start(c, pe, pool_sk)?;
+        let (mut phone, out) = Phone::start(c, pe, pool_sk)?;
+        phone.creator = true;
         Ok((phone, ann, out))
     }
 
@@ -259,14 +403,20 @@ impl Phone {
         Phone::start(c, pe, pool_sk)
     }
 
-    fn start(c: Common, pe: PoolEvent, pool_sk: SecretKey) -> Result<(Phone, Out)> {
-        let params = caps::phase1_pool(&pe, &c.declared, c.now)?;
+    /// The checks every joining phone makes on the pool event (v336: also before a public join sends its request).
+    fn checks(c: &Common, pe: &PoolEvent) -> Result<joinstr_v2::pool::Params> {
+        let params = caps::phase1_pool(pe, &c.declared, c.now)?;
         ensure!(pe.denomination == c.size, "the pool's size is not the provider's");
         ensure!((params.payout_type == joinstr_v2::pool::PayoutType::P2wsh) == c.payout.is_none(), "the pool's payout type is not this seat's route");
         ensure!(pe.peers == c.peers, "the pool's number of people is not the provider's");
         let rate = pe.fee_rate;
         ensure!(caps::within_fee_limit_milli((rate * 1000.0).round() as u64, c.rate_at_join, c.declared.max_fee_sat_vb), "fees rose since you joined — the pool's rate is {rate} sat/vB, you agreed to up to {}", c.rate_at_join.saturating_mul(3) / 2);
         ensure!(!c.coins.is_empty(), "no coin");
+        Ok(params)
+    }
+
+    fn start(c: Common, pe: PoolEvent, pool_sk: SecretKey) -> Result<(Phone, Out)> {
+        let params = Phone::checks(&c, &pe)?;
         let total_in: u64 = c.coins.iter().map(|(_, o, _)| o.value.to_sat()).sum();
         let spks: Vec<&bitcoin::Script> = c.coins.iter().map(|(_, o, _)| o.script_pubkey.as_script()).collect();
         let change = my_change(total_in, c.size, c.peers, params.fee_rate_milli, &spks, &c.change_spk, CHANGE_DUST)?
@@ -284,7 +434,11 @@ impl Phone {
             rate_at_join: c.rate_at_join,
         };
         let (machine, acts) = Attempt::new(params, c.network, me, c.now, Timeouts { phase_s: PHASE_S })?;
-        let machine = machine.refusing(c.refused).public(c.public);
+        let public = c.public;
+        let mut machine = machine.refusing(c.refused).public(c.public);
+        if public {
+            machine = machine.first_phase_until(pe.timeout.saturating_add(PHASE_S));   // v338: the room fills while its announcement is open (+ one step), as the public code waits
+        }
         let pool_x = hex::encode(pool_sk.x_only_public_key(&Secp256k1::new()).0.serialize());
         let mut p = Phone {
             attempt_id: c.attempt_id,
@@ -308,13 +462,25 @@ impl Phone {
             record_saved: false,
             signed: false,
             done: false,
+            public,
+            joiners: Vec::new(),
+            creator: false,
         };
         let out = p.act(acts, c.now)?;
         Ok((p, out))
     }
 
+    /// v336: a public pool (created here, or joined by the public handshake).
+    pub fn is_public(&self) -> bool {
+        self.public
+    }
+
     pub fn attempt_id(&self) -> &str {
         &self.attempt_id
+    }
+
+    fn machine_peers(&self) -> usize {
+        self.machine.peers()
     }
 
     /// The attempt record's id (the pool's id).
@@ -411,6 +577,7 @@ impl Phone {
             }
         }
         out.phase = self.phase_word();
+        out.members = self.machine.registered();
         Ok(out)
     }
 
@@ -423,6 +590,26 @@ impl Phone {
             Err(_) => return Ok(Out { phase: self.phase_word(), ..Default::default() }),      // not a pool message: ignored (S1)
         };
         let (from, json) = opened;
+        // v336 (Phase 2a): a public pool's CREATOR answers `join_pool` — the public code's handshake (peer.rs answer_join,
+        // the creator alone: it holds the pool_sender): the pool's key to every asker while seats remain, the same answer
+        // to an asker heard again (the relay replays), "pool is full" once peers − 1 are given. The joiners, who hold
+        // the key too, say nothing (as the public code's joiners). The machine ignores the message (S1).
+        if self.public && self.creator && matches!(Envelope::parse_strict(&json).map(|e| e.msg), Ok(Msg::JoinPool {})) {
+            if !self.joiners.contains(&from) && self.joiners.len() + 1 < self.machine_peers() {
+                self.joiners.push(from);
+            }
+            let reply = if self.joiners.contains(&from) {
+                Msg::Credentials { credentials: joinstr_v2::msg::Credentials { id: self.pool_id.clone(), key: hex::encode(self.pool_sk.secret_bytes()) } }
+            } else {
+                Msg::Reject { reason: "pool is full".into() }
+            };
+            let iv: [u8; 16] = self.next("creds-iv")[..16].try_into().expect("16 bytes");
+            let e = wire::seal(&self.pool_sk, &hex::encode(from), &Envelope::json(reply), now, &iv)?;
+            return Ok(Out { relay: vec![serde_json::to_string(&e)?], phase: self.phase_word(), ..Default::default() });
+        }
+        if self.public && !self.creator && matches!(Envelope::parse_strict(&json).map(|e| e.msg), Ok(Msg::JoinPool {})) {
+            return Ok(Out { phase: self.phase_word(), ..Default::default() });
+        }
         self.collect_witnesses(&json);
         let acts = self.machine.on(Input::Msg { from, json });
         let mut out = self.act(acts, now)?;
@@ -485,6 +672,14 @@ impl Phone {
     /// Phase 1b: the channel could not be opened, funded or kept — the attempt stops (nothing moved, nobody named).
     pub fn channel_failed(&mut self, why: &str, now: u64) -> Result<Out> {
         let acts = self.machine.on(Input::ChannelFailed(why.to_string()));
+        self.act(acts, now)
+    }
+
+    /// v339: this phone leaves the pool on purpose (before its coin signature): the members are told (an abort), the
+    /// attempt stops with nothing moved and nobody named; the Out carries the stop (the record wiped if written).
+    pub fn leave(&mut self, now: u64) -> Result<Out> {
+        if self.signed || self.done { return Ok(Out { phase: self.phase_word(), ..Default::default() }); }
+        let acts = self.machine.on(Input::Leave);
         self.act(acts, now)
     }
 
@@ -677,6 +872,165 @@ mod tests {
             room.handle(i, o);
         }
         room
+    }
+
+    // ── v336 (Phase 2a): public pools — the public code's handshake inside the engine ────────────────────────────────
+
+    fn public_common(i: u32, peers: usize, value: u64) -> Common {
+        let mut c = common(i, peers, value);
+        c.public = true;
+        c.declared = Declared { sizes: vec![100_000], max_fee_sat_vb: 3, relay: "wss://relay.example".into(), network: "bitcoin".into(), max_timeout_s: 3_600 };
+        c
+    }
+
+    /// The creator's answer to one join request, from its Out (the credentials event, tagged to the asker).
+    fn answer(creator: &mut Phone, join_out: &Out) -> Vec<String> {
+        let mut answers = Vec::new();
+        for e in &join_out.relay {
+            let o = creator.relay_event(e, NOW).unwrap();
+            answers.extend(o.relay);
+        }
+        answers
+    }
+
+    /// A public pool of n: the creator announces on the relay, the others join by `join_pool` → `credentials`, then
+    /// the pool runs to the complete funding as a provider's pool does.
+    fn public_pool(n: usize) -> Room {
+        let values: Vec<u64> = (0..n).map(|i| 100_000 + 5_000 + 20_000 * (i as u64 % 2)).collect();
+        let (mut creator, ann, out0) = Phone::create_public(public_common(0, n, values[0]), 2).unwrap();
+        let e: Event = serde_json::from_str(&ann).unwrap();
+        assert!(e.tags.is_empty(), "a public announcement names no seats");
+        assert!(creator.is_public());
+        let mut phones = Vec::new();
+        let mut outs = vec![out0];
+        for i in 1..n {
+            let (j, jo) = PublicJoin::new(public_common(i as u32, n, values[i]), &ann).unwrap();
+            assert_eq!(jo.phase, "joining");
+            assert_eq!(jo.relay.len(), 1, "one join request");
+            let answers = answer(&mut creator, &jo);
+            assert_eq!(answers.len(), 1, "one credentials event");
+            // the request itself, echoed by the relay, is not the answer
+            let j = match j.relay_event(&jo.relay[0], NOW).unwrap() { Joined::Waiting(j) => j, _ => panic!("the echo is not the credentials") };
+            match j.relay_event(&answers[0], NOW).unwrap() {
+                Joined::Phone(p, o) => { assert_eq!(o.phase, "registering"); phones.push(p); outs.push(o); }
+                _ => panic!("the credentials start the phone"),
+            }
+        }
+        let mut room = Room { phones: vec![creator], queue: VecDeque::new(), complete: vec![None; n], signed: vec![false; n], stops: vec![None; n], saved: vec![None; n], bad_coin: None, lost_payout: None, deaf: None };
+        room.phones.extend(phones);
+        for (i, o) in outs.into_iter().enumerate() {
+            room.handle(i, o);
+        }
+        room
+    }
+
+    #[test]
+    fn p2a_a_public_pool_forms_by_the_public_handshake_and_runs_to_the_complete_funding() {
+        for n in [3usize, 5] {
+            let mut room = public_pool(n);
+            room.run();
+            assert!(room.stops.iter().all(|s| s.is_none()), "no stop: {:?}", room.stops);
+            assert!(room.signed.iter().all(|s| *s), "every phone signed its coin");
+            let c0 = room.complete[0].clone().expect("the funding completes");
+            for c in &room.complete { assert_eq!(c.as_ref(), Some(&c0), "every phone completes the same funding"); }
+            let f: Transaction = deserialize_hex(&c0.funding_hex).unwrap();
+            assert_eq!(f.input.len(), n);
+            assert_eq!(c0.exits_hex.len(), n - 1);
+        }
+    }
+
+    #[test]
+    fn p2a_a_public_phone_waits_for_the_room_to_fill_until_the_announcements_timeout() {
+        let n = 3;
+        let (mut creator, ann, _) = Phone::create_public(public_common(0, n, 120_000), 2).unwrap();
+        // a LiJ pool's creator times out PHASE_S after its registration; the public one waits the announcement's hour + a step
+        let seats: Vec<SecretKey> = (0..n as u32).map(|i| sk("seat", i)).collect();
+        let others: Vec<String> = seats[1..].iter().map(|k| hex::encode(xonly(k))).collect();
+        let (mut lij, _, _) = Phone::create(common(0, n, 120_000), 2, &others).unwrap();
+        assert!(lij.tick(NOW + PHASE_S + 1).unwrap().stopped.is_some(), "a LiJ creator alone stops after PHASE_S");
+        assert!(creator.tick(NOW + PHASE_S + 1).unwrap().stopped.is_none(), "a public creator waits");
+        assert!(creator.tick(NOW + 3_000).unwrap().stopped.is_none());
+        let e: Event = serde_json::from_str(&ann).unwrap();
+        let pe = PoolEvent::parse_strict(&e.content).unwrap();
+        assert!(creator.tick(pe.timeout + PHASE_S + 1).unwrap().stopped.is_some(), "the announcement's timeout + one step");
+    }
+
+    #[test]
+    fn p2a_leaving_a_public_room_while_it_fills_tells_the_others_and_frees_the_seat() {
+        let n = 3;
+        let (mut creator, ann, _) = Phone::create_public(public_common(0, n, 120_000), 2).unwrap();
+        let (j1, j1o) = PublicJoin::new(public_common(1, n, 120_000), &ann).unwrap();
+        let a1 = answer(&mut creator, &j1o);
+        let Joined::Phone(mut joiner, _) = j1.relay_event(&a1[0], NOW).unwrap() else { panic!("joined") };
+        let o = joiner.leave(NOW + 5).unwrap();
+        assert_eq!(o.relay.len(), 0, "a joiner the relay has not echoed yet is not registered in its own machine — nothing to abort");
+        assert!(o.stopped.as_ref().map_or(false, |s| s.reason.contains("left") && s.named_coins.is_empty()), "{:?}", o.stopped);
+        assert_eq!(o.phase, "stopped");
+        // the creator, registered (its own registration echoed), leaves: the abort goes to the room
+        let (mut host, _, o0) = Phone::create_public(public_common(6, n, 120_000), 2).unwrap();
+        let echoed = host.relay_event(&o0.relay[0], NOW + 1).unwrap(); assert!(echoed.stopped.is_none());
+        let o = host.leave(NOW + 5).unwrap();
+        assert_eq!(o.relay.len(), 1, "the abort");
+        assert!(o.stopped.as_ref().map_or(false, |s| s.reason.contains("left")));
+        assert!(host.leave(NOW + 6).unwrap().stopped.is_none(), "a second leave is nothing");
+    }
+
+    #[test]
+    fn p2a_the_creator_answers_peers_minus_one_askers_once_each_and_nobody_after() {
+        let n = 3;
+        let (mut creator, ann, _) = Phone::create_public(public_common(0, n, 120_000), 2).unwrap();
+        let (j1, j1o) = PublicJoin::new(public_common(1, n, 120_000), &ann).unwrap();
+        let (_, j2) = PublicJoin::new(public_common(2, n, 120_000), &ann).unwrap();
+        let (j3, j3o) = PublicJoin::new(public_common(3, n, 120_000), &ann).unwrap();
+        let a1 = answer(&mut creator, &j1o);
+        assert_eq!(a1.len(), 1);
+        assert_eq!(answer(&mut creator, &j1o).len(), 0, "the relay's replay of a request: seen already, no second answer");
+        assert_eq!(answer(&mut creator, &j2).len(), 1);
+        let full = answer(&mut creator, &j3o);
+        assert_eq!(full.len(), 1, "the seats are given: a third asker is told the pool is full (the public code's reject)");
+        assert!(matches!(j3.relay_event(&full[0], NOW).unwrap(), Joined::Rejected));
+        // a joiner that holds the key says nothing to a join request (the public code's joiners have no pool_sender)
+        let Joined::Phone(mut joiner, _) = j1.relay_event(&a1[0], NOW).unwrap() else { panic!("joined") };
+        assert_eq!(answer(&mut joiner, &j2).len(), 0, "a joiner ignores join_pool");
+        // a provider's pool (not public) never answers a join request
+        let seats: Vec<SecretKey> = (0..n as u32).map(|i| sk("seat", i)).collect();
+        let others: Vec<String> = seats[1..].iter().map(|k| hex::encode(xonly(k))).collect();
+        let (mut lij, _, _) = Phone::create(common(0, n, 120_000), 2, &others).unwrap();
+        assert!(!lij.is_public());
+        assert_eq!(answer(&mut lij, &j1o).len(), 0, "a LiJ pool ignores join_pool (S1)");
+    }
+
+    #[test]
+    fn p2a_a_public_join_checks_the_pool_before_it_sends_and_refuses_a_providers_pool() {
+        let n = 3;
+        let (_, ann, _) = Phone::create_public(public_common(0, n, 120_000), 2).unwrap();
+        let mut wrong_size = public_common(1, n, 120_000);
+        wrong_size.size = 50_000;
+        wrong_size.declared.sizes = vec![50_000];
+        assert!(PublicJoin::new(wrong_size, &ann).err().expect("refused").to_string().contains("size"), "the size");
+        let mut too_dear = public_common(1, n, 120_000);
+        too_dear.rate_at_join = 1;
+        too_dear.declared.max_fee_sat_vb = 1;
+        assert!(PublicJoin::new(too_dear, &ann).is_err(), "a 2 sat/vB pool against a 1 sat/vB cap");
+        let mut not_public = public_common(1, n, 120_000);
+        not_public.public = false;
+        assert!(PublicJoin::new(not_public, &ann).err().expect("refused").to_string().contains("public seat"));
+        // a provider's announcement (lij_key tags) is not joined by the handshake
+        let seats: Vec<SecretKey> = (0..n as u32).map(|i| sk("seat", i)).collect();
+        let others: Vec<String> = seats[1..].iter().map(|k| hex::encode(xonly(k))).collect();
+        let (_, lij_ann, _) = Phone::create(common(0, n, 120_000), 2, &others).unwrap();
+        assert!(PublicJoin::new(public_common(1, n, 120_000), &lij_ann).err().expect("refused").to_string().contains("provider"));
+        // a tampered announcement
+        let mut e: Event = serde_json::from_str(&ann).unwrap();
+        e.content = e.content.replace("\"peers\":3", "\"peers\":4");
+        assert!(PublicJoin::new(public_common(1, 4, 120_000), &serde_json::to_string(&e).unwrap()).is_err(), "the signature no longer holds");
+        // the wait
+        let (j, _) = PublicJoin::new(public_common(1, n, 120_000), &ann).unwrap();
+        assert!(j.timed_out(NOW + 30).is_none());
+        assert!(j.timed_out(NOW + JOIN_WAIT_S + 1).is_some());
+        let f: serde_json::Value = serde_json::from_str(&j.relay_filter()).unwrap();
+        assert_eq!(f["kinds"], serde_json::json!([4]));
+        assert_eq!(f["#p"][0], hex::encode(xonly(&secret(&public_common(1, n, 120_000).entropy, "public-join", 0).unwrap())), "the filter names the join's own key");
     }
 
     #[test]

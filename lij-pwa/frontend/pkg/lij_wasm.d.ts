@@ -402,6 +402,13 @@ export class LijWalletHandle {
      */
     mix_attempt_coin(attempt_id: string, ask: string, answer: string): string;
     /**
+     * v336 (Phase 2a): a coin check with no provider — this wallet's own explorers (the independent quorum) answer
+     * for one coin the Out asked about: known and confirmed, the output as registered (value and script), unspent.
+     * No answer from the explorers = no answer (the attempt stops naming no one, as with a provider's silence).
+     * Answers the Out JSON after the result reaches the attempt.
+     */
+    mix_attempt_coin_quorum(attempt_id: string, ask: string): Promise<any>;
+    /**
      * The creating phone ("create" notice): `start` JSON {"seat_pk","attempt_id","size","peers","relay","sizes",
      * "max_fee_sat_vb","refused"?}, the pool's fee rate, and the other opened seats' keys (JSON array). Answers {"out",
      * "announcement","relay_filter","pool_pk"} — the page hands the announcement to the provider (announce), then joins
@@ -422,6 +429,12 @@ export class LijWalletHandle {
      * "relay_filter","pool_pk"} — or the refusal in plain words (a pool not the provider's, fees above the limit…).
      */
     mix_attempt_join(start: string, announcement: string): string;
+    /**
+     * v339 (DP 2026-10-14 22:29): this phone leaves a running attempt on purpose — before its coin signature. The
+     * members are told at once (an abort), the attempt stops with nothing moved and nobody named; the record, if
+     * written, is wiped. Answers the Out JSON (its `stopped`). After the coin signature nothing happens.
+     */
+    mix_attempt_leave(attempt_id: string): string;
     /**
      * Phase 1b (v0.10 §6.2.1; step 11a): the answer to an Out's `open_channel` — the opened channel's funding script
      * (P2WSH, hex) is this phone's payout; the registration goes out.
@@ -495,6 +508,37 @@ export class LijWalletHandle {
      * is read. Answers the notice (JSON, "type" first) or an error.
      */
     mix_notice(seat_pk: string, body: string, sig: string): string;
+    /**
+     * v336: a public seat creates a pool on its relay — `peers` people, `fee_rate_sat_vb` (within the seat's own fee
+     * limit). Answers {"out", "announcement" (post it on the relay as ["EVENT", e]), "relay_filter", "attempt_id",
+     * "pool_id", "pool_pk", "note"}; the phone answers the join requests itself through mix_attempt_event.
+     */
+    mix_public_create(seat_pk: string, relay: string, fee_rate_sat_vb: number, peers: number): string;
+    /**
+     * v336: an event read under a public join's filter. Answers {"joined": bool, "rejected": bool, "out", and when
+     * joined "relay_filter" (the pool's — switch the subscription) and "pool_pk"}; once joined the attempt runs through
+     * mix_attempt_event / mix_attempt_tick as any other. A join that is neither is still waiting.
+     */
+    mix_public_event(attempt_id: string, event: string): string;
+    /**
+     * v336 (Phase 2a): a public seat joins a pool the page found on its relay (a signed kind-2022 event: the public
+     * Joinstr code's, or another LiJ's public pool). The engine checks the pool against the seat before anything is
+     * sent (its size, the fee limit, the network, its timeout; a provider's pool is refused — that goes through the
+     * provider), then answers {"out" (the join request to post), "relay_filter" (the join's own key: subscribe to it),
+     * "attempt_id", "pool_id", "pool_pk", "note"}. The credentials then come through mix_public_event.
+     */
+    mix_public_join(seat_pk: string, relay: string, pool_event: string): string;
+    /**
+     * v336: what a pool announcement the page found on a public relay says (the engine's strict parse: a pool it would
+     * refuse is an error here, so the page lists only pools it can join) — {"id","pool_pk","peers","denomination",
+     * "fee_rate","timeout","network","lij"}.
+     */
+    mix_public_peek(pool_event: string): string;
+    /**
+     * v336: a public join's clock — answers the reason (and forgets the join) when it has waited too long or the pool's
+     * own time ran out; null while it may still be answered.
+     */
+    mix_public_timed_out(attempt_id: string): any;
     /**
      * v325: what Join shows — `req` JSON {"size","coins":[["txid",vout]…],"fee_rate_sat_vb","peers"}: {"size","coin_sats",
      * "fee_sats","change_sats","covers","need_at_limit_sats","peers","fee_rate_sat_vb"} (covers = the coins cover the
@@ -1303,10 +1347,12 @@ export interface InitOutput {
     readonly lijwallethandle_mix_attempt_channel_open: (a: number, b: number, c: number, d: bigint) => [number, number, number, number];
     readonly lijwallethandle_mix_attempt_channel_saved: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_mix_attempt_coin: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_attempt_coin_quorum: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly lijwallethandle_mix_attempt_create: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly lijwallethandle_mix_attempt_end: (a: number, b: number, c: number) => number;
     readonly lijwallethandle_mix_attempt_event: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly lijwallethandle_mix_attempt_join: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_attempt_leave: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_mix_attempt_payout: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly lijwallethandle_mix_attempt_tick: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_mix_bump: (a: number, b: number, c: number, d: bigint) => any;
@@ -1319,6 +1365,11 @@ export interface InitOutput {
     readonly lijwallethandle_mix_keep_out: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_mix_keep_out_quote: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_mix_notice: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_public_create: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_public_event: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_public_join: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_public_peek: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_public_timed_out: (a: number, b: number, c: number) => [number, number, number];
     readonly lijwallethandle_mix_quote: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_mix_reconcile: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_mix_record_wipe: (a: number, b: number, c: number) => [number, number, number];
@@ -1433,8 +1484,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_198: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_199: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_205: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_206: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

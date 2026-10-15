@@ -386,6 +386,45 @@ fn s3_a_public_pool_signs_without_a_view_from_its_public_members_a_lij_pool_wait
     assert!(pub_.stops.is_empty());
 }
 
+/// v338: a public room's registration phase lasts until the deadline it was given (the announcement's timeout + one
+/// step), not PHASE_S; the later phases keep the phase clock.
+#[test]
+fn s3_a_public_rooms_registration_phase_waits_until_its_own_deadline() {
+    let id = hex::encode(&tagged("lij/test/pool", &[&7u32.to_le_bytes()])[..16]);
+    let params = Params::new(&id, D, 3, RATE * 1000);
+    let (lone, _) = Attempt::new(params.clone(), Network::Bitcoin, my_part(0), 1_000, Timeouts { phase_s: 600 }).unwrap();
+    let mut lone = lone.public(true).first_phase_until(5_000);
+    assert!(lone.on(Input::Tick { now: 1_700 }).is_empty(), "past PHASE_S, still waiting");
+    assert!(lone.on(Input::Tick { now: 4_900 }).is_empty());
+    let acts = lone.on(Input::Tick { now: 5_001 });
+    assert!(acts.iter().any(|a| matches!(a, Action::Stopped { reason, .. } if reason.contains("timed out at Inputs"))), "{acts:?}");
+    // a shorter deadline than the phase clock changes nothing
+    let (lone2, _) = Attempt::new(params, Network::Bitcoin, my_part(0), 1_000, Timeouts { phase_s: 600 }).unwrap();
+    let mut lone2 = lone2.public(true).first_phase_until(1_100);
+    assert!(lone2.on(Input::Tick { now: 1_500 }).is_empty(), "the phase clock (1_600) still stands");
+}
+
+/// v339: a member leaves on purpose — before its signature the others hear an abort and stop (no one named); after the
+/// funding signature a leave does nothing.
+#[test]
+fn a_member_who_leaves_stops_the_pool_for_everyone_and_names_no_one_but_cannot_leave_once_signed() {
+    let mut net = Net::new(3).public();
+    net.tamper = Some(Box::new(|i, json| if i == 2 && json.contains("\"nonces\"") { Some(vec![]) } else { None }));   // member 2 holds the pool at View
+    net.run();
+    assert!(net.signed.is_empty() && net.stops.is_empty());
+    let acts = net.phones[2].on(Input::Leave);
+    assert!(acts.iter().any(|a| matches!(a, Action::Post(j) if j.contains("\"abort\""))), "the abort goes out: {acts:?}");
+    assert!(acts.iter().any(|a| matches!(a, Action::Stopped { reason, named } if reason.contains("left") && named.is_empty())));
+    net.act(2, acts); net.run();
+    let others: Vec<_> = net.stops.iter().filter(|(i, _, _)| *i != 2).collect();
+    assert!(others.len() == 2 && others.iter().all(|(_, r, n)| r.contains("a member stopped the pool") && n.is_empty()), "{:?}", net.stops);
+    // once signed: a leave is nothing
+    let mut done = Net::new(3);
+    done.run();
+    assert_eq!(done.signed.len(), 3);
+    assert!(done.phones[0].on(Input::Leave).is_empty(), "no leaving after the coin signature");
+}
+
 /// A LiJ member's view still counts in a public pool: a different hash stops the pool, no one named.
 #[test]
 fn s3_a_public_pool_still_stops_on_a_lij_members_differing_view() {

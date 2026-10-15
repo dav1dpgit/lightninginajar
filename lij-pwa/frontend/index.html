@@ -697,7 +697,7 @@ a:hover { color: var(--color-accent-700); }
     <section style="border-bottom: 2px solid var(--color-text); padding: clamp(48px, 6vw, 96px) clamp(20px, 4vw, 56px);" aria-labelledby="h-feat">
       <div style="max-width: 1440px; margin: 0 auto; display: flex; flex-direction: column; gap: clamp(28px, 3vw, 44px);">
         <h2 id="h-feat" style="font-family: var(--font-heading); font-weight: 900; font-size: clamp(28px, 3.4vw, 48px); line-height: 0.95; letter-spacing: -0.03em; text-transform: uppercase;">It also does these</h2>
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: clamp(16px, 2vw, 28px); grid-auto-rows: 1fr;"><!-- DP: the three boxes share one height, the tallest's, at every width -->
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: clamp(16px, 2vw, 28px); grid-auto-rows: 1fr;"><!-- DP: the boxes share one height, the tallest's, at every width (four since S59: the Mix box, DP 2026-10-14 21:05) -->
           <div style="border: 2px solid var(--color-text); padding: clamp(24px, 2.4vw, 36px); display: flex; flex-direction: column; gap: 12px; background: var(--color-bg);">
             <h3 style="font-family: var(--font-heading); font-weight: 900; font-size: clamp(20px, 1.8vw, 26px); line-height: 1.1; letter-spacing: -0.02em; text-transform: uppercase; min-height: 2.2em;">Merchant register mode</h3>
             <p style="color: var(--color-neutral-700);">One tap turns the wallet into a customer-facing display for your counter: a QR to pay, the amount in sats and your currency, and a clear “paid” the instant it lands. Japanese and English.</p>
@@ -709,6 +709,10 @@ a:hover { color: var(--color-accent-700); }
           <div style="border: 2px solid var(--color-text); padding: clamp(24px, 2.4vw, 36px); display: flex; flex-direction: column; gap: 12px; background: var(--color-bg);">
             <h3 style="font-family: var(--font-heading); font-weight: 900; font-size: clamp(20px, 1.8vw, 26px); line-height: 1.1; letter-spacing: -0.02em; text-transform: uppercase; min-height: 2.2em;">Delegate payments</h3>
             <p style="color: var(--color-neutral-700);">Hand someone a chit to pay a bill on your behalf, up to a limit you set, without handing over the wallet.</p>
+          </div>
+          <div style="border: 2px solid var(--color-text); padding: clamp(24px, 2.4vw, 36px); display: flex; flex-direction: column; gap: 12px; background: var(--color-bg);"><!-- S59 (DP 2026-10-14 21:05): the fourth box — Tatara Mix on Joinstr -->
+            <h3 style="font-family: var(--font-heading); font-weight: 900; font-size: clamp(20px, 1.8vw, 26px); line-height: 1.1; letter-spacing: -0.02em; text-transform: uppercase; min-height: 2.2em;">Combine for privacy</h3>
+            <p style="color: var(--color-neutral-700);">Coordinate group transactions across LIJOX and Joinstr.</p>
           </div>
         </div>
       </div>

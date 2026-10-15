@@ -19,14 +19,14 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use bitcoin::{Address, Amount, CompressedPublicKey, Network, OutPoint, ScriptBuf, TxOut, Txid};
-use joinstr_v2::msg::{Envelope, Msg, PoolEvent};
+use joinstr_v2::msg::PoolEvent;
 
 use super::caps::Declared;
-use super::phone::{Common, Phone, Out, ANNOUNCE_KIND};
-use super::{tagged, wire};
-use crate::nwc::{self, Event};
+use super::phone::{Common, Joined, Phone, PublicJoin, Out, ANNOUNCE_KIND};
+use super::tagged;
+use crate::nwc::Event;
 
 fn now_s() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() }
 fn env(k: &str) -> Option<String> { std::env::var(k).ok().filter(|v| !v.is_empty()) }
@@ -79,15 +79,6 @@ fn sk(label: &str, i: u32) -> SecretKey { SecretKey::from_slice(&tagged("lij/jpr
 
 /// The pool's secret handed over as the public code does it: a `credentials` message sealed from the pool key to the
 /// joiner's key (NIP-04), tagged with the joiner's key.
-fn seal_to(author: &SecretKey, to_hex: &str, json: &str, created_at: u64, iv: [u8; 16]) -> Event {
-    let to = nwc::pubkey_from_hex(to_hex).unwrap();
-    let content = nwc::nip04_encrypt_with_iv(&nwc::ecdh_x(author, &to).unwrap(), &iv, json).unwrap();
-    nwc::sign_event(author, created_at, wire::KIND, vec![vec!["p".into(), to_hex.to_string()]], content)
-}
-fn open_from(me: &SecretKey, from_hex: &str, content: &str) -> Option<String> {
-    let from = nwc::pubkey_from_hex(from_hex).ok()?;
-    nwc::nip04_decrypt(&nwc::ecdh_x(me, &from).ok()?, content).ok()
-}
 
 struct Harness { relay: Relay, esplora: String, coin_sk: SecretKey, coin: (OutPoint, TxOut) }
 impl Harness {
@@ -130,10 +121,9 @@ impl Harness {
     }
     /// The page's loop: post what the phone says, answer its coin checks, save its record, tick, read the relay —
     /// until the funding is complete (then broadcast it and the exits) or the phone stops.
-    fn drive(&mut self, phone: &mut Phone, mut out: Out, pool_sk: Option<&SecretKey>, pool_pk_hex: &str, pool_id: &str, deadline_s: u64) -> super::phone::Complete {
+    fn drive(&mut self, phone: &mut Phone, mut out: Out, deadline_s: u64) -> super::phone::Complete {
         let start = Instant::now();
         let mut seen = HashSet::new();
-        let mut joiners_answered = 0usize;
         let mut last_tick = Instant::now();
         loop {
             // what the phone says
@@ -155,24 +145,6 @@ impl Harness {
             for ev_json in self.relay.drain() {
                 let ev: Event = match serde_json::from_str(&ev_json) { Ok(e) => e, Err(_) => continue };
                 if !seen.insert(ev.id.clone()) { continue; }
-                // the public handshake, which the machine does not know: a join_pool to the pool key → credentials back
-                if let Some(psk) = pool_sk {
-                    if ev.kind == wire::KIND && ev.tags.iter().any(|t| t.len() >= 2 && t[0] == "p" && t[1] == pool_pk_hex) {
-                        if let Some(json) = open_from(psk, &ev.pubkey, &ev.content) {
-                            if let Ok(env) = serde_json::from_str::<Envelope>(&json) {
-                                if matches!(env.msg, Msg::JoinPool {}) {
-                                    joiners_answered += 1;
-                                    let cred = Envelope::json(Msg::Credentials { credentials: joinstr_v2::msg::Credentials { id: pool_id.into(), key: hex::encode(psk.secret_bytes()) } });
-                                    let iv: [u8; 16] = tagged("lij/jproof/iv", &[ev.id.as_bytes()])[..16].try_into().unwrap();
-                                    let e = seal_to(psk, &ev.pubkey, &cred, now_s(), iv);
-                                    self.relay.post(&serde_json::to_string(&e).unwrap());
-                                    eprintln!("[lij] answered a join request ({joiners_answered})");
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-                }
                 let o = phone.relay_event(&ev_json, now_s()).unwrap();
                 out.merge(o);
             }
@@ -210,47 +182,34 @@ fn jproof_join() {
     };
     let (ann_ev, pe) = pe;
     assert_eq!(ann_ev.pubkey, pe.public_key, "the announcement's author is the pool key (its nostr x-only key, as the public code writes it)");
-    // 2. join_pool → credentials (the public handshake)
-    let eph = sk("eph", 1);
-    let eph_x = wire::xonly_hex(&eph);
-    h.relay.req("dm", serde_json::json!({ "kinds": [wire::KIND], "#p": [eph_x] }));
-    let iv: [u8; 16] = tagged("lij/jproof/join-iv", &[&now_s().to_le_bytes()])[..16].try_into().unwrap();
-    let jp = wire::seal(&eph, &pe.public_key, &Envelope::json(Msg::JoinPool {}), now_s(), &iv).unwrap();
-    h.relay.post(&serde_json::to_string(&jp).unwrap());
-    let pool_sk = loop {
+    // 2. the engine's own public path (v336): PublicJoin sends join_pool and turns the credentials into the phone
+    let c = h.common(pe.peers, rate_at_join, &relay_url);
+    let (join, out) = match PublicJoin::new(c, &serde_json::to_string(&ann_ev).unwrap()) {
+        Ok(x) => x,
+        Err(e) => panic!("PublicJoin refused the public pool: {e:#}"),
+    };
+    h.relay.req("dm", serde_json::from_str(&join.relay_filter()).unwrap());
+    for e in &out.relay { h.relay.post(e); }
+    let mut join = Some(join);
+    let (mut phone, out) = loop {
         let mut got = None;
         for ev_json in h.relay.drain() {
-            let ev: Event = match serde_json::from_str(&ev_json) { Ok(e) => e, Err(_) => continue };
-            if ev.kind != wire::KIND || ev.pubkey != ann_ev.pubkey { continue; }
-            let Some(json) = open_from(&eph, &ev.pubkey, &ev.content) else { continue };
-            match Envelope::parse_strict(&json) {
-                Ok(Envelope { msg: Msg::Credentials { credentials }, .. }) => { assert_eq!(credentials.id, pe.id); got = Some(SecretKey::from_slice(&hex::decode(&credentials.key).unwrap()).unwrap()); }
-                Ok(Envelope { msg: Msg::Reject { reason }, .. }) => panic!("the pool rejected us: {reason}"),
-                Ok(_) => {}
-                Err(e) => panic!("the credentials message fails our strict parser: {e:#}"),
+            let Some(j) = join.take() else { break };
+            match j.relay_event(&ev_json, now_s()).unwrap() {
+                Joined::Phone(p, o) => { got = Some((p, o)); }
+                Joined::Waiting(j) => { join = Some(j); }
+                Joined::Rejected => panic!("the pool rejected us"),
             }
         }
-        if let Some(k) = got { break k; }
+        if let Some(x) = got { break x; }
+        if let Some(why) = join.as_ref().and_then(|j| j.timed_out(now_s())) { panic!("{why}"); }
         assert!(start.elapsed().as_secs() < 120, "no credentials");
         std::thread::sleep(Duration::from_millis(200));
     };
-    assert_eq!(hex::encode(pool_sk.x_only_public_key(&Secp256k1::new()).0.serialize()), pe.public_key, "the credentials carry the pool's key");
-    eprintln!("[lij] joined pool {}", pe.id);
-    // 3. the phone: the public announcement re-sealed for this seat (what the public path will do inside the engine)
-    let seat = sk("seat", 1);
-    let seat_x = wire::xonly_hex(&seat);
-    let shared = nwc::ecdh_x(&pool_sk, &nwc::pubkey_from_hex(&seat_x).unwrap()).unwrap();
-    let sealed = nwc::nip04_encrypt_with_iv(&shared, &iv, &hex::encode(pool_sk.secret_bytes())).unwrap();
-    let ann = nwc::sign_event(&pool_sk, now_s(), ANNOUNCE_KIND, vec![vec!["lij_key".into(), seat_x, sealed]], ann_ev.content.clone());
-    let c = h.common(pe.peers, rate_at_join, &relay_url);
-    let (mut phone, out) = match Phone::join(c, &serde_json::to_string(&ann).unwrap(), &seat) {
-        Ok(x) => x,
-        Err(e) => panic!("Phone::join refused the public pool: {e:#}"),
-    };
+    assert!(phone.is_public());
+    eprintln!("[lij] joined pool {} (the engine's public path)", pe.id);
     h.relay.req("pool", serde_json::from_str(&phone.relay_filter()).unwrap());
-    let pool_x = hex::encode(pool_sk.x_only_public_key(&Secp256k1::new()).0.serialize());
-    let pool_id = pe.id.clone();
-    let complete = h.drive(&mut phone, out, None, &pool_x, &pool_id, 300);
+    let complete = h.drive(&mut phone, out, 300);
     eprintln!("[lij] complete: the funding {} and {} exits", phone.funding_txid().unwrap(), complete.exits_hex.len());
     assert_eq!(complete.exits_hex.len(), pe.peers - 1);
 }
@@ -264,18 +223,15 @@ fn jproof_create() {
     let rate: u64 = env("JPROOF_RATE").map(|v| v.parse().expect("a created pool's rate is whole sat/vB (a provider's pool)")).unwrap_or(2);
     let peers: usize = env("JPROOF_PEERS").map(|v| v.parse().unwrap()).unwrap_or(3);
     let c = h.common(peers, rate, &relay_url);
-    // the other seats: the engine seals the pool key to each — for the public members those copies go unused; the
-    // credentials go through the public handshake (the engine's public path will make the announcement without them)
-    let others: Vec<String> = (0..peers - 1).map(|i| wire::xonly_hex(&sk("other", i as u32))).collect();
-    let (mut phone, ann, out) = Phone::create(c, rate, &others).unwrap();
+    // v336: the engine's public pool — no seats named; the phone answers the public members' join requests itself
+    let (mut phone, ann, out) = Phone::create_public(c, rate).unwrap();
     let ann_ev: Event = serde_json::from_str(&ann).unwrap();
-    let (pe, pool_sk) = super::phone::open_announcement(&ann, &sk("other", 0)).unwrap();
-    eprintln!("[lij] created pool {} ({} peers, {} sats, {} sat/vB)", pe.id, pe.peers, pe.denomination, pe.fee_rate);
+    assert!(ann_ev.tags.is_empty(), "a public announcement names no seats");
+    let pe = PoolEvent::parse_strict(&ann_ev.content).unwrap();
+    eprintln!("[lij] created pool {} ({} peers, {} sats, {} sat/vB) — the engine's public path", pe.id, pe.peers, pe.denomination, pe.fee_rate);
     h.relay.post(&serde_json::to_string(&ann_ev).unwrap());
-    let pool_x = ann_ev.pubkey.clone();
     h.relay.req("pool", serde_json::from_str(&phone.relay_filter()).unwrap());
-    let pool_id = pe.id.clone();
-    let complete = h.drive(&mut phone, out, Some(&pool_sk), &pool_x, &pool_id, 300);
+    let complete = h.drive(&mut phone, out, 300);
     eprintln!("[lij] complete: the funding {} and {} exits", phone.funding_txid().unwrap(), complete.exits_hex.len());
     assert_eq!(complete.exits_hex.len(), peers - 1);
 }

@@ -15,7 +15,7 @@ use crate::nwc::{ecdh_x, nip04_decrypt, nip04_encrypt_with_iv, pubkey_from_hex, 
 pub const KIND: u32 = 4;
 
 /// The most an event's content may carry: a capped message, base64 (4/3) after AES-CBC padding, plus the "?iv=" part.
-const MAX_CONTENT: usize = (MAX_MESSAGE_BYTES + 16) * 4 / 3 + 64;
+pub const MAX_CONTENT: usize = (MAX_MESSAGE_BYTES + 16) * 4 / 3 + 64;   // v336: PublicJoin reads it
 
 /// Seal a pool message: encrypted to the pool's key by `author` (the session key, or a one-time key for a payout),
 /// tagged with the pool's key, signed by `author`. `iv` comes from the engine's random source.

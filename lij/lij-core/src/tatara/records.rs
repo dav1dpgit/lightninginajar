@@ -60,6 +60,9 @@ pub struct StoredRecord {
     /// bump.rs then reads the rate from the first exit's own fee.
     #[serde(default)]
     pub rate_sat_vb: Option<u64>,
+    /// v337 (Phase 2a): the pool was a public one (store::after writes it from the phone) — the record's card says so.
+    #[serde(default)]
+    pub public: bool,
 }
 
 impl StoredRecord {
@@ -77,6 +80,7 @@ impl StoredRecord {
             change_index: change.map(|(_, i)| i),
             channel: r.channel,
             rate_sat_vb: (r.rate_milli / 1000 > 0).then_some(r.rate_milli / 1000),
+            public: false,
         }
     }
 
@@ -307,7 +311,7 @@ pub(crate) mod tests {
         let v: serde_json::Value = serde_json::to_value(&r).unwrap();
         let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(|k| k.as_str()).collect();
         keys.sort();
-        assert_eq!(keys, vec!["change_index", "change_spk_hex", "channel", "exits_hex", "funding_hex", "id", "inputs", "payout_index", "payout_spk_hex", "rate_sat_vb", "saved_ms"]);   // v329: the change address and its index; v333: the pool's rate (no secret)
+        assert_eq!(keys, vec!["change_index", "change_spk_hex", "channel", "exits_hex", "funding_hex", "id", "inputs", "payout_index", "payout_spk_hex", "public", "rate_sat_vb", "saved_ms"]);   // v329: the change address and its index; v333: the pool's rate (no secret); v337: the public-pool label
         assert_eq!(wipe(&s, "att-1").unwrap(), Some(r));
         assert_eq!(wipe(&s, "att-1").unwrap(), None);
         assert!(s.get(RECORDS_KEY).unwrap().is_some());
