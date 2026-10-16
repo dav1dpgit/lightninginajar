@@ -521,6 +521,12 @@ export class LijWalletHandle {
      */
     mix_public_event(attempt_id: string, event: string): string;
     /**
+     * v344 (review 2b #1): would this seat take this room? The full check a join runs (the announcement's signature and
+     * options, the size, the fee against the seat's limit, the route, the network) with no side effect — the page lists
+     * and auto-joins only rooms that pass, so a stranger's odd-shaped announcement never costs a seat anything.
+     */
+    mix_public_fits(seat_pk: string, relay: string, pool_event: string): string;
+    /**
      * v336 (Phase 2a): a public seat joins a pool the page found on its relay (a signed kind-2022 event: the public
      * Joinstr code's, or another LiJ's public pool). The engine checks the pool against the seat before anything is
      * sent (its size, the fee limit, the network, its timeout; a provider's pool is refused — that goes through the
@@ -528,6 +534,11 @@ export class LijWalletHandle {
      * "attempt_id", "pool_id", "pool_pk", "note"}. The credentials then come through mix_public_event.
      */
     mix_public_join(seat_pk: string, relay: string, pool_event: string): string;
+    /**
+     * v345: the join sent again (a fresh event from the same key) while it waits — every 20 s or so within the 90 s.
+     * Answers {"out"} to post, or an error when the join is gone or was sent enough.
+     */
+    mix_public_join_again(attempt_id: string): string;
     /**
      * v336: what a pool announcement the page found on a public relay says (the engine's strict parse: a pool it would
      * refuse is an error here, so the page lists only pools it can join) — {"id","pool_pk","peers","denomination",
@@ -1367,7 +1378,9 @@ export interface InitOutput {
     readonly lijwallethandle_mix_notice: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
     readonly lijwallethandle_mix_public_create: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
     readonly lijwallethandle_mix_public_event: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_public_fits: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
     readonly lijwallethandle_mix_public_join: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+    readonly lijwallethandle_mix_public_join_again: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_mix_public_peek: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_mix_public_timed_out: (a: number, b: number, c: number) => [number, number, number];
     readonly lijwallethandle_mix_quote: (a: number, b: number, c: number) => [number, number, number, number];
@@ -1484,8 +1497,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_205: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_206: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_207: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_208: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

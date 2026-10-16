@@ -96,7 +96,9 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v339".to_string()  // v339 (S59, DP 2026-10-14 22:29 "can one leave a public pool before the hour is up?"): mix_attempt_leave — this phone leaves a running attempt on purpose before its coin signature (machine Input::Leave → the stop, an abort to the members who then move on at once; nothing moved, nobody named); the page offers it on a public room still filling. // v338 (S59, the clocks — DP 2026-10-14 21:39): a public room's registration phase lasts until its announcement's timeout + one step (machine.rs first_phase_until; phone.rs start), as the public code waits — not PHASE_S from this phone's own registration, which would have ended every public room this wallet opens or joins two minutes after the first registration. // v337 (S59, DP 2026-10-14 21:39 "Go ahead, let's build it" — the COMBINED list): a provider's on-chain seat may take a public room of its size (mix_public_join(seat_pk, relay, event) / mix_public_create(seat_pk, relay, rate, peers) take the relay the page watches; store::public_start no longer needs a public seat; AttemptStart.public marks the attempt); StoredRecord.public / RecordView.public (the record's "public pool" label, written by store::after from the phone); Out.members (the registrations in so far — a public room's "2 of 3"). // v336 (S59, DP 2026-10-14 20:21 "get busy with the next" — Phase 2a, public pools): the engine's public path. A PUBLIC SEAT (store Seat.public: no provider; `endpoint` the public relay; one per size; mix_seat_new {"public":true,"endpoint":"wss://…"} answers no provider body) joins a pool the page found on that relay by the public Joinstr code's handshake, inside the engine: mix_public_peek (the engine's strict read of an announcement — what the page lists), mix_public_join(seat_pk, pool_event) (the checks a LiJ join makes — size, fee limit, network, timeout; a provider's pool refused — BEFORE the join_pool request goes out under a key derived for this one pool; answers the request to post and the join's own filter), mix_public_event (the credentials → the phone, which then runs through mix_attempt_event/tick as any attempt; a reject or a replay reported), mix_public_timed_out (90 s, or the pool's own timeout), mix_public_create(seat_pk, rate, peers) (a public pool announced with no seats named; the phone answers join requests itself — credentials while seats remain, "pool is full" after, as the public code's creator; joiners never answer), mix_attempt_coin_quorum (a coin check with no provider: this wallet's own explorers — known and confirmed, the output as registered, unspent; no answer = no answer). The record is kept here as any pool's; there is no provider to back it up to and no forwarder: the payout rides the relay under its one-time key (the public code's way). The proof harness (jproof.rs) now drives this path: join at 2 and 1.5 sat/vB, create at 2 — complete. // v335 (S59, DP 2026-10-14 17:51 "Phase 2 … the compatibility proof with fractional fee rates first"): what the proof found, in the engine — (1) P11: the pool event's `public_key` is the pool's NOSTR key (32 bytes x-only), as the public Joinstr code writes and checks it; P8 had demanded a 33-byte point, so no public pool parsed and no LiJ pool would have been found by a public client (msg.rs parse_strict, phone.rs make_announcement/open_announcement, tests); (2) fee rates with up to three decimals are pool options (msg.rs, caps.rs phase1_pool, within_fee_limit_milli; the public demo runs at 1.5 sat/vB; DP 3(b)); (3) a public pool (machine.rs `public`, Common.public): other joinstr clients send no lij_view, so S3 covers the LiJ members' views, signing waits for every member's nonces, and a partial signature that does not verify names no one (tatara-engine-r2's "rule of their own — written then"); (4) the dead "close" route word of v334 is gone (adapter 0.105.1). The proof: the public Joinstr v2 code, built unchanged, as pool members through a capture relay against this engine — our seat joining its pool (rate 2 and 1.5) and its members joining ours (rate 2): every message type both ways, three funded pools, every exit chain complete (lij-core/src/tatara/jproof.rs, ignored tests). // v334 (S59, DP 2026-10-14 14:39 — the per-route sizes (item 20) and the RECENT line of a pool-funded channel): (1) mix_seat_new takes route "close" — a channel's coin, after its cooperative close, seated in the provider's close pools (adapter 0.105.0 TATARA_CLOSE_SIZES: their own queue and sizes, lifted from the on-chain list; channel sizes no longer need to be among the on-chain sizes either) — on-chain in every other respect, so the engine treats it as the chain route; (2) ChannelInfo.funding_height (the scid's block) and ClosedChannelRecord.pool_funded / funding_height, written at ChannelClosed from the UCID bit and the cached height: the page draws a pool-funded channel's "moved to Lightning" line from the channel records (the pool's exit pays no address of the wallet's, so the chain walk never sees it and no ChannelOpen row exists; the line used to be missing — DP: "Mixing from onchain into a lightning channel doesn't [show in RECENT]")
+    "phase11-v347".to_string()  // v347 (S59 Thu, DP 2026-10-15 17:56 — the relay listing: no pool named our network): THE WIRE NAME OF MAINNET. The public joinstr v2 code writes "mainnet" (peer.rs network_name) and refuses a pool whose network differs; this engine declared and announced "bitcoin" — a Joinstr user's mainnet pool was "another network" to us, and our rooms to them. caps::wire_network maps either spelling to "mainnet" on both sides of the check; the engine's own declaration and announcements say "mainnet"; the adapter 0.106.1 announces "mainnet"; the page compares the wire name. Test v347_mainnet_is_the_wire_name_and_bitcoin_still_reads. 474 green.
+    // v346 (S59 Thu, DP 2026-10-15 17:13 "% loaded for the Black start"): the restore's progress — lij_core::progress reports each step of a restore from saved state (a monitor at a time, the manager, ready; the bytes of saved state read so far and in all) to window._lijRestoreProgress and pauses a timer tick so the page can paint; the Offline room shows "channel 3 of 18 · 17 %". Tests v346_steps_reach_the_sink_in_order_and_none_without_one, v346_a_restore_from_saved_state_reports_its_steps. 473 green.
+    // v345 (S59 Thu — the 2b re-check, a): mix_public_join_again(attempt_id) — the join sent again (a fresh event, the same key) while it waits, so a host that dropped the first under its budget, or had not yet read the key named at `open`, hears it; eight sendings at most. // v344 (S59 Thu — the 2b security pass's engine fixes): the seat is claimed only once a public join or room is built (a refused announcement no longer locks the seat on the page — #1); mix_public_fits(seat, relay, event) = the full join check with no side effect, for the page's list; the v3 seat message carries the PROVIDER and the fee cap in THOUSANDTHS (the phone's own limit — #2, #7); a room that closes without this phone stops naming no one (#3); a "pool is full" from the pool key is advisory until the join's 90 s run out — a key holder could forge it (#4); stalled() never names this phone (#6); Notice::Room / MissedRoom (the hosted room's wake — #9); `open` for a room names the join key (open_room_body) so the join carries nothing — v342's token (P12) withdrawn (#4/#5); ws:// relays only on loopback. // v343 (S59 Thu, Phase 2b step 1b): mix_seat_new takes `public_ok` (the wallet's Public pools switch) — a provider's seat then signs the v3 seat message (public + its fee cap, 1.5× the rate at Join) for adapter 0.106.0's host; Seat.public_ok; store::seat_fee_cap. // v342 (S59 Thu, DP 2026-10-15 13:14 "Go" — Phase 2b step 1, the hosted join): mix_public_join takes an optional reserved-seat token (a 64-hex string from the provider's wake notice) and the join request carries it to the host (LiJ P12: Msg::JoinPool { lij_token }); without one the request is the public code's bytes. The adapter's host role and the page's wake handling follow. // v341 (S59 Thu morning, DP 2026-10-15 07:43 "Go on your suggestion for the coin check for public rooms" — the security review's recommendation 1): a public room's coin check (mix_attempt_coin_quorum) now needs TWO explorers that agree (independent::coin_check_agreed — each endpoint's own verdict from the transaction and its outspends; one voice or a split is no answer, and the attempt stops naming no one); it took the first explorer that answered. // v340 (S59, the security review at the close — DP 2026-10-14 23:45 "look for holes and doors"): (1) a message that fails to parse or check stops the pool only when a REGISTERED member sent it (then that member is named); from any other key — a stranger holding a public room's key, a one-time payout key — it is ignored (S1), where it used to stop everyone's attempt with no one named (machine.rs on()); a wrong-type payout is therefore ignored and the Payouts clock runs out; (2) funding signatures are taken only from the member that registered the input and only when they verify against the funding this phone built (phone.rs collect_witnesses + joinstr funding::verify_input; the record carries the prevouts) — they used to be taken from any key, unverified, first-wins; (3) a pool id this phone already holds a record for is refused at join (mix_refuse_known_pool) — a reused id would have replaced the record; (4) the phone's seen-set is bounded; (6) one seat runs one attempt at a time on this page (MIX_SEAT_OF). // v339 (S59, DP 2026-10-14 22:29 "can one leave a public pool before the hour is up?"): mix_attempt_leave — this phone leaves a running attempt on purpose before its coin signature (machine Input::Leave → the stop, an abort to the members who then move on at once; nothing moved, nobody named); the page offers it on a public room still filling. // v338 (S59, the clocks — DP 2026-10-14 21:39): a public room's registration phase lasts until its announcement's timeout + one step (machine.rs first_phase_until; phone.rs start), as the public code waits — not PHASE_S from this phone's own registration, which would have ended every public room this wallet opens or joins two minutes after the first registration. // v337 (S59, DP 2026-10-14 21:39 "Go ahead, let's build it" — the COMBINED list): a provider's on-chain seat may take a public room of its size (mix_public_join(seat_pk, relay, event) / mix_public_create(seat_pk, relay, rate, peers) take the relay the page watches; store::public_start no longer needs a public seat; AttemptStart.public marks the attempt); StoredRecord.public / RecordView.public (the record's "public pool" label, written by store::after from the phone); Out.members (the registrations in so far — a public room's "2 of 3"). // v336 (S59, DP 2026-10-14 20:21 "get busy with the next" — Phase 2a, public pools): the engine's public path. A PUBLIC SEAT (store Seat.public: no provider; `endpoint` the public relay; one per size; mix_seat_new {"public":true,"endpoint":"wss://…"} answers no provider body) joins a pool the page found on that relay by the public Joinstr code's handshake, inside the engine: mix_public_peek (the engine's strict read of an announcement — what the page lists), mix_public_join(seat_pk, pool_event) (the checks a LiJ join makes — size, fee limit, network, timeout; a provider's pool refused — BEFORE the join_pool request goes out under a key derived for this one pool; answers the request to post and the join's own filter), mix_public_event (the credentials → the phone, which then runs through mix_attempt_event/tick as any attempt; a reject or a replay reported), mix_public_timed_out (90 s, or the pool's own timeout), mix_public_create(seat_pk, rate, peers) (a public pool announced with no seats named; the phone answers join requests itself — credentials while seats remain, "pool is full" after, as the public code's creator; joiners never answer), mix_attempt_coin_quorum (a coin check with no provider: this wallet's own explorers — known and confirmed, the output as registered, unspent; no answer = no answer). The record is kept here as any pool's; there is no provider to back it up to and no forwarder: the payout rides the relay under its one-time key (the public code's way). The proof harness (jproof.rs) now drives this path: join at 2 and 1.5 sat/vB, create at 2 — complete. // v335 (S59, DP 2026-10-14 17:51 "Phase 2 … the compatibility proof with fractional fee rates first"): what the proof found, in the engine — (1) P11: the pool event's `public_key` is the pool's NOSTR key (32 bytes x-only), as the public Joinstr code writes and checks it; P8 had demanded a 33-byte point, so no public pool parsed and no LiJ pool would have been found by a public client (msg.rs parse_strict, phone.rs make_announcement/open_announcement, tests); (2) fee rates with up to three decimals are pool options (msg.rs, caps.rs phase1_pool, within_fee_limit_milli; the public demo runs at 1.5 sat/vB; DP 3(b)); (3) a public pool (machine.rs `public`, Common.public): other joinstr clients send no lij_view, so S3 covers the LiJ members' views, signing waits for every member's nonces, and a partial signature that does not verify names no one (tatara-engine-r2's "rule of their own — written then"); (4) the dead "close" route word of v334 is gone (adapter 0.105.1). The proof: the public Joinstr v2 code, built unchanged, as pool members through a capture relay against this engine — our seat joining its pool (rate 2 and 1.5) and its members joining ours (rate 2): every message type both ways, three funded pools, every exit chain complete (lij-core/src/tatara/jproof.rs, ignored tests). // v334 (S59, DP 2026-10-14 14:39 — the per-route sizes (item 20) and the RECENT line of a pool-funded channel): (1) mix_seat_new takes route "close" — a channel's coin, after its cooperative close, seated in the provider's close pools (adapter 0.105.0 TATARA_CLOSE_SIZES: their own queue and sizes, lifted from the on-chain list; channel sizes no longer need to be among the on-chain sizes either) — on-chain in every other respect, so the engine treats it as the chain route; (2) ChannelInfo.funding_height (the scid's block) and ClosedChannelRecord.pool_funded / funding_height, written at ChannelClosed from the UCID bit and the cached height: the page draws a pool-funded channel's "moved to Lightning" line from the channel records (the pool's exit pays no address of the wallet's, so the chain walk never sees it and no ChannelOpen row exists; the line used to be missing — DP: "Mixing from onchain into a lightning channel doesn't [show in RECENT]")
     // "phase11-v333".to_string()  // v333 (S59, DP 2026-10-14 "Bump stuck Mix exits is now-work"; spec v0.10 §6.4): SPEED UP A STUCK POOL — lij_core::tatara::bump: a child spending this phone's payout alone (P2TR key-path, the payout's own m/86 key) to a fresh m/86 address of this wallet's (marked mixed, as the payout was), with a fee that lifts every unconfirmed transaction of the chain up to this phone's exit — the funding and the exits before it — to the target rate (miners take a transaction by its ancestor fee rate, so the whole pool moves and every member benefits; the fee comes out of this phone's new coin). mix_bump_quote(id, sat_vb) asks the chain servers about each transaction of the chain and prices the child (the exits' fees exact from the record's bytes, the funding's from the pool's rate, now kept on the record — StoredRecord.rate_sat_vb; an older record reads it from its first exit); mix_bump(id, sat_vb) takes the quote afresh, builds, signs, broadcasts and records the child among the sends still confirming (TxKind::MixSpeedUp; the record view carries sped_up_txid/sped_up_fee_sats). Refused in words: a channel pool (its payout is a 2-of-2), another wallet's payout, an exit already in a block, a rate below today's, a coin too small, a funding not on the network, a speed-up already on its way. The settle check is untouched (the payout's exit settles the pool). Tests b1–b4 (the child's exact size 111 vB measured; the Schnorr signature verified against the payout's key). lij-core 451 + 1 ignored.
     // "phase11-v332".to_string()  // v332 (S58, DP's first channel pool 2026-10-13 23:27 "Go"): (1) the creating phone's strict parse of its own announcement (P8's allowlist) takes `payout_type` — a channel pool's event carries "p2wsh" and the list lacked it, so every create stopped with "unknown field in the pool event" (phone test p1b: the announcement round trip for a channel pool). (2) A seat keeps its coins' ledger rows (Seat.coin_rows) when it is taken; an attempt's start uses the ledger's row when the list holds it and the seat's copy when it does not (a rebuild or a reorg rollback rewrites the list and re-derives a coin within a minute — one phone's "the seat's coin is not in the wallet's ledger" cost the pool a retry); mix_attempt_create / mix_attempt_join answer a "note" for the Mix log when the copy was used.
     // "phase11-v331".to_string()  // v331 (S58, Phase 1b step 11c's engine half): the seat's route in the signed seat request — mix_seat_new takes "route" ("chain" | "channel"); seat_message_v1 / seat_body_v1 / ring_seat_digest / ring_seat_body carry the route (a chain seat signs exactly what it signed before; adapter 0.103.0 checks the same); ChannelInfo.pool_funded (the UCID bit) so Connections can say "Opening — waiting for the pool". lij-core 445 + 1 ignored.
@@ -202,6 +204,33 @@ pub fn wasm_build_version() -> String {
 // stays — zero chain queries) and the backup client is hard-silenced at
 // BOTH entries. Keys, derivation, and persisted state remain fully live.
 pub static OFFLINE_START: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// v346 (S59 Thu, DP 2026-10-15 17:13 — "% loaded for the Black start"): the restore's progress, for the page. Each step
+/// of a restore from saved state (lij_core::progress: "channels" per monitor, "manager", "ready", with the bytes of saved
+/// state read so far and in all) calls `window._lijRestoreProgress(stage, done, total)` when the page defines it, then
+/// waits one timer tick so the page can paint — the restore runs on the page's own thread and would otherwise show
+/// nothing until the end. No function on the page: the steps cost a timer tick each and nothing else.
+struct PageProgress;
+impl lij_core::progress::RestoreProgress for PageProgress {
+    fn report(&self, stage: &str, done: u64, total: u64) {
+        let g = js_sys::global();
+        if let Ok(f) = js_sys::Reflect::get(&g, &JsValue::from_str("_lijRestoreProgress")) {
+            if let Some(f) = wasm_bindgen::JsCast::dyn_ref::<js_sys::Function>(&f) {
+                let _ = f.call3(&JsValue::NULL, &JsValue::from_str(stage), &JsValue::from_f64(done as f64), &JsValue::from_f64(total as f64));
+            }
+        }
+    }
+    fn pause(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + '_>> {
+        Box::pin(async {
+            let p = js_sys::Promise::new(&mut |res, _rej| {
+                let fired = match web_sys::window() { Some(w) => w.set_timeout_with_callback_and_timeout_and_arguments_0(&res, 0).is_ok(), None => false };
+                if !fired { let _ = res.call0(&JsValue::NULL); }
+            });
+            let _ = wasm_bindgen_futures::JsFuture::from(p).await;
+        })
+    }
+}
+fn arm_restore_progress() { lij_core::progress::set_sink(Some(std::rc::Rc::new(PageProgress))); }
 #[wasm_bindgen]
 pub fn set_offline_start(v: bool) {
     OFFLINE_START.store(v, std::sync::atomic::Ordering::Relaxed);
@@ -275,6 +304,29 @@ thread_local! {
     /// v336 (Phase 2a): public joins waiting for their credentials, by attempt id; the phone replaces the join once
     /// the credentials come (then it lives in MIX_PHONES).
     static MIX_JOINS: std::cell::RefCell<std::collections::HashMap<String, lij_core::tatara::phone::PublicJoin>> = std::cell::RefCell::new(std::collections::HashMap::new());
+    /// v340 (S59 security review, finding 6): the seat each live attempt or join belongs to — one seat runs ONE attempt
+    /// at a time (a provider pool and a public room for the same coin can never both be signed).
+    static MIX_SEAT_OF: std::cell::RefCell<std::collections::HashMap<String, String>> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// v340: refuse a second live attempt for a seat; remember this one.
+fn mix_seat_claim(attempt_id: &str, seat_pk: &str) -> Result<(), JsValue> {
+    MIX_SEAT_OF.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.iter().any(|(a, s)| s == seat_pk && a != attempt_id) {
+            return Err(JsValue::from_str("this seat is already in a pool on this page"));
+        }
+        m.insert(attempt_id.to_string(), seat_pk.to_string());
+        Ok(())
+    })
+}
+
+/// v340: a pool id this phone already holds a record for is refused (finding 3).
+fn mix_refuse_known_pool(storage: &dyn lij_core::storage::LijStorage, pool_id: &str) -> Result<(), JsValue> {
+    if lij_core::tatara::store::record_exists(storage, pool_id).map_err(|e| JsValue::from_str(&e.to_string()))? {
+        return Err(JsValue::from_str("a pool with this id is already on this phone's record — refused"));
+    }
+    Ok(())
 }
 
 /// Step 8: the sealed store.
@@ -744,6 +796,7 @@ impl LijWalletHandle {
 
             let storage = Arc::new(LocalStorage);
 
+            arm_restore_progress();   // v346: the page hears each step of the read of the saved state
             let (wallet, restored) = LijWallet::restore(&mnemonic, config, storage)
                 .await
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -2161,7 +2214,7 @@ impl LijWalletHandle {
     #[wasm_bindgen]
     pub fn mix_seat_new(&self, req: &str) -> Result<String, JsValue> {
         #[derive(serde::Deserialize)]
-        struct Req { #[serde(default)] provider_pk: String, endpoint: String, size: u64, coins: Vec<(String, u32)>, payout: lij_core::tatara::wallet::PayoutChoice, rate_at_join: u64, ts: u64, #[serde(default)] route: Option<String>, #[serde(default)] public: bool }   // v336: `public` + `endpoint` the relay
+        struct Req { #[serde(default)] provider_pk: String, endpoint: String, size: u64, coins: Vec<(String, u32)>, payout: lij_core::tatara::wallet::PayoutChoice, rate_at_join: u64, ts: u64, #[serde(default)] route: Option<String>, #[serde(default)] public: bool, #[serde(default)] public_ok: bool }   // v336: `public` + `endpoint` the relay · v343: `public_ok` — a provider's seat may take a room the provider hosts
         let r: Req = serde_json::from_str(req).map_err(|e| JsValue::from_str(&format!("mix_seat_new: bad request: {e}")))?;
         // Phase 1b: the route — "chain" (the payout on-chain) or "channel" (the payout this wallet's channel's funding)
         // v335 (S59, DP 16:19 — the close pools were stepped back; a closed channel's coin sits in the on-chain pools): the
@@ -2175,6 +2228,7 @@ impl LijWalletHandle {
             provider_pk: r.provider_pk.to_ascii_lowercase(), endpoint: r.endpoint, size: r.size, route,
             coins: r.coins.into_iter().map(|(t, v)| (t.to_ascii_lowercase(), v)).collect(), coin_rows: vec![], payout: r.payout, rate_at_join: r.rate_at_join, since_ms: 0,
             public: r.public,   // v336   // v332: seat_new copies the rows
+            public_ok: r.public_ok && !r.public,   // v343
         };
         let seat = lij_core::tatara::store::seat_new(storage.as_ref(), seat, &lij_core::tatara::store::fresh32(), lij_core::tier2_wallet::now_ms())
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -2250,6 +2304,7 @@ impl LijWalletHandle {
         let others: Vec<String> = serde_json::from_str(seat_pks).map_err(|e| JsValue::from_str(&format!("mix_attempt_create: bad seat keys: {e}")))?;
         let (root_key, storage, dirty) = mix_handles(&self.inner)?;
         let now = mix_now();
+        mix_seat_claim(&st.attempt_id, &st.seat_pk)?;   // v340
         let (_seat, c, note) = lij_core::tatara::store::attempt_common(storage.as_ref(), &root_key, &st, now).map_err(|e| JsValue::from_str(&e.to_string()))?;   // v332: the ledger note
         let (mut phone, ann, out) = lij_core::tatara::phone::Phone::create(c, fee_rate_sat_vb as u64, &others).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let (out, d) = lij_core::tatara::store::after(storage.as_ref(), &mut phone, out, now).map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -2268,6 +2323,8 @@ impl LijWalletHandle {
         let st: lij_core::tatara::store::AttemptStart = serde_json::from_str(start).map_err(|e| JsValue::from_str(&format!("mix_attempt_join: bad request: {e}")))?;
         let (root_key, storage, dirty) = mix_handles(&self.inner)?;
         let now = mix_now();
+        mix_seat_claim(&st.attempt_id, &st.seat_pk)?;   // v340
+        if let Ok(ev) = serde_json::from_str::<lij_core::nwc::Event>(announcement) { if let Ok(pe) = serde_json::from_str::<serde_json::Value>(&ev.content) { if let Some(id) = pe.get("id").and_then(|x| x.as_str()) { mix_refuse_known_pool(storage.as_ref(), id)?; } } }   // v340 (finding 3)
         let (seat, c, note) = lij_core::tatara::store::attempt_common(storage.as_ref(), &root_key, &st, now).map_err(|e| JsValue::from_str(&e.to_string()))?;   // v332: the ledger note
         let sk = lij_core::tatara::store::seat_secret(&seat).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let (mut phone, out) = lij_core::tatara::phone::Phone::join(c, announcement, &sk).map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -2286,7 +2343,7 @@ impl LijWalletHandle {
     /// provider), then answers {"out" (the join request to post), "relay_filter" (the join's own key: subscribe to it),
     /// "attempt_id", "pool_id", "pool_pk", "note"}. The credentials then come through mix_public_event.
     #[wasm_bindgen]
-    pub fn mix_public_join(&self, seat_pk: &str, relay: &str, pool_event: &str) -> Result<String, JsValue> {
+    pub fn mix_public_join(&self, seat_pk: &str, relay: &str, pool_event: &str) -> Result<String, JsValue> {   // v344: the hosted room's join carries nothing — the join key is named to the provider at `open` (v342's token withdrawn, review 2b #4/#5)
         let (root_key, storage, _dirty) = mix_handles(&self.inner)?;
         let now = mix_now();
         let seat = lij_core::tatara::store::seat_by_pk(storage.as_ref(), seat_pk).map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -2298,13 +2355,46 @@ impl LijWalletHandle {
         let attempt_id = st.attempt_id.clone();
         let busy = MIX_JOINS.with(|m| m.borrow().contains_key(&attempt_id)) || MIX_PHONES.with(|m| m.borrow().contains_key(&attempt_id));
         if busy { return Err(JsValue::from_str("mix_public_join: this pool is already being joined")); }
+        mix_refuse_known_pool(storage.as_ref(), &pe.id)?;   // v340 (finding 3)
+        // v344 (review 2b #1): the seat is claimed only once the join is built — a refused announcement (a stranger's
+        // room of the wrong shape) used to leave the claim behind and lock the seat out of every later pool on this page
         let (_seat, c, note) = lij_core::tatara::store::attempt_common(storage.as_ref(), &root_key, &st, now).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let (join, out) = lij_core::tatara::phone::PublicJoin::new(c, pool_event).map_err(|e| JsValue::from_str(&format!("{e:#}")))?;
+        mix_seat_claim(&attempt_id, &st.seat_pk)?;          // v340 (finding 6)
         let filter = join.relay_filter();
         let (pool_id, pool_pk) = (join.pool_id().to_string(), join.pool_pk().to_string());
+        let join_pk = join.join_pk().to_string();
         MIX_JOINS.with(|m| { m.borrow_mut().insert(attempt_id.clone(), join); });
         log::info!("[mix] a public join request goes out for pool {}", &pool_id[..8.min(pool_id.len())]);
-        Ok(serde_json::json!({ "out": out, "relay_filter": filter, "attempt_id": attempt_id, "pool_id": pool_id, "pool_pk": pool_pk, "note": note }).to_string())
+        Ok(serde_json::json!({ "out": out, "relay_filter": filter, "attempt_id": attempt_id, "pool_id": pool_id, "pool_pk": pool_pk, "join_pk": join_pk, "note": note }).to_string())   // v344: `join_pk` — named to the provider at `open` for a hosted room
+    }
+
+    /// v345: the join sent again (a fresh event from the same key) while it waits — every 20 s or so within the 90 s.
+    /// Answers {"out"} to post, or an error when the join is gone or was sent enough.
+    #[wasm_bindgen]
+    pub fn mix_public_join_again(&self, attempt_id: &str) -> Result<String, JsValue> {
+        let now = mix_now();
+        let out = MIX_JOINS.with(|m| { let mut m = m.borrow_mut(); match m.get_mut(attempt_id) { Some(j) => j.again(now).map_err(|e| JsValue::from_str(&format!("{e:#}"))), None => Err(JsValue::from_str("no such public join on this page")) } })?;
+        Ok(serde_json::json!({ "out": out }).to_string())
+    }
+
+    /// v344 (review 2b #1): would this seat take this room? The full check a join runs (the announcement's signature and
+    /// options, the size, the fee against the seat's limit, the route, the network) with no side effect — the page lists
+    /// and auto-joins only rooms that pass, so a stranger's odd-shaped announcement never costs a seat anything.
+    #[wasm_bindgen]
+    pub fn mix_public_fits(&self, seat_pk: &str, relay: &str, pool_event: &str) -> Result<String, JsValue> {
+        let (root_key, storage, _dirty) = mix_handles(&self.inner)?;
+        let now = mix_now();
+        let seat = lij_core::tatara::store::seat_by_pk(storage.as_ref(), seat_pk).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let relay = if seat.public { seat.endpoint.clone() } else { relay.trim().to_string() };
+        let verdict = (|| -> Result<(), String> {
+            let pe = lij_core::tatara::phone::public_pool_summary(pool_event).map_err(|e| format!("{e:#}"))?;
+            let st = lij_core::tatara::store::public_start(&seat, &relay, &pe.id, pe.peers).map_err(|e| e.to_string())?;
+            if lij_core::tatara::store::record_exists(storage.as_ref(), &pe.id).map_err(|e| e.to_string())? { return Err("a pool this wallet already holds a record for".into()); }
+            let (_seat, c, _note) = lij_core::tatara::store::attempt_common(storage.as_ref(), &root_key, &st, now).map_err(|e| e.to_string())?;
+            lij_core::tatara::phone::public_pool_fits(&c, pool_event).map_err(|e| format!("{e:#}"))
+        })();
+        Ok(match verdict { Ok(()) => serde_json::json!({ "fits": true }), Err(why) => serde_json::json!({ "fits": false, "why": why }) }.to_string())
     }
 
     /// v336: what a pool announcement the page found on a public relay says (the engine's strict parse: a pool it would
@@ -2325,8 +2415,8 @@ impl LijWalletHandle {
         let now = mix_now();
         let join = MIX_JOINS.with(|m| m.borrow_mut().remove(attempt_id)).ok_or_else(|| JsValue::from_str("no such public join on this page"))?;
         match join.relay_event(event, now).map_err(|e| JsValue::from_str(&format!("{e:#}")))? {
-            lij_core::tatara::phone::Joined::Waiting(j) => { MIX_JOINS.with(|m| { m.borrow_mut().insert(attempt_id.to_string(), j); }); Ok(serde_json::json!({ "joined": false, "rejected": false }).to_string()) }
-            lij_core::tatara::phone::Joined::Rejected => { log::info!("[mix] the public pool refused the join"); Ok(serde_json::json!({ "joined": false, "rejected": true }).to_string()) }
+            lij_core::tatara::phone::Joined::Waiting(j) => { let refused = j.was_refused(); MIX_JOINS.with(|m| { m.borrow_mut().insert(attempt_id.to_string(), j); }); Ok(serde_json::json!({ "joined": false, "rejected": false, "refused_heard": refused }).to_string()) }   // v344: a refusal is advisory — the join waits its 90 s (mix_public_timed_out then says "the pool said it is full")
+            lij_core::tatara::phone::Joined::Rejected => { MIX_SEAT_OF.with(|m| { m.borrow_mut().remove(attempt_id); }); log::info!("[mix] the public pool refused the join"); Ok(serde_json::json!({ "joined": false, "rejected": true }).to_string()) }
             lij_core::tatara::phone::Joined::Phone(mut phone, out) => {
                 let (out, d) = lij_core::tatara::store::after(storage.as_ref(), &mut phone, out, now).map_err(|e| JsValue::from_str(&e.to_string()))?;
                 if d { dirty.store(true, std::sync::atomic::Ordering::Relaxed); }
@@ -2355,7 +2445,7 @@ impl LijWalletHandle {
         let now = mix_now();
         let why = MIX_JOINS.with(|m| m.borrow().get(attempt_id).and_then(|j| j.timed_out(now)));
         match why {
-            Some(w) => { MIX_JOINS.with(|m| { m.borrow_mut().remove(attempt_id); }); Ok(JsValue::from_str(&w)) }
+            Some(w) => { MIX_JOINS.with(|m| { m.borrow_mut().remove(attempt_id); }); MIX_SEAT_OF.with(|m| { m.borrow_mut().remove(attempt_id); }); Ok(JsValue::from_str(&w)) }
             None => Ok(JsValue::NULL),
         }
     }
@@ -2374,6 +2464,7 @@ impl LijWalletHandle {
         let st = lij_core::tatara::store::public_start(&seat, &relay, &pool_tag, peers as usize).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let (_seat, c, note) = lij_core::tatara::store::attempt_common(storage.as_ref(), &root_key, &st, now).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let (mut phone, ann, out) = lij_core::tatara::phone::Phone::create_public(c, fee_rate_sat_vb as u64).map_err(|e| JsValue::from_str(&format!("{e:#}")))?;
+        mix_seat_claim(&st.attempt_id, &st.seat_pk)?;   // v340 · v344: after the pool is built (review 2b #1)
         let (out, d) = lij_core::tatara::store::after(storage.as_ref(), &mut phone, out, now).map_err(|e| JsValue::from_str(&e.to_string()))?;
         if d { dirty.store(true, std::sync::atomic::Ordering::Relaxed); }
         let filter = phone.relay_filter();
@@ -2399,19 +2490,13 @@ impl LijWalletHandle {
         let attempt_id = attempt_id.to_string();
         future_to_promise(async move {
             let txid = a.txid.to_ascii_lowercase();
-            let ok: Option<bool> = match independent.fetch_tx(&txid).await {
-                Ok(t) => {
-                    let out_ok = t.confirmed && t.vouts.get(a.vout as usize).map_or(false, |o| o.value == a.amount_sat && o.scriptpubkey.eq_ignore_ascii_case(&a.script_pubkey_hex));
-                    if !out_ok { Some(false) } else {
-                        match independent.fetch_tx_outspends(&txid).await {
-                            Ok(sp) => Some(sp.get(a.vout as usize).map_or(false, |s| !s.spent)),
-                            Err(_) => None,
-                        }
-                    }
-                }
-                Err(e) => { if independent.tx_known(&txid).await == Some(false) { Some(false) } else { log::warn!("[mix] the coin check got no answer from the explorers: {e}"); None } }
-            };
-            if ok == Some(false) { log::warn!("[mix] a member's coin failed the wallet's own coin check"); }
+            // v341 (the security review's recommendation 1): two explorers must agree; one alone, or a split, is no answer
+            let ok: Option<bool> = independent.coin_check_agreed(&txid, a.vout, a.amount_sat, &a.script_pubkey_hex).await;
+            match ok {
+                Some(false) => log::warn!("[mix] a member's coin failed the wallet's own coin check (two explorers agree)"),
+                None => log::warn!("[mix] the coin check got no agreed answer from the explorers"),
+                _ => {}
+            }
             let (_root_key, storage, dirty) = mix_handles(&inner)?;
             let s = mix_step(&attempt_id, storage.as_ref(), &dirty, &inner, |p, now| p.coin_result(&a.txid, a.vout, ok, now))?;
             Ok(JsValue::from_str(&s))
@@ -2520,6 +2605,7 @@ impl LijWalletHandle {
     #[wasm_bindgen]
     pub fn mix_attempt_end(&self, attempt_id: &str) -> bool {
         MIX_JOINS.with(|m| { m.borrow_mut().remove(attempt_id); });   // v336: a waiting public join ends too
+        MIX_SEAT_OF.with(|m| { m.borrow_mut().remove(attempt_id); });   // v340: the seat is free for another attempt
         MIX_POOL_CHANNELS.with(|c| { c.borrow_mut().remove(attempt_id); });   // the channel itself stays in the manager
         MIX_PHONES.with(|m| m.borrow_mut().remove(attempt_id).is_some())
     }

@@ -59,5 +59,6 @@ pub mod kit_merge;   // v313 (S57, DP 17:55): the Black start kit across copies 
 pub mod bip86;   // v314 (S57, DP 21:36 — joinstr-fit-r5, the wallet side, step 1): BIP86 taproot addresses for pool exits
 pub mod musig;   // v315 (S57, DP 21:53 "Go on 1 & 2" — joinstr-fit-r5 step 2): the wallet's MuSig2 signer (BIP-327), nonces once, in memory only
 pub mod tatara;   // S58 (DP 2026-10-12 19:11 "Go on Step 3"): LIJOX's Tatara — the pool core's checks (S4, S5, S6, S10); not yet used by the wallet
+pub mod progress;   // v346 (S59 Thu, DP 17:13): the restore's progress — the Offline room's and the boot's read of the saved channel state, step by step, for the page to show
 pub mod cancelled_open;   // v277 (S48, DP): the cancelled-open sweep's honest proof (history + quorum + a two-hour floor)
 

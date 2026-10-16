@@ -104,6 +104,8 @@ pub struct Record {
     pub channel: bool,
     /// v333 (S59): the pool's fee rate (milli-sat per vB, the pool event's), kept so a speed-up can price the chain.
     pub rate_milli: u64,
+    /// v340: the funding's prevouts, in input order — the phone verifies every member's funding signature against them.
+    pub prevouts: Vec<TxOut>,
 }
 
 pub enum Input {
@@ -272,14 +274,17 @@ impl Attempt {
     /// At a timeout, the registered sessions that did not send what this phase waits for (the NIP's "Failure handling":
     /// a session that does not send a message identifies its coins). Missing payouts name no one (they are anonymous).
     fn stalled(&self) -> Vec<[u8; 32]> {
+        // v344 (review 2b #6): never this phone — its own nonces and signatures reach the machine only as the relay's
+        // echo, and a relay that drops one echo must not make the phone refuse its own coin
+        let me = self.me.session;
         match self.phase {
             Phase::View => self
                 .regs
                 .keys()
-                .filter(|s| (!self.public && !self.views.contains_key(*s)) || !self.nonces.contains_key(*s))   // v335: a public member owes no view
+                .filter(|s| **s != me && ((!self.public && !self.views.contains_key(*s)) || !self.nonces.contains_key(*s)))   // v335: a public member owes no view
                 .copied()
                 .collect(),
-            Phase::Signing => self.regs.keys().filter(|s| !self.psigs.contains_key(*s)).copied().collect(),
+            Phase::Signing => self.regs.keys().filter(|s| **s != me && !self.psigs.contains_key(*s)).copied().collect(),
             _ => vec![],
         }
     }
@@ -325,10 +330,25 @@ impl Attempt {
         if self.phase == Phase::Stopped || self.phase == Phase::FundingSigned {
             return vec![];
         }
+        // v340 (S59 security review, finding 1): a message that fails to parse or check is NOT a reason to stop the pool
+        // unless a REGISTERED member sent it — then it is that member's doing and it is named (its coin refused next
+        // time, v0.10 §8 rule 2). Anything from a key that is not a registered session (a stranger holding the pool key
+        // in a public room, a one-time payout key, random ciphertext that happens to decrypt) is ignored, as S1 says —
+        // it used to stop every member's attempt with no one named: a free, unattributable kill switch.
+        let from_msg = match &input { Input::Msg { from, .. } => Some(*from), _ => None };
         match self.step(input) {
             Ok(acts) => acts,
-            Err(e) => self.stop(&e.to_string(), vec![]),
+            Err(e) => match from_msg {
+                Some(from) if self.regs.contains_key(&from) && from != self.me.session => self.stop(&e.to_string(), vec![from]),
+                Some(_) => vec![],
+                None => self.stop(&e.to_string(), vec![]),
+            },
         }
+    }
+
+    /// v340 (finding 2): does this registered session own this funding input?
+    pub fn owns(&self, session: &[u8; 32], op: &OutPoint) -> bool {
+        self.regs.get(session).map_or(false, |(r, _)| r.inputs.iter().any(|(o, _)| o == op))
     }
 
     fn stop(&mut self, reason: &str, named: Vec<[u8; 32]>) -> Vec<Action> {
@@ -472,7 +492,11 @@ impl Attempt {
         // registration complete: the NIP's checks, then every other member's coins checked through the coin check
         let regs: Vec<InputRegistration> = self.regs.values().map(|(r, _)| r.clone()).collect();
         check_input_registrations(&self.params, &regs)?;
-        ensure!(self.regs.contains_key(&self.me.session), "the pool closed without this phone");
+        // v344 (review 2b #3): a room that filled without this phone (a key holder's extra registrations) stops naming
+        // NO ONE — an Err here would have named the Nth registrant, an honest member as often as not
+        if !self.regs.contains_key(&self.me.session) {
+            return Ok(self.stop("the pool closed without this phone", vec![]));
+        }
         let others: Vec<(OutPoint, TxOut)> = regs.iter().filter(|r| r.session != self.me.session).flat_map(|r| r.inputs.clone()).collect();
         self.coins_asked = true;
         Ok(vec![Action::CheckCoins(others)])
@@ -723,6 +747,7 @@ impl Attempt {
             inputs: self.me.coins.iter().map(|(op, _, _)| *op).collect(),
             channel: self.params.payout_type == PayoutType::P2wsh,
             rate_milli: self.rate_milli,
+            prevouts: built.funding_prevouts.clone(),
         };
         let mine: Vec<(OutPoint, TxOut)> = self.me.coins.iter().map(|(op, o, _)| (*op, o.clone())).collect();
         self.built = Some(built);

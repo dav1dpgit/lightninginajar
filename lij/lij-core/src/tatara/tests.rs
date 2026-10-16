@@ -236,6 +236,28 @@ fn event(changes: &[(&str, serde_json::Value)], drop: &[&str]) -> String {
     v.to_string()
 }
 
+/// v347: the public joinstr v2 code names Bitcoin "mainnet" on the wire; this engine said "bitcoin". A "mainnet" pool
+/// is ours whichever spelling the phone's declaration carries; "bitcoin" (an older adapter of ours) still reads;
+/// signet never.
+#[test]
+fn v347_mainnet_is_the_wire_name_and_bitcoin_still_reads() {
+    use serde_json::json;
+    let now = 1_000_000;
+    let mut d = declared();
+    assert_eq!(caps::wire_network("bitcoin"), "mainnet");
+    assert_eq!(caps::wire_network("mainnet"), "mainnet");
+    assert_eq!(caps::wire_network("signet"), "signet");
+    for decl in ["bitcoin", "mainnet"] {
+        d.network = decl.into();
+        for wire in ["mainnet", "bitcoin"] {
+            let ev = PoolEvent::parse_strict(&event(&[("network", json!(wire))], &[])).unwrap();
+            assert!(caps::phase1_pool(&ev, &d, now).is_ok(), "declared {decl}, announced {wire}");
+        }
+        let ev = PoolEvent::parse_strict(&event(&[("network", json!("signet"))], &[])).unwrap();
+        assert!(caps::phase1_pool(&ev, &d, now).unwrap_err().to_string().contains("another network"), "declared {decl}, announced signet");
+    }
+}
+
 #[test]
 fn s6_the_phase1_options_and_nothing_else() {
     let d = declared();

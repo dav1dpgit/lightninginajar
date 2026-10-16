@@ -1013,6 +1013,61 @@ impl IndependentClient {
         )))
     }
 
+    /// v341 (S59 Thu morning, the security review's recommendation 1 — DP 2026-10-15 07:43 "Go on your suggestion for the coin check
+    /// for public rooms"): a pool member's coin checked by TWO explorers that agree. Each endpoint is asked for the
+    /// transaction and its outspends and gives its own verdict: Some(true) = confirmed, the output as registered (value
+    /// and script), unspent; Some(false) = it knows better (not confirmed, another output, spent, or a definite 404);
+    /// None = it could not answer. The quorum's answer is a verdict two endpoints share; one endpoint alone decides
+    /// nothing, and a split (true against false) is no answer. The provider-less coin check used to take the first
+    /// explorer that answered — one bad or lagging explorer could stop a room, or let a spent coin into a funding that
+    /// could never confirm.
+    pub async fn coin_check_agreed(&self, txid: &str, vout: u32, value_sats: u64, spk_hex: &str) -> Option<bool> {
+        // no health gate: the round asks every endpoint the quorum would ask (demoted ones included past their rest),
+        // and two of them must agree — with none at all the answer is None
+        let http = self.http.lock().unwrap().clone();
+        let txid = txid.to_string();
+        let spk = spk_hex.to_ascii_lowercase();
+        let results = self
+            .query_all(|url| {
+                let tx_url = format!("{url}/tx/{txid}");
+                let sp_url = format!("{url}/tx/{txid}/outspends");
+                let http = http.clone();
+                let spk = spk.clone();
+                Box::pin(async move {
+                    let resp = http.get(&tx_url).await?;
+                    if resp.status == 404 {
+                        return Ok(false);   // this explorer does not know the transaction — a definite no from it
+                    }
+                    if resp.status != 200 {
+                        return Err(LijError::Lsp(format!("tx status {}", resp.status)));
+                    }
+                    let raw: EsploraTxRaw = serde_json::from_str(&resp.body).map_err(|e| LijError::Lsp(format!("tx parse: {e}")))?;
+                    let tx = EsploraTx::from(raw);
+                    let out_ok = tx.confirmed && tx.vouts.get(vout as usize).map_or(false, |o| o.value == value_sats && o.scriptpubkey.eq_ignore_ascii_case(&spk));
+                    if !out_ok {
+                        return Ok(false);
+                    }
+                    let resp = http.get(&sp_url).await?;
+                    if resp.status != 200 {
+                        return Err(LijError::Lsp(format!("outspends status {}", resp.status)));
+                    }
+                    let raw: Vec<EsploraOutspendRaw> = serde_json::from_str(&resp.body).map_err(|e| LijError::Lsp(format!("outspends parse: {e}")))?;
+                    let sp: Vec<EsploraOutspend> = raw.into_iter().map(EsploraOutspend::from).collect();
+                    Ok(sp.get(vout as usize).map_or(false, |s| !s.spent))
+                })
+            })
+            .await;
+        let yes = results.iter().filter(|(_, r)| matches!(r, Ok(true))).count();
+        let no = results.iter().filter(|(_, r)| matches!(r, Ok(false))).count();
+        if yes >= 2 && no == 0 {
+            Some(true)
+        } else if no >= 2 && yes == 0 {
+            Some(false)
+        } else {
+            None   // one voice, or a split: no answer
+        }
+    }
+
     /// v277 (S48, DP — the cancelled-open sweep's honest proof): does the quorum know this txid?
     /// Some(true): at least one server returned it (mempool or confirmed). Some(false): no server
     /// has it and at least one reachable server said so definitively (HTTP 404). None: the quorum
@@ -2121,6 +2176,107 @@ mod tests {
     #[test]
     fn default_endpoints_matches_quorum_size() {
         assert_eq!(default_endpoints().len(), DEFAULT_QUORUM_SIZE);
+    }
+
+    // v341 (S59 Thu morning, the security review's recommendation 1): a public room's coin check needs TWO explorers that agree
+    const CC_TXID: &str = "aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11";
+    const CC_SPK: &str = "5120aabbccdd";
+    fn cc_tx(confirmed: bool, value: u64, spk: &str) -> String {
+        format!(r#"{{"txid":"{CC_TXID}","vout":[{{"scriptpubkey":"00140000","value":1}},{{"scriptpubkey":"{spk}","value":{value}}}],"status":{{"confirmed":{confirmed}}}}}"#)
+    }
+    fn cc_outspends(spent: bool) -> String {
+        format!(r#"[{{"spent":false}},{{"spent":{spent}}}]"#)
+    }
+    fn cc_good(mock: &MockHttp, ep: &str) {
+        mock.add_response(ep, ok_body(&cc_tx(true, 50_000, CC_SPK)));
+        mock.add_response(ep, ok_body(&cc_outspends(false)));
+    }
+
+    #[tokio::test]
+    async fn v341_two_explorers_agreeing_the_coin_is_good_is_yes() {
+        let mock = Arc::new(MockHttp::new());
+        cc_good(&mock, "a.example");
+        cc_good(&mock, "b.example");
+        mock.add_response("c.example", Err(LijError::Lsp("down".into())));
+        let client = IndependentClient::new(mock.clone(), three_endpoints());
+        assert_eq!(client.coin_check_agreed(CC_TXID, 1, 50_000, CC_SPK).await, Some(true));
+    }
+
+    #[tokio::test]
+    async fn v341_one_explorer_alone_decides_nothing() {
+        // one says good, the other two cannot answer: no answer (the attempt stops naming no one)
+        let mock = Arc::new(MockHttp::new());
+        cc_good(&mock, "a.example");
+        mock.add_response("b.example", Err(LijError::Lsp("down".into())));
+        mock.add_response("c.example", Ok(HttpResponse { status: 500, body: String::new() }));
+        let client = IndependentClient::new(mock.clone(), three_endpoints());
+        assert_eq!(client.coin_check_agreed(CC_TXID, 1, 50_000, CC_SPK).await, None);
+        // one says spent, the others cannot answer: no answer either — one bad explorer never stops a room
+        let mock = Arc::new(MockHttp::new());
+        mock.add_response("a.example", ok_body(&cc_tx(true, 50_000, CC_SPK)));
+        mock.add_response("a.example", ok_body(&cc_outspends(true)));
+        mock.add_response("b.example", Err(LijError::Lsp("down".into())));
+        mock.add_response("c.example", Err(LijError::Lsp("down".into())));
+        let client = IndependentClient::new(mock.clone(), three_endpoints());
+        assert_eq!(client.coin_check_agreed(CC_TXID, 1, 50_000, CC_SPK).await, None);
+    }
+
+    #[tokio::test]
+    async fn v341_a_split_is_no_answer_and_a_lying_explorer_cannot_pass_a_spent_coin() {
+        // a: good; b: spent; c: good → two say good, one says no: a SPLIT is no answer (nothing is signed on it)
+        let mock = Arc::new(MockHttp::new());
+        cc_good(&mock, "a.example");
+        mock.add_response("b.example", ok_body(&cc_tx(true, 50_000, CC_SPK)));
+        mock.add_response("b.example", ok_body(&cc_outspends(true)));
+        cc_good(&mock, "c.example");
+        let client = IndependentClient::new(mock.clone(), three_endpoints());
+        assert_eq!(client.coin_check_agreed(CC_TXID, 1, 50_000, CC_SPK).await, None);
+        // a: says good (lying); b and c: spent → two agree the coin is spent: no
+        let mock = Arc::new(MockHttp::new());
+        cc_good(&mock, "a.example");
+        for ep in ["b.example", "c.example"] {
+            mock.add_response(ep, ok_body(&cc_tx(true, 50_000, CC_SPK)));
+            mock.add_response(ep, ok_body(&cc_outspends(true)));
+        }
+        let client = IndependentClient::new(mock.clone(), three_endpoints());
+        assert_eq!(client.coin_check_agreed(CC_TXID, 1, 50_000, CC_SPK).await, None, "a split of 1 yes against 2 no is still no answer");
+        // b and c: spent; a: cannot answer → no (two agree, nobody dissents)
+        let mock = Arc::new(MockHttp::new());
+        mock.add_response("a.example", Err(LijError::Lsp("down".into())));
+        for ep in ["b.example", "c.example"] {
+            mock.add_response(ep, ok_body(&cc_tx(true, 50_000, CC_SPK)));
+            mock.add_response(ep, ok_body(&cc_outspends(true)));
+        }
+        let client = IndependentClient::new(mock.clone(), three_endpoints());
+        assert_eq!(client.coin_check_agreed(CC_TXID, 1, 50_000, CC_SPK).await, Some(false));
+    }
+
+    #[tokio::test]
+    async fn v341_an_unknown_unconfirmed_or_different_output_is_a_no_from_that_explorer() {
+        // two 404s: the coin does not exist — no
+        let mock = Arc::new(MockHttp::new());
+        for ep in ["a.example", "b.example"] { mock.add_response(ep, Ok(HttpResponse { status: 404, body: String::new() })); }
+        mock.add_response("c.example", Err(LijError::Lsp("down".into())));
+        let client = IndependentClient::new(mock.clone(), three_endpoints());
+        assert_eq!(client.coin_check_agreed(CC_TXID, 1, 50_000, CC_SPK).await, Some(false));
+        // unconfirmed on two — no (the outspends are never asked for)
+        let mock = Arc::new(MockHttp::new());
+        for ep in ["a.example", "b.example"] { mock.add_response(ep, ok_body(&cc_tx(false, 50_000, CC_SPK))); }
+        mock.add_response("c.example", Err(LijError::Lsp("down".into())));
+        let client = IndependentClient::new(mock.clone(), three_endpoints());
+        assert_eq!(client.coin_check_agreed(CC_TXID, 1, 50_000, CC_SPK).await, Some(false));
+        assert_eq!(mock.get_calls.load(Ordering::SeqCst), 3, "a bad transaction never costs an outspends call");
+        // the registered value differs from the chain's on two — no; the script case does not matter
+        let mock = Arc::new(MockHttp::new());
+        for ep in ["a.example", "b.example"] { mock.add_response(ep, ok_body(&cc_tx(true, 50_001, "5120AABBCCDD"))); }
+        mock.add_response("c.example", Err(LijError::Lsp("down".into())));
+        let client = IndependentClient::new(mock.clone(), three_endpoints());
+        assert_eq!(client.coin_check_agreed(CC_TXID, 1, 50_000, CC_SPK).await, Some(false));
+        let mock = Arc::new(MockHttp::new());
+        for ep in ["a.example", "b.example"] { mock.add_response(ep, ok_body(&cc_tx(true, 50_000, "5120AABBCCDD"))); mock.add_response(ep, ok_body(&cc_outspends(false))); }
+        mock.add_response("c.example", Err(LijError::Lsp("down".into())));
+        let client = IndependentClient::new(mock.clone(), three_endpoints());
+        assert_eq!(client.coin_check_agreed(CC_TXID, 1, 50_000, CC_SPK).await, Some(true));
     }
 
 }

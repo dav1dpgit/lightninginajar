@@ -27,7 +27,9 @@ pub struct Declared {
     pub max_fee_sat_vb: u64,
     /// The pool's relay, as named in the provider's start message.
     pub relay: String,
-    /// "bitcoin" in production, "signet" in tests.
+    /// The network's wire name as the public joinstr v2 code writes it (peer.rs network_name): "mainnet", "signet",
+    /// "testnet", "regtest". v347: the engine named mainnet "bitcoin" (rust-bitcoin's word) and the public code's
+    /// "mainnet" pools were refused as "another network", and ours by them; `wire_network` maps either spelling.
     pub network: String,
     /// The latest a pool may run to, in seconds from now.
     pub max_timeout_s: u64,
@@ -39,6 +41,14 @@ pub fn message_size(bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// v347 (S59 Thu, DP 2026-10-15 17:56 — the relay listing that named no network of ours): the network's WIRE NAME. The
+/// public joinstr v2 code writes "mainnet" for Bitcoin (its peer.rs network_name) and refuses a pool whose `network`
+/// differs; this engine and the adapter wrote rust-bitcoin's "bitcoin" — so a Joinstr user's mainnet pool was
+/// "another network" to us and our rooms to them. Either spelling of mainnet reads as "mainnet"; the rest unchanged.
+pub fn wire_network(name: &str) -> &str {
+    match name { "bitcoin" | "mainnet" | "main" => "mainnet", other => other }
+}
+
 /// The Phase 1 pool options (v0.10 §5.4): one denomination among the declared sizes; a chain; equal fee split; one fee
 /// rate, whole sat/vB, between the relay minimum and the declared cap; broadcast now; no anchor; the default exit plan;
 /// no Tor or VPN transport; the declared network and relay; 3–6 people; a timeout within the declared window. Anything
@@ -46,7 +56,7 @@ pub fn message_size(bytes: &[u8]) -> Result<()> {
 pub fn phase1_pool(ev: &PoolEvent, d: &Declared, now_s: u64) -> Result<Params> {
     ensure!(ev.versions == vec!["2".to_string()], "versions must be [\"2\"]");
     ensure!(ev.kind == "new_pool", "not a new pool");
-    ensure!(ev.network == d.network, "pool for another network");
+    ensure!(wire_network(&ev.network) == wire_network(&d.network), "pool for another network");
     ensure!((MIN_PEOPLE..=MAX_PEOPLE).contains(&ev.peers), "a LiJ pool has 3 to 6 people");
     ensure!(d.sizes.contains(&ev.denomination), "pool size {} not declared", ev.denomination);
     ensure!(ev.denominations.is_none(), "one denomination only");

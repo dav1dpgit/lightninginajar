@@ -362,6 +362,18 @@ pub struct Seat {
     /// the relay under a one-time key. One public seat per size.
     #[serde(default)]
     pub public: bool,
+    /// v343 (Phase 2b): a provider's seat that may go into a public room the provider HOSTS (the wallet's Public pools
+    /// switch at the time the seat was taken). Signed into the seat request (client::seat_message_v3) with the seat's
+    /// fee cap. Seats taken before v343 carry false: the provider offers them no room.
+    #[serde(default)]
+    pub public_ok: bool,
+}
+
+/// v343/v344: the most a hosted room's rate may be for this seat, in thousandths of a sat/vB — 1.5× the rate shown at
+/// Join, exactly what the phone enforces at a pool (caps::within_fee_limit_milli; review 2b #2 — a whole-sat cap
+/// rounded up let the host announce a rate the phone then refused).
+pub fn seat_fee_cap_milli(seat: &Seat) -> u64 {
+    seat.rate_at_join.saturating_mul(1500).max(super::caps::RELAY_MIN_SAT_VB.saturating_mul(1000))
 }
 
 pub fn seats(storage: &dyn LijStorage) -> LijResult<Vec<Seat>> {
@@ -678,6 +690,13 @@ pub fn keep_out_quote(storage: &dyn LijStorage, root: &RootKey, coins: &[(String
 /// The body of POST /tatara/seat (v0.8's arrangement): the node key signs the seat message (`sign` — the wallet's
 /// LND-compatible message signing).
 pub fn seat_request(seat: &Seat, node_pubkey: &str, ts: u64, sign: &dyn Fn(&str) -> LijResult<String>) -> LijResult<serde_json::Value> {
+    if seat.public_ok {
+        // v343/v344: the provider, the public switch and the fee cap (thousandths) signed — adapter 0.106.0 checks v3 when
+        // `public` is in the body
+        let cap = seat_fee_cap_milli(seat);
+        let sig = sign(&super::client::seat_message_v3(&seat.provider_pk, &seat.route, seat.size, &seat.seat_pk, true, cap, ts))?;
+        return Ok(super::client::seat_body_v3(&seat.provider_pk, &seat.route, seat.size, &seat.seat_pk, node_pubkey, true, cap, ts, &sig));
+    }
     let sig = sign(&super::client::seat_message_v1(&seat.route, seat.size, &seat.seat_pk, ts))?;
     Ok(super::client::seat_body_v1(&seat.route, seat.size, &seat.seat_pk, node_pubkey, ts, &sig))
 }
@@ -697,6 +716,9 @@ pub struct SeatAsk {
     pub funding_hex: String,
     #[serde(default)]
     pub exits: Vec<String>,
+    /// v344 (Phase 2b): `open` for a hosted room names the key this phone's join request will come from.
+    #[serde(default)]
+    pub join_pk: String,
 }
 
 pub fn seat_body(seat: &Seat, ask: &SeatAsk, ts: u64) -> LijResult<serde_json::Value> {
@@ -708,7 +730,7 @@ pub fn seat_body(seat: &Seat, ask: &SeatAsk, ts: u64) -> LijResult<serde_json::V
     let e = |x: anyhow::Error| LijError::Node(x.to_string());
     match ask.action.as_str() {
         "checkin" | "leave" | "pause" | "resume" => k.simple_body(&ask.action, &seat.seat_id, ts, &aux).map_err(e),
-        "open" => Ok(k.open_body(&seat.seat_id, &ask.attempt_id, ts, &aux)),
+        "open" => Ok(if ask.join_pk.is_empty() { k.open_body(&seat.seat_id, &ask.attempt_id, ts, &aux) } else { k.open_room_body(&seat.seat_id, &ask.attempt_id, &ask.join_pk, ts, &aux) }),
         "report" => k.report_body(&seat.seat_id, &ask.attempt_id, &ask.outcome, ts, &aux).map_err(e),
         "announce" => Ok(k.announce_body(&seat.seat_id, &ask.attempt_id, &ask.announcement, ts, &aux)),
         "backup" => Ok(k.backup_body(&seat.seat_id, &ask.attempt_id, &ask.funding_hex, &ask.exits, ts, &aux)),
@@ -778,8 +800,8 @@ pub fn attempt_common(storage: &dyn LijStorage, root: &RootKey, st: &AttemptStar
     for (t, v) in &st.refused {
         refused.push(bitcoin::OutPoint { txid: t.parse().map_err(|_| LijError::Node("a refused coin's txid".into()))?, vout: *v });
     }
-    let network = match root.network {
-        bitcoin::Network::Bitcoin => "bitcoin",
+    let network = match root.network {   // v347: the wire name the public joinstr code writes ("mainnet", not rust-bitcoin's "bitcoin")
+        bitcoin::Network::Bitcoin => "mainnet",
         bitcoin::Network::Testnet => "testnet",
         bitcoin::Network::Signet => "signet",
         _ => "regtest",
@@ -812,10 +834,19 @@ pub fn attempt_common(storage: &dyn LijStorage, root: &RootKey, st: &AttemptStar
 pub fn public_start(seat: &Seat, relay: &str, pool_id: &str, peers: usize) -> LijResult<AttemptStart> {
     // v337: any seat may take a public room (the combined list); `relay` is the public relay the room lives on (a
     // public seat's own endpoint, or the relay the page watches for a provider's seat)
-    if !(relay.starts_with("wss://") || relay.starts_with("ws://")) { return Err(LijError::Node("a public room needs a relay (wss://…)".into())); }
+    // v344 (review 2b #11): a plain ws:// relay only on loopback (the proof harness) — on the network the room is wss://
+    let loopback = relay.starts_with("ws://127.0.0.1") || relay.starts_with("ws://localhost") || relay.starts_with("ws://[::1]");
+    if !(relay.starts_with("wss://") || loopback) { return Err(LijError::Node("a public room needs a relay (wss://…)".into())); }
     if seat.route != "chain" { return Err(LijError::Node("a public room pays on-chain — a channel seat cannot take one".into())); }
     let cap = seat.rate_at_join.saturating_mul(3).div_ceil(2).max(super::caps::RELAY_MIN_SAT_VB);
     Ok(AttemptStart { seat_pk: seat.seat_pk.clone(), attempt_id: format!("public-{pool_id}"), size: seat.size, peers, relay: relay.to_string(), sizes: vec![seat.size], max_fee_sat_vb: cap, refused: vec![], public: true })
+}
+
+/// v340 (S59 security review, finding 3): a pool whose id this phone already holds a record for is refused — a record
+/// is keyed by the pool id, and a creator reusing an old id would otherwise have the new pool's record REPLACE the old
+/// one (its signed exits gone from this phone, its coin's hold orphaned and freed by the next reconcile).
+pub fn record_exists(storage: &dyn LijStorage, pool_id: &str) -> LijResult<bool> {
+    Ok(super::records::load(storage)?.iter().any(|r| r.id == pool_id))
 }
 
 /// The seat's secret key (to open its copy of the pool's key).
@@ -968,7 +999,7 @@ mod tests {
     #[test]
     fn s5_a_seat_holds_its_coins_until_it_is_dropped_and_its_secret_stays_on_this_phone() {
         let st = Mem(Mutex::new(Default::default()));
-        let seat = Seat { seat_id: "x".into(), seat_secret_hex: String::new(), seat_pk: String::new(), provider_pk: "02aa".into(), endpoint: "https://lsp.example".into(), size: 100_000, route: "chain".into(), coins: vec![("aa".repeat(32), 0)], coin_rows: vec![], payout: PayoutChoice::ThisWallet, rate_at_join: 2, since_ms: 0, public: false };
+        let seat = Seat { seat_id: "x".into(), seat_secret_hex: String::new(), seat_pk: String::new(), provider_pk: "02aa".into(), endpoint: "https://lsp.example".into(), size: 100_000, route: "chain".into(), coins: vec![("aa".repeat(32), 0)], coin_rows: vec![], payout: PayoutChoice::ThisWallet, rate_at_join: 2, since_ms: 0, public: false, public_ok: false };
         let s = seat_new(&st, seat.clone(), &[7u8; 32], 5).unwrap();
         assert_eq!(s.seat_pk, super::super::client::SeatKey::from_entropy(&[7u8; 32]).unwrap().pk_hex());
         assert_eq!((s.seat_id.as_str(), s.since_ms), ("", 5));
@@ -1001,7 +1032,7 @@ mod tests {
         let txid = "1f".repeat(32);
         view.utxos.push(OnchainUtxo { chain: 0, index: 0, txid: txid.clone(), vout: 1, value_sats: 130_000, height: 969_000, spent_height: None, spent_txid: None, sp_tweak: None, sp_label: None });
         save_view(&st, &view).unwrap();
-        let seat = Seat { seat_id: String::new(), seat_secret_hex: String::new(), seat_pk: String::new(), provider_pk: "02".to_string() + &"11".repeat(32), endpoint: "https://lsp.example".into(), size: 100_000, route: "chain".into(), coins: vec![(txid.clone(), 1)], coin_rows: vec![], payout: PayoutChoice::ThisWallet, rate_at_join: 2, since_ms: 0, public: false };
+        let seat = Seat { seat_id: String::new(), seat_secret_hex: String::new(), seat_pk: String::new(), provider_pk: "02".to_string() + &"11".repeat(32), endpoint: "https://lsp.example".into(), size: 100_000, route: "chain".into(), coins: vec![(txid.clone(), 1)], coin_rows: vec![], payout: PayoutChoice::ThisWallet, rate_at_join: 2, since_ms: 0, public: false, public_ok: false };
         let s = seat_new(&st, seat, &fresh32(), 1).unwrap();
         assert_eq!((s.coin_rows.len(), s.coin_rows[0].txid.as_str(), s.coin_rows[0].value_sats), (1, txid.as_str(), 130_000), "the row rides with the seat");
         let start = AttemptStart { seat_pk: s.seat_pk.clone(), attempt_id: "att-1".into(), size: 100_000, peers: 3, relay: "wss://lsp.example/tatara/relay".into(), sizes: vec![100_000], max_fee_sat_vb: 20, refused: vec![], public: false };
@@ -1039,7 +1070,7 @@ mod tests {
             let txid = format!("{:02x}", 0x10 + i).repeat(32);
             view.utxos.push(OnchainUtxo { chain: 0, index: 0, txid: txid.clone(), vout: 1, value_sats: 130_000, height: 969_000, spent_height: None, spent_txid: None, sp_tweak: None, sp_label: None });
             save_view(&stores[i], &view).unwrap();
-            let seat = Seat { seat_id: String::new(), seat_secret_hex: String::new(), seat_pk: String::new(), provider_pk: "02".to_string() + &"11".repeat(32), endpoint: "https://lsp.example".into(), size: 100_000, route: "chain".into(), coins: vec![(txid, 1)], coin_rows: vec![], payout: PayoutChoice::ThisWallet, rate_at_join: 2, since_ms: 0, public: false };
+            let seat = Seat { seat_id: String::new(), seat_secret_hex: String::new(), seat_pk: String::new(), provider_pk: "02".to_string() + &"11".repeat(32), endpoint: "https://lsp.example".into(), size: 100_000, route: "chain".into(), coins: vec![(txid, 1)], coin_rows: vec![], payout: PayoutChoice::ThisWallet, rate_at_join: 2, since_ms: 0, public: false, public_ok: false };
             let s = seat_new(&stores[i], seat, &fresh32(), 1).unwrap();
             seat_confirm(&stores[i], &s.seat_pk, &format!("seat-{i}")).unwrap();
             seat_pks.push(s.seat_pk);
@@ -1136,7 +1167,7 @@ mod tests {
         let r = root();
         save_view(&st, &Tier2View::default()).unwrap();
         // a seat's coin: leave the seat instead
-        let seat = Seat { seat_id: "x".into(), seat_secret_hex: String::new(), seat_pk: String::new(), provider_pk: "02aa".into(), endpoint: "https://lsp.example".into(), size: 100_000, route: "chain".into(), coins: vec![("aa".repeat(32), 0)], coin_rows: vec![], payout: PayoutChoice::ThisWallet, rate_at_join: 2, since_ms: 0, public: false };
+        let seat = Seat { seat_id: "x".into(), seat_secret_hex: String::new(), seat_pk: String::new(), provider_pk: "02aa".into(), endpoint: "https://lsp.example".into(), size: 100_000, route: "chain".into(), coins: vec![("aa".repeat(32), 0)], coin_rows: vec![], payout: PayoutChoice::ThisWallet, rate_at_join: 2, since_ms: 0, public: false, public_ok: false };
         seat_new(&st, seat, &[7u8; 32], 5).unwrap();
         assert!(keep_out_plan(&st, &r, &[("aa".repeat(32), 0)]).unwrap_err().to_string().contains("leave the seat"));
         // a coin no pool holds
@@ -1206,7 +1237,7 @@ mod tests {
         view.utxos.push(OnchainUtxo { chain: 0, index: 0, txid: "cc".repeat(32), vout: 0, value_sats: 130_000, height: 969_000, spent_height: None, spent_txid: None, sp_tweak: None, sp_label: None });
         view.utxos.push(OnchainUtxo { chain: 0, index: 1, txid: "aa".repeat(32), vout: 0, value_sats: 50_000, height: 969_000, spent_height: None, spent_txid: None, sp_tweak: None, sp_label: None });
         save_view(&st, &view).unwrap();
-        let seat = Seat { seat_id: "x".into(), seat_secret_hex: String::new(), seat_pk: String::new(), provider_pk: "02aa".into(), endpoint: "https://lsp.example".into(), size: 100_000, route: "chain".into(), coins: vec![("aa".repeat(32), 0)], coin_rows: vec![], payout: PayoutChoice::ThisWallet, rate_at_join: 2, since_ms: 0, public: false };
+        let seat = Seat { seat_id: "x".into(), seat_secret_hex: String::new(), seat_pk: String::new(), provider_pk: "02aa".into(), endpoint: "https://lsp.example".into(), size: 100_000, route: "chain".into(), coins: vec![("aa".repeat(32), 0)], coin_rows: vec![], payout: PayoutChoice::ThisWallet, rate_at_join: 2, since_ms: 0, public: false, public_ok: false };
         seat_new(&st, seat, &[7u8; 32], 5).unwrap();
         assert!(keep_out_quote(&st, &r, &[("aa".repeat(32), 0)], 500).unwrap_err().to_string().contains("leave the seat"));
         assert!(keep_out_quote(&st, &r, &[("bb".repeat(32), 0)], 500).unwrap_err().to_string().contains("not in a signed pool"));
@@ -1245,7 +1276,7 @@ mod tests {
         close_join_add(&st, cj("ch1", 100_000)).unwrap();
         assert!(close_join_add(&st, cj("ch1", 50_000)).unwrap_err().to_string().contains("already closing"));
         assert!(close_join_add(&st, cj("ch2", 100_000)).unwrap_err().to_string().contains("already has a seat"));
-        let seat = Seat { seat_id: "x".into(), seat_secret_hex: String::new(), seat_pk: String::new(), provider_pk: "02aa".into(), endpoint: "https://lsp.example".into(), size: 50_000, route: "chain".into(), coins: vec![("aa".repeat(32), 0)], coin_rows: vec![], payout: PayoutChoice::ThisWallet, rate_at_join: 2, since_ms: 0, public: false };
+        let seat = Seat { seat_id: "x".into(), seat_secret_hex: String::new(), seat_pk: String::new(), provider_pk: "02aa".into(), endpoint: "https://lsp.example".into(), size: 50_000, route: "chain".into(), coins: vec![("aa".repeat(32), 0)], coin_rows: vec![], payout: PayoutChoice::ThisWallet, rate_at_join: 2, since_ms: 0, public: false, public_ok: false };
         seat_new(&st, seat, &[7u8; 32], 5).unwrap();
         assert!(close_join_add(&st, cj("ch2", 50_000)).unwrap_err().to_string().contains("already has a seat"), "a seat of that size counts");
         assert_eq!(close_joins(&st).unwrap(), vec![cj("ch1", 100_000)]);
@@ -1267,4 +1298,23 @@ mod tests {
         assert_eq!(rep.unreadable.len(), 1, "an empty funding cannot be read — reported, kept");
         assert_eq!(records::load(&st).unwrap().len(), 1);
     }
+    /// v343 (Phase 2b): a seat with the Public pools switch signs the v3 message (public + its fee cap); one without
+    /// signs v1 exactly as before.
+    #[test]
+    fn v343_a_public_ok_seat_signs_the_provider_the_switch_and_its_fee_cap() {
+        let mut seat = Seat { seat_id: "x".into(), seat_secret_hex: String::new(), seat_pk: "ef".repeat(32), provider_pk: "02aa".into(), endpoint: "https://lsp.example".into(), size: 100_000, route: "chain".into(), coins: vec![("aa".repeat(32), 0)], coin_rows: vec![], payout: PayoutChoice::ThisWallet, rate_at_join: 2, since_ms: 0, public: false, public_ok: true };
+        let signed = std::cell::RefCell::new(String::new());
+        let sign = |m: &str| { *signed.borrow_mut() = m.to_string(); Ok("sig".to_string()) };
+        let b = seat_request(&seat, "02bb", 1_800_000_000, &sign).unwrap();
+        assert_eq!(*signed.borrow(), format!("lij-tatara-seat:v3|02aa|chain|100000|{}|true|3000|1800000000", "ef".repeat(32)));
+        assert_eq!((b["provider_pk"].as_str(), b["public"].as_bool(), b["fee_cap_milli"].as_u64(), b["signature"].as_str()), (Some("02aa"), Some(true), Some(3000), Some("sig")));
+        assert_eq!(seat_fee_cap_milli(&seat), 3000, "1.5 × 2 sat/vB, in thousandths — the phone's own limit");
+        seat.rate_at_join = 1; assert_eq!(seat_fee_cap_milli(&seat), 1500, "1.5 sat/vB — not 2 (v343 rounded up and the phone then refused the room)");
+        assert!(super::super::caps::within_fee_limit_milli(1500, 1, 20) && !super::super::caps::within_fee_limit_milli(1501, 1, 20), "the cap is exactly the phone's limit");
+        seat.public_ok = false;
+        let b = seat_request(&seat, "02bb", 1_800_000_000, &sign).unwrap();
+        assert_eq!(*signed.borrow(), format!("lij-tatara-seat:v1|chain|100000|{}|1800000000", "ef".repeat(32)), "a seat without the switch signs v1 as before");
+        assert!(b.get("public").is_none() && b.get("fee_cap").is_none());
+    }
+
 }

@@ -181,6 +181,8 @@ pub struct Phone {
     /// Phase 1b: a channel was opened for this attempt (Action::OpenChannel went out).
     channel_opened: bool,
     funding: Option<Transaction>,
+    /// v340: the funding's prevouts (with the record) — every member's funding signature is verified against them.
+    funding_prevouts: Vec<TxOut>,
     exits: Vec<String>,
     witnesses: HashMap<OutPoint, Witness>,
     complete_given: bool,
@@ -231,6 +233,11 @@ fn make_announcement(c: &Common, fee_rate_sat_vb: u64, seat_pks: &[String], pool
     serde_json::to_string(&e).context("announcement")
 }
 
+/// v344: the page's "does this room fit this seat?" — Phone::fits.
+pub fn public_pool_fits(c: &Common, pool_event_json: &str) -> Result<()> {
+    Phone::fits(c, pool_event_json)
+}
+
 /// v336 (Phase 2a): what a pool announcement found on a public relay says — for the page's list of public pools, from
 /// the engine's strict parse (a pool the engine would refuse is not listed). `lij` is true for a provider's pool
 /// (lij_key tags: joined through the provider, never by the handshake).
@@ -268,6 +275,10 @@ pub struct PublicJoin {
     eph_sk: SecretKey,
     eph_x: String,
     since: u64,
+    /// v344: a "pool is full" came — advisory, the credentials may still come (review 2b #4).
+    rejected: bool,
+    /// v345: how many times the join was sent (the iv of each sending).
+    sent: u32,
 }
 
 /// How long a public join waits for its credentials (the public code's creator answers within its poll interval).
@@ -284,6 +295,9 @@ pub enum Joined {
 }
 
 impl PublicJoin {
+    /// v344: a hosted room's join carries NOTHING (v342's reserved-seat token, P12, was withdrawn by the 2b security
+    /// pass: every key holder could read it, reuse it and tell the provider's seats from the strangers); the phone names
+    /// its join key to the provider at `open` instead, and the host answers that key past the strangers' quota.
     pub fn new(c: Common, pool_event_json: &str) -> Result<(PublicJoin, Out)> {
         ensure!(c.public, "a public join needs a public seat");
         ensure!(pool_event_json.len() <= 64 * 1024, "pool event too large");
@@ -300,7 +314,23 @@ impl PublicJoin {
         let jp = wire::seal(&eph_sk, &pe.public_key, &Envelope::json(Msg::JoinPool {}), c.now, &iv)?;
         let out = Out { relay: vec![serde_json::to_string(&jp)?], phase: "joining".into(), ..Default::default() };
         let since = c.now;
-        Ok((PublicJoin { c, pe, eph_sk, eph_x, since }, out))
+        Ok((PublicJoin { c, pe, eph_sk, eph_x, since, rejected: false, sent: 1 }, out))
+    }
+
+    /// v345 (the 2b re-check, a): the join sent again — a fresh event (its own iv and time) from the same key, for a
+    /// host that dropped the first under its budget or had not yet read the key the phone named at `open`. The host
+    /// answers a key it knows whenever it hears from it; a stranger's host answers a replay as it answered before.
+    pub fn again(&mut self, now: u64) -> Result<Out> {
+        ensure!(self.sent < 8, "the join was sent enough times");
+        self.sent += 1;
+        let iv: [u8; 16] = derive(&self.c.entropy, "join-iv", self.sent)[..16].try_into().expect("16 bytes");
+        let jp = wire::seal(&self.eph_sk, &self.pe.public_key, &Envelope::json(Msg::JoinPool {}), now, &iv)?;
+        Ok(Out { relay: vec![serde_json::to_string(&jp)?], phase: "joining".into(), ..Default::default() })
+    }
+
+    /// v344: the key this phone's join request comes from (hex, x-only) — named to the provider at `open` for a hosted room.
+    pub fn join_pk(&self) -> &str {
+        &self.eph_x
     }
 
     /// The relay subscription while waiting: messages to this join's key.
@@ -337,17 +367,24 @@ impl PublicJoin {
                 let (p, out) = Phone::start(c, self.pe, pool_sk)?;
                 Ok(Joined::Phone(p, out))
             }
-            Ok(Msg::Reject { .. }) => Ok(Joined::Rejected),
+            // v344 (review 2b #4): a refusal is ADVISORY — every holder of the pool key can sign as the pool key, so a
+            // stranger answered earlier could forge "pool is full" ahead of the host; the join keeps waiting for the
+            // credentials until its 90 s run out, and only then is the refusal the answer
+            Ok(Msg::Reject { .. }) => { let mut j = self; j.rejected = true; Ok(Joined::Waiting(j)) }
             _ => Ok(Joined::Waiting(self)),
         }
     }
 
-    /// Some(reason) when this join has waited too long or the pool's own timeout passed.
+    /// Some(reason) when this join has waited too long or the pool's own timeout passed. v344: a refusal heard on the
+    /// way is reported here, once the wait is over (Joined::Rejected is no longer answered at once).
     pub fn timed_out(&self, now: u64) -> Option<String> {
         if now >= self.pe.timeout { return Some("the pool's time ran out before it answered".into()); }
-        if now.saturating_sub(self.since) > JOIN_WAIT_S { return Some("the pool did not answer the join request".into()); }
+        if now.saturating_sub(self.since) > JOIN_WAIT_S { return Some(if self.rejected { "the pool said it is full".into() } else { "the pool did not answer the join request".into() }); }
         None
     }
+
+    /// v344: did the pool say it is full (an advisory refusal; the join still waits for credentials)?
+    pub fn was_refused(&self) -> bool { self.rejected }
 }
 
 /// A joining phone's copy of the pool's key, from the announcement: the event checked, its author the pool event's key,
@@ -410,9 +447,22 @@ impl Phone {
         ensure!((params.payout_type == joinstr_v2::pool::PayoutType::P2wsh) == c.payout.is_none(), "the pool's payout type is not this seat's route");
         ensure!(pe.peers == c.peers, "the pool's number of people is not the provider's");
         let rate = pe.fee_rate;
-        ensure!(caps::within_fee_limit_milli((rate * 1000.0).round() as u64, c.rate_at_join, c.declared.max_fee_sat_vb), "fees rose since you joined — the pool's rate is {rate} sat/vB, you agreed to up to {}", c.rate_at_join.saturating_mul(3) / 2);
+        ensure!(caps::within_fee_limit_milli((rate * 1000.0).round() as u64, c.rate_at_join, c.declared.max_fee_sat_vb), "fees rose since you joined — the pool's rate is {rate} sat/vB, you agreed to up to {} sat/vB", (c.rate_at_join as f64) * 1.5);   // v344: the limit is 1.5× (review 2b #2 — "3/2" rounded down)
         ensure!(!c.coins.is_empty(), "no coin");
         Ok(params)
+    }
+
+    /// v344: the checks a join runs on an announcement, with no side effect (the page's list of rooms this seat takes).
+    pub fn fits(c: &Common, pool_event_json: &str) -> Result<()> {
+        ensure!(c.public, "a public join needs a public seat");
+        ensure!(pool_event_json.len() <= 64 * 1024, "pool event too large");
+        let e: Event = serde_json::from_str(pool_event_json).context("the pool event")?;
+        ensure!(e.kind == ANNOUNCE_KIND, "not a pool announcement");
+        nwc::verify_event(&e).map_err(|e| anyhow::anyhow!("the announcement's id or signature: {e}"))?;
+        let pe = PoolEvent::parse_strict(&e.content)?;
+        ensure!(pe.public_key == e.pubkey, "the announcement is not signed by the pool's key");
+        ensure!(!e.tags.iter().any(|t| t.len() >= 1 && t[0] == "lij_key"), "a provider's pool: joined through the provider, not the public handshake");
+        Phone::checks(c, &pe).map(|_| ())
     }
 
     fn start(c: Common, pe: PoolEvent, pool_sk: SecretKey) -> Result<(Phone, Out)> {
@@ -454,6 +504,7 @@ impl Phone {
             change: (c.change_spk.clone(), c.change_index),
             channel_opened: false,
             funding: None,
+            funding_prevouts: Vec::new(),
             exits: Vec::new(),
             witnesses: HashMap::new(),
             complete_given: false,
@@ -549,6 +600,7 @@ impl Phone {
                 }
                 Action::SaveRecord(rec) => {
                     self.funding = Some(rec.funding.clone());
+                    self.funding_prevouts = rec.prevouts.clone();
                     self.exits = rec.exits.iter().map(serialize_hex).collect();
                     out.save = Some(StoredRecord::from_machine(&rec, self.payout_index, Some((&self.change.0, self.change.1)), now.saturating_mul(1000)));
                 }
@@ -584,17 +636,19 @@ impl Phone {
     /// One event from the relay (or looped back): opened with the pool's key, then the machine — and, after this
     /// phone's signature, the members' funding signatures.
     fn read(&mut self, e: &Event, now: u64) -> Result<Out> {
+        if self.seen.len() > 8_192 { self.seen.clear(); }   // v340 (finding 4): a flooding relay cannot grow this without bound; a replay after a clear is idempotent for the machine
         let opened = match wire::open(&self.pool_sk, &self.pool_x, e, &mut self.seen) {
             Ok(Some(x)) => x,
             Ok(None) => return Ok(Out { phase: self.phase_word(), ..Default::default() }),   // seen already
             Err(_) => return Ok(Out { phase: self.phase_word(), ..Default::default() }),      // not a pool message: ignored (S1)
         };
         let (from, json) = opened;
+        self.collect_witnesses(from, &json);   // v340: before the machine (which ignores funding_sigs) — verified, from the owner only
         // v336 (Phase 2a): a public pool's CREATOR answers `join_pool` — the public code's handshake (peer.rs answer_join,
         // the creator alone: it holds the pool_sender): the pool's key to every asker while seats remain, the same answer
         // to an asker heard again (the relay replays), "pool is full" once peers − 1 are given. The joiners, who hold
         // the key too, say nothing (as the public code's joiners). The machine ignores the message (S1).
-        if self.public && self.creator && matches!(Envelope::parse_strict(&json).map(|e| e.msg), Ok(Msg::JoinPool {})) {
+        if self.public && self.creator && matches!(Envelope::parse_strict(&json).map(|e| e.msg), Ok(Msg::JoinPool { .. })) {
             if !self.joiners.contains(&from) && self.joiners.len() + 1 < self.machine_peers() {
                 self.joiners.push(from);
             }
@@ -607,10 +661,9 @@ impl Phone {
             let e = wire::seal(&self.pool_sk, &hex::encode(from), &Envelope::json(reply), now, &iv)?;
             return Ok(Out { relay: vec![serde_json::to_string(&e)?], phase: self.phase_word(), ..Default::default() });
         }
-        if self.public && !self.creator && matches!(Envelope::parse_strict(&json).map(|e| e.msg), Ok(Msg::JoinPool {})) {
+        if self.public && !self.creator && matches!(Envelope::parse_strict(&json).map(|e| e.msg), Ok(Msg::JoinPool { .. })) {
             return Ok(Out { phase: self.phase_word(), ..Default::default() });
         }
-        self.collect_witnesses(&json);
         let acts = self.machine.on(Input::Msg { from, json });
         let mut out = self.act(acts, now)?;
         if let Some(c) = self.try_complete() {
@@ -692,15 +745,27 @@ impl Phone {
         self.act(acts, now)
     }
 
-    fn collect_witnesses(&mut self, json: &str) {
+    /// v340 (S59 security review, finding 2): a member's funding signatures are taken only for the inputs THAT member
+    /// registered, and only when they verify against the funding we built (joinstr_v2::funding::verify_input, the same
+    /// check a node makes) — a valid one replaces what was there. They used to be taken from any key, unverified,
+    /// first-wins: a stranger holding the pool key could fill every input with garbage and the complete funding would
+    /// never be accepted by a node.
+    fn collect_witnesses(&mut self, from: [u8; 32], json: &str) {
         let Ok(env) = Envelope::parse_strict(json) else { return };
         let Msg::FundingSigs { witnesses } = env.msg else { return };
+        let Some(tx) = self.funding.clone() else { return };   // nothing to verify against yet (our record is not built)
+        if self.funding_prevouts.len() != tx.input.len() { return; }
         for w in witnesses {
             let Ok(txid) = w.txid.parse::<Txid>() else { continue };
+            let op = OutPoint { txid, vout: w.vout };
+            if !self.machine.owns(&from, &op) { continue; }
             let items: Option<Vec<Vec<u8>>> = w.witness.iter().map(|h| hex::decode(h).ok()).collect();
             let Some(items) = items else { continue };
-            if items.is_empty() || items.len() > 2 { continue; }
-            self.witnesses.entry(OutPoint { txid, vout: w.vout }).or_insert_with(|| Witness::from_slice(&items));
+            if items.is_empty() || items.len() > 2 || items.iter().any(|i| i.len() > 80) { continue; }
+            let Some(idx) = tx.input.iter().position(|i| i.previous_output == op) else { continue };
+            let wit = Witness::from_slice(&items);
+            if joinstr_v2::funding::verify_input(&tx, idx, &self.funding_prevouts, &wit).is_err() { continue; }
+            self.witnesses.insert(op, wit);
         }
     }
 
@@ -955,6 +1020,65 @@ mod tests {
         assert!(creator.tick(pe.timeout + PHASE_S + 1).unwrap().stopped.is_some(), "the announcement's timeout + one step");
     }
 
+    /// v344 (the 2b security pass): a hosted room's join is the public code's bytes — nothing marks it; the join key is
+    /// what the phone names to the provider at `open`; a "pool is full" is advisory (a key holder could forge it) — the
+    /// join waits its 90 s for the credentials and only then reports the refusal; credentials after a refusal still join.
+    #[test]
+    fn p2b_a_hosted_join_carries_nothing_and_a_refusal_is_advisory() {
+        let n = 3;
+        let (mut creator, ann, _) = Phone::create_public(public_common(0, n, 120_000), 2).unwrap();
+        let open = |creator: &Phone, ev_json: &str| -> String {
+            let ev: Event = serde_json::from_str(ev_json).unwrap();
+            let mut seen = HashSet::new();
+            wire::open(&creator.pool_sk, &creator.pool_x, &ev, &mut seen).unwrap().expect("a message to the pool").1
+        };
+        let (j1, j1o) = PublicJoin::new(public_common(1, n, 120_000), &ann).unwrap();
+        assert_eq!(open(&creator, &j1o.relay[0]), r#"{"version":"2","type":"join_pool"}"#, "the join is the public code's bytes");
+        let ev: Event = serde_json::from_str(&j1o.relay[0]).unwrap();
+        assert_eq!(ev.pubkey, j1.join_pk(), "the join key the phone names to the provider is the join's author");
+        // a forged "pool is full" from a key holder (the creator's own key here) before the credentials: advisory
+        let full = wire::seal(&creator.pool_sk, j1.join_pk(), r#"{"version":"2","type":"reject","reason":"pool is full"}"#, NOW + 1, &[9u8; 16]).unwrap();
+        let j1 = match j1.relay_event(&serde_json::to_string(&full).unwrap(), NOW + 1).unwrap() { Joined::Waiting(j) => j, _ => panic!("a refusal is not final") };
+        assert!(j1.was_refused() && j1.timed_out(NOW + 30).is_none(), "still waiting for the credentials");
+        assert_eq!(j1.timed_out(NOW + JOIN_WAIT_S + 1).as_deref(), Some("the pool said it is full"), "after the wait, the refusal is the answer");
+        // v345: the join sent again — a fresh event, the same key, the same bytes inside
+        let mut j1 = j1;
+        let o2 = j1.again(NOW + 20).unwrap();
+        let e2: Event = serde_json::from_str(&o2.relay[0]).unwrap();
+        assert_eq!(e2.pubkey, j1.join_pk()); assert_ne!(e2.id, ev.id, "a new event");
+        assert_eq!(open(&creator, &o2.relay[0]), r#"{"version":"2","type":"join_pool"}"#);
+        for i in 0..6 { assert!(j1.again(NOW + 40 + i).is_ok()); }
+        assert!(j1.again(NOW + 99).is_err(), "eight sendings at most");
+        let a1 = answer(&mut creator, &j1o);
+        assert!(matches!(j1.relay_event(&a1[0], NOW + 2).unwrap(), Joined::Phone(..)), "the credentials after a refusal still join");
+        // the fits check: the same checks, no side effect
+        assert!(public_pool_fits(&public_common(2, n, 120_000), &ann).is_ok());
+        let mut wrong = public_common(2, n, 120_000); wrong.size = 50_000; wrong.declared.sizes = vec![50_000];
+        assert!(public_pool_fits(&wrong, &ann).unwrap_err().to_string().contains("size"));
+    }
+
+    /// v342 (Phase 2b): the ADAPTER's room — its announcement (nip04.js signEvent, kind 2022, no tags) and its answers
+    /// (nip04.js seal: the room key to the asker) are bytes this engine accepts. The fixture was made by the adapter's
+    /// code (lijox-adapter 0.106.0, tatara-host.js) for this test's deterministic join key.
+    #[test]
+    fn p2b_the_adapters_room_announcement_and_answers_are_bytes_this_engine_takes() {
+        const ANN: &str = r#"{"pubkey":"4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa","created_at":1800000000,"kind":2022,"tags":[],"content":"{\"versions\":[\"2\"],\"id\":\"a0a1a2a3a4a5a6a7a8a9aaabacadaeaf\",\"network\":\"bitcoin\",\"type\":\"new_pool\",\"public_key\":\"4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa\",\"denomination\":100000,\"peers\":3,\"timeout\":1800001200,\"relays\":[\"wss://relay.example\"],\"fee_rate\":2.5,\"transport\":{\"vpn\":{\"enable\":false,\"vpn_gateway\":null},\"tor\":{\"enable\":false}}}","id":"9b276df2a1f76873e85d57ae45e2d958e564e4223f25d77cb441904c0b5d9bc7","sig":"6cb0ce7dfd62c3bae55e41a8a2a45cc0068dec6698fd4cdd85b7e2566344547600e021eb3b35f5887e2f81047756211551075a785ddd57f408e1d2266134c6ab"}"#;
+        const CREDS: &str = r#"{"pubkey":"4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa","created_at":1800000005,"kind":4,"tags":[["p","86bb02205796e1016d760b3897f8b37dd2b37e51d2cb57ebd96f864db99298f0"]],"content":"7xJe+KB2fPnvom72K5pB0PLAPLYN9CGRRSe7FE00I+H8DInneTsTGCSM39B7GTt6M34JjOVRyQGYtVnjTd5ZEvYioN6ldCNlpokwL7MEmLC2ZeeQfBb3tlWHSEddPQAjPvP0/X4jk3Mhoi3oNadfe1hTmxc3qrFKejMarZ0oXgPjNctqW5MyZ9Dd4wmLUjhQwtWWhLxnZX+blJPxKulIex6LJTX7kuxRhxNE/u4rpv8=?iv=C5wzIb7Jf+ga/28oKWSPRg==","id":"96cfcace29b2ca6a6249e7fd3e60a43fa056a38bde256849bdcaba88f72a0eda","sig":"b9b9f681133e27e489ccafcd71c7cf9933f6d1a940248be1fa9af0a4ff49c8b9d619fb356a077d9d86d5aae2b56fa9c43b424826b294ef075a989ce886670a5b"}"#;
+        const FULL: &str = r#"{"pubkey":"4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa","created_at":1800000005,"kind":4,"tags":[["p","86bb02205796e1016d760b3897f8b37dd2b37e51d2cb57ebd96f864db99298f0"]],"content":"jChOoEtImjhIFcJFu+NeMK0Y7F4FW+RCK+PBsaBrvbq83rbYqo8gBT+Zo0EfuVj/2Us630tuAJs/jBlNMwqNAQ==?iv=R3kRHSm6A3wzIo02p2HaMA==","id":"ba61b2b7d7f57db98ac988f327098f1bce02d818c384df7d410724a6394ab59c","sig":"f618a897eaeb8dad1fd12546d507b2e9d6dfe4e208fe9657f8a3aa29b5df30882e19fc3f9f54d5f7199ff2ee60fc2ab2a57b3d3a4502e8ebefe68f79529496ca"}"#;
+        let s = public_pool_summary(ANN).unwrap();
+        assert_eq!((s.peers, s.denomination, s.fee_rate, s.lij), (3, 100_000, 2.5, false));
+        let (j, out) = PublicJoin::new(public_common(1, 3, 120_000), ANN).unwrap();
+        assert_eq!(out.phase, "joining");
+        assert_eq!(j.pool_pk(), s.pool_pk);
+        let (j2, _) = PublicJoin::new(public_common(1, 3, 120_000), ANN).unwrap();
+        assert!(matches!(j2.relay_event(FULL, NOW + 6).unwrap(), Joined::Waiting(j) if j.was_refused()), "the adapter's refusal is read (advisory)");
+        match j.relay_event(CREDS, NOW + 6).unwrap() {
+            Joined::Phone(p, o) => { assert_eq!(o.phase, "registering"); assert!(p.is_public()); assert_eq!(p.pool_id, "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf"); }
+            Joined::Waiting(_) => panic!("the adapter's credentials did not join: still waiting"),
+            Joined::Rejected => panic!("the adapter's credentials did not join: rejected"),
+        }
+    }
+
     #[test]
     fn p2a_leaving_a_public_room_while_it_fills_tells_the_others_and_frees_the_seat() {
         let n = 3;
@@ -975,6 +1099,40 @@ mod tests {
         assert!(host.leave(NOW + 6).unwrap().stopped.is_none(), "a second leave is nothing");
     }
 
+    /// v340 (S59 security review, finding 2): an outsider holding the pool key posts funding signatures (garbage) for
+    /// every input before the real ones arrive — they never reach the complete funding: only the owner's, verified
+    /// against the funding we built, count; the pool completes with the real signatures.
+    #[test]
+    fn p6_an_outsiders_funding_signatures_never_reach_the_complete_funding() {
+        let n = 3;
+        let values: Vec<u64> = (0..n).map(|i| 100_000 + 5_000 + 20_000 * (i as u64 % 2)).collect();
+        let mut room = pool(n, &values);
+        // run the pool up to the signing of exits, then inject the outsider's message ahead of everyone's funding sigs
+        let mut steps = 0;
+        while let Some((j, e)) = room.queue.pop_front() {
+            steps += 1; assert!(steps < 100_000);
+            let o = room.phones[j].relay_event(&e, NOW).unwrap();
+            let fs = o.relay.iter().any(|x| x.contains("\"funding_sigs\"") || x.len() > 0 && { let ev: Event = serde_json::from_str(x).unwrap(); ev.kind == wire::KIND && o.funding_signed });
+            room.handle(j, o);
+            if fs { break; }   // the first phone's own funding signature is out — the others' are still queued
+        }
+        // the outsider: garbage witnesses for every registered input, sealed to the pool key under a fresh key
+        let outsider = sk("outsider", 9);
+        let ops: Vec<(String, u32)> = (0..n as u32).map(|i| { let op = common(i, n, values[i as usize]).coins[0].0; (op.txid.to_string(), op.vout) }).collect();
+        let wits: Vec<joinstr_v2::msg::WitnessMsg> = ops.iter().map(|(t, v)| joinstr_v2::msg::WitnessMsg { txid: t.clone(), vout: *v, witness: vec!["de".repeat(64)] }).collect();
+        let bad = Envelope::json(Msg::FundingSigs { witnesses: wits });
+        let pool_x = room.phones[0].pool_pk().to_string();
+        let e = wire::seal(&outsider, &pool_x, &bad, NOW, &[7u8; 16]).unwrap();
+        let ej = serde_json::to_string(&e).unwrap();
+        for j in 0..n { room.queue.push_front((j, ej.clone())); }   // ahead of the real signatures
+        room.run();
+        assert!(room.stops.iter().all(|s| s.is_none()), "no stop: {:?}", room.stops);
+        let c0 = room.complete[0].clone().expect("the funding completes with the real signatures");
+        let f: Transaction = deserialize_hex(&c0.funding_hex).unwrap();
+        assert!(f.input.iter().all(|i| !i.witness.is_empty() && i.witness.iter().all(|w| w != &[0xde; 64][..])), "no garbage witness in the complete funding");
+        for c in &room.complete { assert_eq!(c.as_ref(), Some(&c0)); }
+    }
+
     #[test]
     fn p2a_the_creator_answers_peers_minus_one_askers_once_each_and_nobody_after() {
         let n = 3;
@@ -988,7 +1146,7 @@ mod tests {
         assert_eq!(answer(&mut creator, &j2).len(), 1);
         let full = answer(&mut creator, &j3o);
         assert_eq!(full.len(), 1, "the seats are given: a third asker is told the pool is full (the public code's reject)");
-        assert!(matches!(j3.relay_event(&full[0], NOW).unwrap(), Joined::Rejected));
+        assert!(matches!(j3.relay_event(&full[0], NOW).unwrap(), Joined::Waiting(j) if j.was_refused()), "v344: advisory — read, not final");
         // a joiner that holds the key says nothing to a join request (the public code's joiners have no pool_sender)
         let Joined::Phone(mut joiner, _) = j1.relay_event(&a1[0], NOW).unwrap() else { panic!("joined") };
         assert_eq!(answer(&mut joiner, &j2).len(), 0, "a joiner ignores join_pool");

@@ -296,7 +296,14 @@ fn c3_a_payout_of_the_wrong_type_stops_the_pool_and_an_unopened_channel_times_ou
         Some(vec![v.to_string()])
     }));
     net.run();
-    assert!(net.stops.iter().any(|(_, r, _)| r == "a payout that is not a channel's P2WSH"), "{:?}", net.stops);
+    // v340 (finding 1): a wrong-type payout comes under an anonymous one-time key — it is IGNORED (not a stop anyone could
+    // trigger at will); the pool then waits out the Payouts clock with nobody named
+    assert!(net.stops.is_empty() && net.signed.is_empty(), "the wrong payout is ignored: {:?}", net.stops);
+    for j in 0..3 { net.queue.push_back((j, Input::Tick { now: 2_000 })); }
+    net.run();
+    for j in 0..3 { net.queue.push_back((j, Input::Tick { now: 3_000 })); }
+    net.run();
+    assert!(net.stops.len() == 3 && net.stops.iter().all(|(_, r, named)| r.contains("timed out at Payouts") && named.is_empty()), "{:?}", net.stops);
     assert!(net.signed.is_empty());
     // an on-chain pool whose phone 1 registers a P2WSH payout
     let mut net = Net::new(3);
@@ -308,7 +315,12 @@ fn c3_a_payout_of_the_wrong_type_stops_the_pool_and_an_unopened_channel_times_ou
         Some(vec![v.to_string()])
     }));
     net.run();
-    assert!(net.stops.iter().any(|(_, r, _)| r == "a payout that is not P2TR"), "{:?}", net.stops);
+    assert!(net.stops.is_empty(), "ignored, as above: {:?}", net.stops);
+    for j in 0..3 { net.queue.push_back((j, Input::Tick { now: 2_000 })); }
+    net.run();
+    for j in 0..3 { net.queue.push_back((j, Input::Tick { now: 3_000 })); }
+    net.run();
+    assert!(net.stops.iter().all(|(_, r, named)| r.contains("timed out at Payouts") && named.is_empty()) && net.stops.len() == 3, "{:?}", net.stops);
     // a page that never opens the channel
     let mut net = Net::with(3, true);
     net.no_channel = true;
@@ -423,6 +435,42 @@ fn a_member_who_leaves_stops_the_pool_for_everyone_and_names_no_one_but_cannot_l
     done.run();
     assert_eq!(done.signed.len(), 3);
     assert!(done.phones[0].on(Input::Leave).is_empty(), "no leaving after the coin signature");
+}
+
+/// v340 (S59 security review, finding 1): a malformed message from a key that is not a registered session is ignored,
+/// never a stop; a registered member's malformed message stops the pool naming THAT member.
+#[test]
+fn a_malformed_message_from_a_stranger_is_ignored_and_from_a_member_is_named() {
+    let mut net = Net::new(3).public();
+    net.run();
+    assert_eq!(net.signed.len(), 3);
+    let mut fresh = Net::new(3);
+    fresh.tamper = Some(Box::new(|i, json| if i == 2 && json.contains("\"nonces\"") { Some(vec![]) } else { None }));
+    fresh.run();   // everyone waits at View
+    assert!(fresh.stops.is_empty());
+    // a stranger (not registered) with the pool key: garbage of every kind
+    for bad in ["{\"version\":\"9\"}", "not json", "{\"version\":\"2\",\"type\":\"nonces\",\"nonces\":[\"zz\"]}"] {
+        for j in 0..3 { let acts = fresh.phones[j].on(Input::Msg { from: session(77), json: bad.into() }); assert!(acts.is_empty(), "ignored: {acts:?}"); }
+    }
+    assert!(fresh.stops.is_empty(), "a stranger cannot stop the pool");
+    // a registered member's garbage names that member
+    let acts = fresh.phones[0].on(Input::Msg { from: session(2), json: "{\"version\":\"9\"}".into() });
+    assert!(acts.iter().any(|a| matches!(a, Action::Stopped { named, .. } if *named == vec![session(2)])), "{acts:?}");
+}
+
+/// v340 (finding 2): funding signatures are taken only from the member that registered the input and only when they
+/// verify against the funding we built; an outsider's, or a wrong one, never reaches the complete funding.
+#[test]
+fn funding_signatures_are_verified_and_bound_to_their_owner() {
+    // the phone-level test lives in phone.rs (p6_…); here: the machine's owns()
+    let mut net = Net::new(3);
+    net.run();
+    assert_eq!(net.signed.len(), 3);
+    let p0 = &net.phones[0];
+    let my = my_part(0).coins[0].0;
+    assert!(p0.owns(&session(0), &my));
+    assert!(!p0.owns(&session(1), &my), "another member does not own my input");
+    assert!(!p0.owns(&session(77), &my), "a stranger owns nothing");
 }
 
 /// A LiJ member's view still counts in a public pool: a different hash stops the pool, no one named.

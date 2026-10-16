@@ -31,6 +31,18 @@ pub fn seat_message_v1(route: &str, size: u64, seat_pk: &str, ts: u64) -> String
 pub fn seat_body_v1(route: &str, size: u64, seat_pk: &str, node_pubkey: &str, ts: u64, signature: &str) -> Value {
     json!({ "route": route, "size": size, "seat_pk": seat_pk, "node_pubkey": node_pubkey, "ts": ts, "signature": signature })
 }
+/// v343/v344 (S59 Thu, Phase 2b — the hosted room): a seat that may go into a public room the provider hosts signs the
+/// facts the host needs — the PROVIDER it is for (its node key: a request cannot be replayed at another provider —
+/// review 2b #7), `public` (the wallet's Public pools switch) and its `fee_cap_milli` (thousandths of a sat/vB: 1.5×
+/// the rate at Join, exactly the limit the phone enforces at a pool — review 2b #2) —
+/// `lij-tatara-seat:v3|<provider_pk>|<route>|<size>|<seat_pk>|<public>|<fee_cap_milli>|<ts>` (v2 is the ring-signed
+/// seat's digest; adapter 0.106.0 checks v3 when the body carries `public`).
+pub fn seat_message_v3(provider_pk: &str, route: &str, size: u64, seat_pk: &str, public: bool, fee_cap_milli: u64, ts: u64) -> String {
+    format!("lij-tatara-seat:v3|{provider_pk}|{route}|{size}|{seat_pk}|{}|{fee_cap_milli}|{ts}", if public { "true" } else { "false" })
+}
+pub fn seat_body_v3(provider_pk: &str, route: &str, size: u64, seat_pk: &str, node_pubkey: &str, public: bool, fee_cap_milli: u64, ts: u64, signature: &str) -> Value {
+    json!({ "route": route, "size": size, "seat_pk": seat_pk, "node_pubkey": node_pubkey, "provider_pk": provider_pk, "public": public, "fee_cap_milli": fee_cap_milli, "ts": ts, "signature": signature })
+}
 
 // ── the seat key and its requests ────────────────────────────────────────────────────────────────────────────────────
 
@@ -71,6 +83,13 @@ impl SeatKey {
     pub fn open_body(&self, seat_id: &str, attempt_id: &str, ts: u64, aux: &[u8; 32]) -> Value {
         let t = ts.to_string();
         json!({ "seat_id": seat_id, "attempt_id": attempt_id, "ts": ts, "sig": self.sign("open", &[seat_id, attempt_id, &t], aux) })
+    }
+    /// v344 (Phase 2b): POST /tatara/open for a hosted ROOM — over [seat_id, attempt_id, join_pk, ts]: the key this
+    /// phone's join request will come from, so the host answers it past the strangers' quota and the join itself
+    /// carries nothing (byte for byte a Joinstr user's).
+    pub fn open_room_body(&self, seat_id: &str, attempt_id: &str, join_pk: &str, ts: u64, aux: &[u8; 32]) -> Value {
+        let t = ts.to_string();
+        json!({ "seat_id": seat_id, "attempt_id": attempt_id, "join_pk": join_pk, "ts": ts, "sig": self.sign("open", &[seat_id, attempt_id, join_pk, &t], aux) })
     }
     /// POST /tatara/report: over [seat_id, attempt_id, outcome, ts]; outcome funding_signed | stopped | stopped_at_payouts.
     pub fn report_body(&self, seat_id: &str, attempt_id: &str, outcome: &str, ts: u64, aux: &[u8; 32]) -> Result<Value> {
@@ -117,6 +136,12 @@ pub enum Notice {
     Stopped { seat_id: String, #[serde(default)] attempt_id: Option<String>, reason: String, at: u64 },
     Removed { seat_id: String, reason: String, at: u64 },
     Done { seat_id: String, #[serde(default)] attempt_id: Option<String>, at: u64 },
+    /// v344 (Phase 2b, adapter 0.106.0): the provider's hosted public room is ready for this seat — the announcement (a
+    /// signed public pool event), the public relay, `open_within_s` to open; the phone joins it by the public handshake
+    /// (its join key named to the provider at `open`, so the host answers it past the strangers' quota).
+    Room { seat_id: String, attempt_id: String, route: String, size: u64, peers: u32, relay: String, event: String, open_within_s: u64, at: u64 },
+    /// v344: the seat missed a room's wake — no strike, no re-seating; it holds back until the app opens (this check-in).
+    MissedRoom { seat_id: String, attempt_id: String, at: u64 },
 }
 
 impl Notice {
@@ -124,7 +149,7 @@ impl Notice {
         match self {
             Notice::Start { seat_id, .. } | Notice::Retry { seat_id, .. } | Notice::Create { seat_id, .. } | Notice::WaitForAnnouncement { seat_id, .. }
             | Notice::Announcement { seat_id, .. } | Notice::MissedStart { seat_id, .. } | Notice::NoPool { seat_id, .. } | Notice::Stopped { seat_id, .. }
-            | Notice::Removed { seat_id, .. } | Notice::Done { seat_id, .. } => seat_id,
+            | Notice::Removed { seat_id, .. } | Notice::Done { seat_id, .. } | Notice::Room { seat_id, .. } | Notice::MissedRoom { seat_id, .. } => seat_id,
         }
     }
 }
@@ -257,6 +282,9 @@ mod tests {
         assert_eq!(hex::encode(action_digest("report", &[&sid, &"cd".repeat(16), "stopped_at_payouts", "1791979200"])), JS_REPORT);
         assert_eq!(seat_message_v1("chain", 50000, &"ef".repeat(32), TS), format!("lij-tatara-seat:v1|chain|50000|{}|{TS}", "ef".repeat(32)));
         assert_eq!(seat_message_v1("channel", 100000, &"ef".repeat(32), TS), format!("lij-tatara-seat:v1|channel|100000|{}|{TS}", "ef".repeat(32)), "Phase 1b: the channel route signed (adapter 0.103.0 R10)");
+        assert_eq!(seat_message_v3("02cd", "chain", 50000, &"ef".repeat(32), true, 3000, TS), format!("lij-tatara-seat:v3|02cd|chain|50000|{}|true|3000|{TS}", "ef".repeat(32)), "v343/v344: the provider, the public switch and the fee cap (thousandths) signed (adapter 0.106.0)");
+        let b = seat_body_v3("02cd", "chain", 50000, &"ef".repeat(32), "02ab", true, 3000, TS, "sig");
+        assert_eq!((b["provider_pk"].as_str(), b["public"].as_bool(), b["fee_cap_milli"].as_u64()), (Some("02cd"), Some(true), Some(3000)));
         let k = SeatKey::from_entropy(&[7u8; 32]).unwrap();
         let b = k.simple_body("checkin", &sid, TS, &[1u8; 32]).unwrap();
         assert!(seat_sig_ok(&k.pk_hex(), "checkin", &[&sid, "1791979200"], b["sig"].as_str().unwrap()));

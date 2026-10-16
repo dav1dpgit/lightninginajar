@@ -269,7 +269,7 @@ pub(crate) mod tests {
             payout: mine,
             inputs: vec![OutPoint { txid: my_coin, vout: 0 }],
             channel: false,
-            rate_milli: 0,
+            rate_milli: 0, prevouts: vec![],
         };
         (StoredRecord::from_machine(&rec, payout_index, None, 7), funding, e1)
     }

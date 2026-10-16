@@ -247,7 +247,7 @@ mod tests {
         let funding = tx(&[(my_coin, 0)], &[(299_000, p2tr("66"))]);
         let e0 = tx(&[(funding.compute_txid(), 0)], &[(99_000, p2tr("55")), (199_850, p2tr("67"))]);
         let e1 = tx(&[(e0.compute_txid(), 1)], &[(99_000, mine.clone()), (100_700, p2tr("58"))]);
-        let rec = crate::tatara::machine::Record { id: "att-b".into(), funding: funding.clone(), exits: vec![e0.clone(), e1.clone()], payout: mine, inputs: vec![OutPoint { txid: my_coin, vout: 0 }], channel: false, rate_milli };
+        let rec = crate::tatara::machine::Record { id: "att-b".into(), funding: funding.clone(), exits: vec![e0.clone(), e1.clone()], payout: mine, inputs: vec![OutPoint { txid: my_coin, vout: 0 }], channel: false, rate_milli, prevouts: vec![] };
         (StoredRecord::from_machine(&rec, Some(4), None, 7), funding, e0, e1)
     }
 

@@ -973,13 +973,23 @@ impl LijNode {
         ));
 
         // Decrypt + deserialize each ChannelMonitor.
-        let mut monitors: Vec<(BlockHash, ChannelMonitor<crate::signer::LijChannelSigner>)> =
-            Vec::with_capacity(monitor_keys.len());
+        // v346: the blobs read first, so the progress sink (crate::progress — the Offline room's "channel 3 of 18 · 17 %")
+        // knows the bytes in all before the first decrypt; each step pauses for the page to paint.
+        let cm_ct = cm_blob_opt.expect("checked above");
+        let mut blobs: Vec<(&String, Vec<u8>)> = Vec::with_capacity(monitor_keys.len());
         for key in &monitor_keys {
             let ct = storage.get(key)?.ok_or_else(|| {
                 LijError::Storage(format!("monitor key {key} disappeared mid-restore"))
             })?;
-            let pt = persist::decrypt(&enc_key, &ct).map_err(|e| {
+            blobs.push((key, ct));
+        }
+        let total_bytes: u64 = blobs.iter().map(|(_, ct)| ct.len() as u64).sum::<u64>() + cm_ct.len() as u64;
+        let mut done_bytes: u64 = 0;
+        let mut monitors: Vec<(BlockHash, ChannelMonitor<crate::signer::LijChannelSigner>)> =
+            Vec::with_capacity(monitor_keys.len());
+        for (key, ct) in &blobs {
+            crate::progress::step("channels", done_bytes, total_bytes).await;
+            let pt = persist::decrypt(&enc_key, ct).map_err(|e| {
                 LijError::Storage(format!("monitor decrypt failed for {key}: {e}"))
             })?;
             let mut cursor = std::io::Cursor::new(&pt);
@@ -991,10 +1001,11 @@ impl LijNode {
                 LijError::Storage(format!("monitor deser failed for {key}: {:?}", e))
             })?;
             monitors.push(read);
+            done_bytes += ct.len() as u64;
         }
 
         // Decrypt + deserialize ChannelManager via ChannelManagerReadArgs.
-        let cm_ct = cm_blob_opt.expect("checked above");
+        crate::progress::step("manager", done_bytes, total_bytes).await;   // v346
         let cm_pt = persist::decrypt(&enc_key, &cm_ct)
             .map_err(|e| LijError::Storage(format!("CM decrypt: {e}")))?;
         let user_config = {
@@ -1203,6 +1214,7 @@ impl LijNode {
             persist_skew: std::sync::atomic::AtomicBool::new(false),
         };
         node.init_peer_manager()?;
+        crate::progress::step("ready", total_bytes, total_bytes).await;   // v346
         Ok(node)
     }
 
@@ -8080,6 +8092,37 @@ mod tests {
             .expect("CM should be persisted after invoice creation");
         // Ciphertext = 12-byte nonce + AES-GCM payload (≥ 16-byte tag).
         assert!(blob.len() > 12 + 16, "ciphertext too short: {} bytes", blob.len());
+    }
+
+    /// v346 (DP 17:13): a restore from saved state reports its steps to the progress sink — here a node with no
+    /// channels: "manager" at 0 of the manager's bytes, then "ready" at all of them; the node restored all the same.
+    struct Tape(std::cell::RefCell<Vec<(String, u64, u64)>>);
+    impl crate::progress::RestoreProgress for Tape {
+        fn report(&self, stage: &str, done: u64, total: u64) { self.0.borrow_mut().push((stage.to_string(), done, total)); }
+        fn pause(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + '_>> { Box::pin(async {}) }
+    }
+    #[tokio::test]
+    async fn v346_a_restore_from_saved_state_reports_its_steps() {
+        let (root_key, mnemonic) = RootKey::generate(Network::Regtest).unwrap();
+        let storage: Arc<dyn LijStorage> = Arc::new(MemoryStorage::new());
+        let node = LijNode::new(root_key, test_config(), storage.clone()).await.unwrap();
+        node.set_sync_state(SyncState::Ready);
+        let _ = node.create_invoice(Some(1_000), "test", 3600);
+        let cm_len = storage.get(CHANNEL_MANAGER_KEY).unwrap().expect("persisted").len() as u64;
+        drop(node);
+        let tape = std::rc::Rc::new(Tape(std::cell::RefCell::new(Vec::new())));
+        crate::progress::set_sink(Some(tape.clone()));
+        let again = LijNode::restore(RootKey::from_mnemonic(&mnemonic, Network::Regtest).unwrap(), test_config(), storage.clone()).await.expect("restored");
+        crate::progress::set_sink(None);
+        assert_eq!(again.get_channels().unwrap().len(), 0);
+        let got = tape.0.borrow().clone();
+        assert_eq!(got, vec![("manager".to_string(), 0, cm_len), ("ready".to_string(), cm_len, cm_len)], "no monitors: the manager step, then ready");
+        let fresh: Arc<dyn LijStorage> = Arc::new(MemoryStorage::new());
+        let tape2 = std::rc::Rc::new(Tape(std::cell::RefCell::new(Vec::new())));
+        crate::progress::set_sink(Some(tape2.clone()));
+        let _n = LijNode::restore(RootKey::from_mnemonic(&mnemonic, Network::Regtest).unwrap(), test_config(), fresh).await.expect("fresh");
+        crate::progress::set_sink(None);
+        assert!(tape2.0.borrow().is_empty(), "no saved state: nothing to read, nothing reported");
     }
 }
 
