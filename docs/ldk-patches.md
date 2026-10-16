@@ -1,4 +1,4 @@
-# LDK patches — the full diff against upstream `lightning` 0.2.6 (refreshed 2026-09-23, engine v278)
+# LDK patches — the full diff against upstream `lightning` 0.2.6 (refreshed 2026-10-15, engine v347; the previous refresh 2026-09-23 at v278 lacked v313's `lij_commitment_obscure_factor` hunk — 7 lines)
 
 The engine (`lij/lij-core`, `lij/lij-wasm`) builds against `lij/patches/lightning`, a copy of the `lightning` crate at 0.2.6 with local changes (`lij/Cargo.toml`: `lightning = { path = "patches/lightning" }`). This document is the complete diff, hunk by hunk, with the purpose of each. It supersedes the 0.0.123 edition of this file (engine ≤ v240); the engine moved to 0.2.6 at v241 (2026-09-12) and every hunk below is the re-port of a 0.0.123 hunk except one, the re-exposed `force_close_without_broadcasting_txn` (removed upstream in 0.1). To reproduce the diff yourself:
 
@@ -15,7 +15,7 @@ diff -u  lightning-0.2.6/Cargo.toml lij/patches/lightning/Cargo.toml
 | file | added | removed |
 |---|---:|---:|
 | `src/chain/chaininterface.rs` | 12 | 0 |
-| `src/chain/channelmonitor.rs` | 114 | 0 |
+| `src/chain/channelmonitor.rs` | 121 | 0 |
 | `src/ln/channel.rs` | 11 | 4 |
 | `src/ln/channel_state.rs` | 10 | 0 |
 | `src/ln/channelmanager.rs` | 32 | 6 |
@@ -31,7 +31,7 @@ diff -u  lightning-0.2.6/Cargo.toml lij/patches/lightning/Cargo.toml
 | `src/util/sweep.rs` | 11 | 0 |
 | `src/util/time.rs` | 50 | 1 |
 | `Cargo.toml` | 4 | 0 |
-| **total, 17 files** | **272** | **38** |
+| **total, 17 files** | **279** | **38** |
 
 Two kinds of change. (a) **Behavioural** — five files: `chain/chaininterface.rs`, `chain/channelmonitor.rs`, `ln/channel.rs`, `ln/channelmanager.rs`, `util/sweep.rs`; plus one **read-only field** (engine v269, 2026-09-21): `ln/channel_state.rs` adds `ChannelDetails::lij_value_to_self_msat`, LDK's own `value_to_self_msat` carried out unchanged (TLV 49, odd, default 0), and `routing/router.rs` sets it to 0 in two test/bench constructors. Each is read-only or narrows LDK's behaviour toward not broadcasting; none touches signing, key derivation, HTLC handling, routing or gossip. (b) **Wall-clock substitutions** — `SystemTime` / `Instant` do not exist on `wasm32-unknown-unknown`, so every wall-clock call in the crate goes through `util/time.rs` (`lij_now`, `lij_since_epoch`, a browser-clock `Instant`), which reads `js_sys::Date` on wasm32 and the standard clock on every other target. Ten files carry only these substitutions; native builds are unchanged in behaviour. (The 0.0.123 edition had the same two kinds; 0.2.6 calls the clock in more places, which is why the file list grew.)
 
@@ -67,10 +67,10 @@ Adds `unbounded_sat_per_1000_weight`, an accessor that returns the fee estimator
 
 ## `src/chain/channelmonitor.rs`
 
-Five read-only additions and one hold, all behavioural, re-ported from 0.0.123 (the fifth added at v276): (1) `channel_keys_id()` — the 32-byte key id the registry channel record and the escape kit need to re-derive channel keys from the seed; (2) `lij_export_escape` + the private `lij_to_local_descriptor` — a signed copy of the latest holder commitment and its `to_local` descriptor for the offline escape kit (never broadcast by this code); (3) `lij_is_resolved_awaiting_archive()` — true when every balance is claimed and the funding spend has confirmed, so the wallet's archiver can retire the monitor; (5) `lij_latest_holder_commitment_txid()` — the txid of the latest holder commitment, read without building or signing anything, so the wallet can fingerprint its Black start kit every tick and re-push it only when a channel's state moved (engine v276); (4) the `lij_coop_hold` module and its one check at monitor load — LDK's rule is "a monitor without a manager channel broadcasts the holder commitment"; a cooperative close this wallet signed and that is still unconfirmed at the next boot must not be turned into a force close, so the wallet marks those funding txids before the manager is read and the broadcast is held.
+Six read-only additions and one hold, all behavioural, re-ported from 0.0.123 (the fifth added at v276, the sixth at v313 — see (6) below): (1) `channel_keys_id()` — the 32-byte key id the registry channel record and the escape kit need to re-derive channel keys from the seed; (2) `lij_export_escape` + the private `lij_to_local_descriptor` — a signed copy of the latest holder commitment and its `to_local` descriptor for the offline escape kit (never broadcast by this code); (3) `lij_is_resolved_awaiting_archive()` — true when every balance is claimed and the funding spend has confirmed, so the wallet's archiver can retire the monitor; (5) `lij_latest_holder_commitment_txid()` — the txid of the latest holder commitment, read without building or signing anything, so the wallet can fingerprint its Black start kit every tick and re-push it only when a channel's state moved (engine v276); (4) the `lij_coop_hold` module and its one check at monitor load — LDK's rule is "a monitor without a manager channel broadcasts the holder commitment"; a cooperative close this wallet signed and that is still unconfirmed at the next boot must not be turned into a force close, so the wallet marks those funding txids before the manager is read and the broadcast is held; (6) `lij_commitment_obscure_factor()` — the channel's BOLT 3 commitment-number obscure factor, read only; the Black start kit's merge across copies of the wallet (engine v313) uses it to order another copy's kit entry against this copy's state, so a revoked CLOSE never replaces a newer one in the kit.
 
 ```diff
-@@ -2357,6 +2357,49 @@
+@@ -2357,6 +2357,56 @@
  		);
  	}
  
@@ -108,6 +108,13 @@ Five read-only additions and one hold, all behavioural, re-ported from 0.0.123 (
 +		inner.funding.current_holder_commitment_tx.trust().txid()
 +	}
 +
++	/// LiJ v313 (Black start kit across copies, read-only): the factor that obscures this channel's commitment numbers
++	/// in its commitment transactions (BOLT 3). With it the wallet orders a kit entry made by another copy of itself
++	/// against its own state — a revoked CLOSE never replaces a newer one in the kit.
++	pub fn lij_commitment_obscure_factor(&self) -> u64 {
++		self.inner.lock().unwrap().commitment_transaction_number_obscure_factor
++	}
++
 +	/// LiJ v223 (re-ported to 0.2.6): true when every balance is claimed AND the funding spend
 +	/// was seen — the monitor is only waiting out the archive threshold. Read-only twin of
 +	/// `is_fully_resolved` with no height latch and no threshold test; the spend walker uses it
@@ -120,7 +127,7 @@ Five read-only additions and one hold, all behavioural, re-ported from 0.0.123 (
  	/// Unsafe test-only version of `broadcast_latest_holder_commitment_txn` used by our test framework
  	/// to bypass HolderCommitmentTransaction state update lockdown after signature and generate
  	/// revoked commitment transaction.
-@@ -4331,6 +4374,18 @@
+@@ -4331,6 +4381,18 @@
  							log_trace!(logger, "Avoiding commitment broadcast, already detected confirmed spend onchain");
  							continue;
  						}
@@ -139,7 +146,7 @@ Five read-only additions and one hold, all behavioural, re-ported from 0.0.123 (
  						self.queue_latest_holder_commitment_txn_for_broadcast(broadcaster, &bounded_fee_estimator, logger, true);
  					} else if !self.holder_tx_signed {
  						log_error!(logger, "WARNING: You have a potentially-unsafe holder commitment transaction available to broadcast");
-@@ -5236,6 +5291,36 @@
+@@ -5236,6 +5298,36 @@
  	#[cfg(any(test, feature = "_test_utils", feature = "unsafe_revoked_tx_signing"))]
  	/// Note that this includes possibly-locktimed-in-the-future transactions!
  	#[rustfmt::skip]
@@ -176,7 +183,7 @@ Five read-only additions and one hold, all behavioural, re-ported from 0.0.123 (
  	fn unsafe_get_latest_holder_commitment_txn<L: Deref>(
  		&mut self, logger: &WithContext<L>
  	) -> Vec<Transaction> where L::Target: Logger {
-@@ -7402,3 +7487,32 @@
+@@ -7402,3 +7494,32 @@
  	}
  	// Further testing is done in the ChannelManager integration tests.
  }
