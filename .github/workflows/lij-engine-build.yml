@@ -113,7 +113,9 @@ jobs:
           # v708 law: the wallet's CSP lists a sha256 per inline script block, written from the FINAL page
           # bytes — the seds above changed those bytes, so the hashes are rewritten here or every inline
           # block would be refused by the browser. Refuses to write if an inline handler ever reappears.
-          python3 -c "import sys; sys.path.insert(0, 'ops/frontend'); import lij_csp; lij_csp.write_and_gate(expected_blocks=9, enforcing=True)"
+          # v1049 (S61): the page carries TEN inline script blocks since the opening (the splash's own script) — nine
+          # until v1048. The flip failed once on the old count (2026-10-19 23:05, engine v350's first run).
+          python3 -c "import sys; sys.path.insert(0, 'ops/frontend'); import lij_csp; lij_csp.write_and_gate(expected_blocks=10, enforcing=True)"
           test "$(grep -c "${EB}${CUREN}" "$SWF")" = "0"
           test "$(grep -c "phase11-v${CUREN}" "$W")" = "0"
           echo "flip: engine $ENG, page phase11-v${NPV}"

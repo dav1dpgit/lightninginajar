@@ -45,6 +45,7 @@ pub mod sp_scan;   // v287 (S50, SP receive): the upward sweep over the box's tw
 pub mod tx_store;   // v298 (S52, DP #2): the wallet's own transactions, kept whole — the drill-down reads them, no explorer asked
 pub mod invoice_facts;   // v303 (S54, DP): a BOLT11 invoice's payee, amount, hash — read and signature-checked, for the page to check before paying
 pub mod nwc;   // v286 (S50, NWC cut N1): NIP-44 v2, Nostr events, the connections and limits — the pure half
+pub mod lnurl_auth;   // v350 (S61): LNURL-auth — the wallet as a login (LUD-04/05), the pure half
 pub mod channel_open;
 pub mod tier2;
 pub mod tier2_sync;

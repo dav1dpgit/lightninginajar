@@ -322,6 +322,13 @@ export class LijWalletHandle {
      */
     list_pending_json(): string;
     list_recent_payments_json(): string;
+    /**
+     * v350 (S61, DP 2026-10-19: the wallet as a login — LNURL-auth): the answer for a site's login challenge. `login_url`
+     * is the URL the LNURL decoded to (https, carrying tag=login and k1); the key is made for that site's host alone
+     * (LUD-05, m/138'/…), the challenge signed with it (LUD-04). Returns JSON {"domain", "key", "sig"} — the page
+     * fetches `login_url&sig=…&key=…` itself. Nothing is paid, nothing else leaves the wallet.
+     */
+    lnurl_auth_answer(login_url: string, k1_hex: string): string;
     lnurlp_prepare_hashes(count: number, start_hint?: number | null): Promise<any>;
     /**
      * Estimate for the + Add channel UI: spendable on-chain, the MAX channel
@@ -1364,6 +1371,7 @@ export interface InitOutput {
     readonly lijwallethandle_list_peers: (a: number) => any;
     readonly lijwallethandle_list_pending_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_list_recent_payments_json: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_lnurl_auth_answer: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly lijwallethandle_lnurlp_prepare_hashes: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_lsp_channel_open_estimate: (a: number, b: number) => any;
     readonly lijwallethandle_lsp_channel_open_estimate_with: (a: number, b: number, c: number) => any;
@@ -1519,8 +1527,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_210: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_211: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_212: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

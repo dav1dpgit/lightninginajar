@@ -198,6 +198,27 @@ The words on that page (DP 2026-09-22 21:56, "erase after use and verified copy,
 - Not done, by ruling: the offline ceremony (it cannot be enforced by the page and does not defend
   against a hostile page) and a split mode (K from another device).
 
+### 7.1 The page at every provider, and the providers in the page (v988, adapter 0.109.0; DP 2026-10-19)
+
+- **Every LIJOX provider serves the page.** `GET /recover` on a provider's API address answers the same one file the
+  wallet site serves (shipped with each adapter release, its hash in the adapter's RELEASES.md), with the site's CSP.
+  A user with only the 12 words reaches it when the wallet site does not open: *If lightninginajar.xyz does not open,
+  any LIJOX running provider's /recover provides the Black start page* (the sentence the wallet prints in the kit and
+  the Offline room). A provider that serves the page learns nothing from it — the page asks the providers and the
+  chain servers only. This is a requirement of the standard, like the kit holder (§3) and the watchtower: a provider
+  serves the page. `/health` carries `recover_page` (the page's build) so a wallet or a reviewer can see it.
+- **The providers are built into the page.** The page carries the registry as it stood when the build was cut
+  (each provider with every door it names — `routes`, direct and through Cloudflare). The live directory is read
+  first; the built-in list fills in when the directory cannot be read (a saved copy years later, the directory's host
+  down) and adds any provider the live list no longer carries — a provider that left may still hold kits. The log
+  says which list was used.
+- **Every door is asked.** The kit holder and the alive check (§7 step 3) are asked at every door of a provider in
+  parallel: a kit from any door counts, and a provider alive at any door is alive — then this is not a Black start.
+  The log names the door that answered.
+- **The wallet keeps a copy on the phone.** Safety → Backups → Black start offers "Save the recovery page to this
+  phone": the one file handed to the share sheet (Save to Files on iOS; a download elsewhere). With the printed kit and
+  that file, the day needs no server of ours at all.
+
 ## 8. Honest limits (copy for the page and the card)
 
 - A kit is only as fresh as its last push. A close from an older kit pays the balances of that

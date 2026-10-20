@@ -51,18 +51,10 @@ The page's Content-Security-Policy (`lij-pwa/frontend/_headers`, `/wallet/*` blo
 
 | artifact | sha256 |
 |---|---|
-| `lij-pwa/frontend/pkg/lij_wasm_bg.wasm` (engine phase11-v349) | `2ce0ee904bbe94b44880e1e8d1e1be9b2a781ea16ec0348bc15cd725872bbe31` |
-| `lij-pwa/frontend/pkg/lij_wasm.js` | `274a1f7e06426cc6b963b8e51e1d39fb010970de9608054b362961f4bbf8bded` |
-| `lij-pwa/frontend/wallet/index.html` (page phase11-v1048) | `7dd6c4612d746ab71bb4212b11f9e9cecf0dedc7d85766bd132aa0406f8a9512` |
-| `lij-pwa/frontend/wallet/sw.js` | `1474b11be06a1b75af5f3bd4b086921ba666e819d70dd99852fdc5693fd583c9` |
-| `lij-pwa/frontend/recover/index.html` (Black start page, build v987) | `503b8ca79093c3667bde1eaf1995a4caf6aba1b538ba96767bb6caba1a4f5fdd` |
-
-## From engine v292 (2026-09-29): the multiply path — libsecp256k1 on its 64-bit limbs
-
-- `lij/.cargo/config.toml` carries `[env] CFLAGS_wasm32_unknown_unknown = "-DUSE_FORCE_WIDEMUL_INT64"`. The `cc` crate (1.4.5) reads a per-target `CFLAGS_<target>` and passes it to every C file it compiles for wasm32; the only C in the tree that reads that macro is libsecp256k1 (`lij/vendor/secp256k1-sys`, unmodified upstream 0.10.1).
-- Why: clang defines `__SIZEOF_INT128__` for wasm32, so libsecp256k1's `util.h` picked its 128-bit multiply path (5x52 field, 4x64 scalar) — but WebAssembly has no 128-bit multiply, so every 64x64→128 product became a call into `compiler_builtins`' `__multi3`. The 64-bit path (10x26 field, 8x32 scalar) multiplies 32x32→64, one native `i64.mul` each. It is the path every 32-bit platform runs and is part of libsecp256k1's own CI matrix.
-- Gate (2026-09-29): the vendored library built to wasm as int128 and int64 at -Oz and -O3, and natively as int128 and int64 — six builds, one byte-identical 494,756-byte output over 600 rounds of every operation the engine uses (pubkey create, tweak add/mul, combine, negate, seckey tweaks, ECDH, x-only + taproot tweak, Schnorr sign/verify, ECDSA sign/verify/recover) plus BIP-340 test vector 0 as a known answer; the mix ran 2.2x faster under Node 22 (2,149 → 957 ms). Results do not change; only the time does.
-- Reproducing: nothing to do — the config file is in the tree, so the recipe above picks it up. Removing the `[env]` line rebuilds the previous arithmetic path; state on disk is unaffected either way.
+| `lij-pwa/frontend/pkg/lij_wasm_bg.wasm` (engine phase11-v239) | `6006fcfa3d548d7619526246133df97daea501177e0ce1250d2a788fa269f527` |
+| `lij-pwa/frontend/pkg/lij_wasm.js` | `51d0c0a706bcb12d517921b2294be07290633eb3fc92136a23c80b5ec1809f17` |
+| `lij-pwa/frontend/wallet/index.html` (page phase11-v709) | `f645d1c7c5fc9b81b315ce93845c3712dd1cb564b8d93a1f3e01138f187c72dd` |
+| `lij-pwa/frontend/wallet/sw.js` | `6bb8fe0e5d0933815ea77a235c85be87d0e9b62e54cad78d8590198548c61b93` |
 
 ## From engine v241 (2026-09-12): LDK 0.2.6, stable toolchain, release profile
 
@@ -70,3 +62,10 @@ The page's Content-Security-Policy (`lij-pwa/frontend/_headers`, `/wallet/*` blo
 - Toolchain: **stable 1.90.0** (`lij/rust-toolchain.toml`) — the earlier pinned nightly cannot read edition-2024 manifests in the new dependency tree; nothing in the engine needs nightly.
 - Release profile (`lij/Cargo.toml`): `opt-level = "z"`, `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `strip = "debuginfo"`; wasm-pack/binaryen pins unchanged (0.15.0 / version_117).
 - The binary is ~7.9 MB (was ~9.5 MB on 0.0.123 with the default profile).
+
+## From engine v292 (2026-09-29): the multiply path — libsecp256k1 on its 64-bit limbs
+
+- `lij/.cargo/config.toml` carries `[env] CFLAGS_wasm32_unknown_unknown = "-DUSE_FORCE_WIDEMUL_INT64"`. The `cc` crate (1.4.5) reads a per-target `CFLAGS_<target>` and passes it to every C file it compiles for wasm32; the only C in the tree that reads that macro is libsecp256k1 (`lij/vendor/secp256k1-sys`, unmodified upstream 0.10.1).
+- Why: clang defines `__SIZEOF_INT128__` for wasm32, so libsecp256k1's `util.h` picked its 128-bit multiply path (5x52 field, 4x64 scalar) — but WebAssembly has no 128-bit multiply, so every 64x64→128 product became a call into `compiler_builtins`' `__multi3`. The 64-bit path (10x26 field, 8x32 scalar) multiplies 32x32→64, one native `i64.mul` each. It is the path every 32-bit platform runs and is part of libsecp256k1's own CI matrix.
+- Gate (2026-09-29): the vendored library built to wasm as int128 and int64 at -Oz and -O3, and natively as int128 and int64 — six builds, one byte-identical 494,756-byte output over 600 rounds of every operation the engine uses (pubkey create, tweak add/mul, combine, negate, seckey tweaks, ECDH, x-only + taproot tweak, Schnorr sign/verify, ECDSA sign/verify/recover) plus BIP-340 test vector 0 as a known answer; the mix ran 2.2x faster under Node 22 (2,149 → 957 ms). Results do not change; only the time does.
+- Reproducing: nothing to do — the config file is in the tree, so the recipe above picks it up. Removing the `[env]` line rebuilds the previous arithmetic path; state on disk is unaffected either way.
