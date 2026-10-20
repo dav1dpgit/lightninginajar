@@ -866,6 +866,13 @@ export class LijWalletHandle {
      */
     register_push_subscription(subscription_json: string): Promise<any>;
     /**
+     * v349: move the active provider to another of its own doors — the one with this `endpoint` (from the stored
+     * record's `routes`, allowed by the preference). Swaps the addresses in the active record, persists, drops the
+     * peer link so the page's monitor reconnects at the new `wss_url`. Answers the applied record (JSON). Synchronous
+     * (no network); WALLET_BUSY when the engine cannot be asked this instant.
+     */
+    relink_active_lsp(endpoint: string): string;
+    /**
      * Session 23 Option B (allocator unification, the other direction):
      * the frontend reserves receive-index territory. Raises the shared
      * allocator floor to index+1 on the LIVE counter instance, so the
@@ -874,6 +881,12 @@ export class LijWalletHandle {
      */
     reserve_onchain_index(index: number): void;
     static restore(mnemonic: string, config_json: string): Promise<any>;
+    /**
+     * v349: the Reach preference the engine is applying (`direct-first` / `never-cloudflare` / `cloudflare-first`)
+     * and what the last connect decided about doors — `{"pref": "...", "note": "..."|null}`. The page's card reads
+     * the note when the engine named no provider.
+     */
+    route_state_json(): string;
     /**
      * Lock-prepare-unlock: snapshot handles under the lock, then build/sign/
      * broadcast with the lock released (network I/O). Returns SendResult JSON.
@@ -1015,6 +1028,12 @@ export class LijWalletHandle {
      */
     sweeper_spend_attempt_diag(real_tip: number): string;
     switch_lsp(lsp_pubkey: string): Promise<any>;
+    /**
+     * v349 (S61, Step A — routes-r1 §3/§6.3): switch to a provider from a record the page holds (one registry
+     * record as GET /lsps serves it, JSON) — no registry read by the engine; the door is chosen in connect_lsp by the
+     * Reach preference. Rejects with the plain reason when no door is allowed.
+     */
+    switch_lsp_with(lsp_json: string): Promise<any>;
     /**
      * Tier 2 (privacy-default) on-chain sync: pull compact block filters from
      * the node, match them LOCALLY against our scripts, fetch and verify only
@@ -1437,8 +1456,10 @@ export interface InitOutput {
     readonly lijwallethandle_quote_route_fee: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: bigint) => any;
     readonly lijwallethandle_quote_route_fee_to_pubkey: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: bigint) => any;
     readonly lijwallethandle_register_push_subscription: (a: number, b: number, c: number) => any;
+    readonly lijwallethandle_relink_active_lsp: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_reserve_onchain_index: (a: number, b: number) => [number, number];
     readonly lijwallethandle_restore: (a: number, b: number, c: number, d: number) => any;
+    readonly lijwallethandle_route_state_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_send_onchain: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly lijwallethandle_send_onchain_all: (a: number, b: number, c: number, d: number) => any;
     readonly lijwallethandle_send_onchain_multi: (a: number, b: number, c: number) => any;
@@ -1458,6 +1479,7 @@ export interface InitOutput {
     readonly lijwallethandle_sweeper_broadcast_diag: (a: number, b: number) => [number, number, number, number];
     readonly lijwallethandle_sweeper_spend_attempt_diag: (a: number, b: number) => [number, number, number, number];
     readonly lijwallethandle_switch_lsp: (a: number, b: number, c: number) => any;
+    readonly lijwallethandle_switch_lsp_with: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_tier2_onchain_sync: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
     readonly lijwallethandle_tier2_rescan_from: (a: number, b: number) => [number, number, number, number];
     readonly lijwallethandle_tx_details: (a: number, b: number, c: number, d: number, e: number) => any;
@@ -1497,8 +1519,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_207: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_208: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_210: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_211: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

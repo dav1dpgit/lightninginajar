@@ -181,6 +181,15 @@ pub struct WalletConfig {
     pub esplora_url: String,
     /// Optional: specific LSP to use (if None, auto-select from registry)
     pub preferred_lsp_pubkey: Option<String>,
+    /// v349 (S61, Step A): the wallet's Reach preference as the page stores it — `direct-first` (default),
+    /// `never-cloudflare`, `cloudflare-first` (lsp::ROUTE_PREF_*). Read BEFORE the engine's first network call.
+    #[serde(default)]
+    pub route_pref: Option<String>,
+    /// v349: the registry's own reach as the page knows it (`cloudflare` for the Workers registry; `direct` once
+    /// Phase C serves it from a box). Under `never-cloudflare` a Cloudflare registry is not read when the wallet
+    /// already has a provider to go to; a fresh wallet still reads it once (the one contact the setting cannot avoid).
+    #[serde(default)]
+    pub worker_reach: Option<String>,
 }
 
 

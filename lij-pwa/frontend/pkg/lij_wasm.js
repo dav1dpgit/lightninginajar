@@ -3028,6 +3028,34 @@ export class LijWalletHandle {
         return ret;
     }
     /**
+     * v349: move the active provider to another of its own doors — the one with this `endpoint` (from the stored
+     * record's `routes`, allowed by the preference). Swaps the addresses in the active record, persists, drops the
+     * peer link so the page's monitor reconnects at the new `wss_url`. Answers the applied record (JSON). Synchronous
+     * (no network); WALLET_BUSY when the engine cannot be asked this instant.
+     * @param {string} endpoint
+     * @returns {string}
+     */
+    relink_active_lsp(endpoint) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(endpoint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_relink_active_lsp(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * Session 23 Option B (allocator unification, the other direction):
      * the frontend reserves receive-index territory. Raises the shared
      * allocator floor to index+1 on the LIVE counter instance, so the
@@ -3053,6 +3081,30 @@ export class LijWalletHandle {
         const len1 = WASM_VECTOR_LEN;
         const ret = wasm.lijwallethandle_restore(ptr0, len0, ptr1, len1);
         return ret;
+    }
+    /**
+     * v349: the Reach preference the engine is applying (`direct-first` / `never-cloudflare` / `cloudflare-first`)
+     * and what the last connect decided about doors — `{"pref": "...", "note": "..."|null}`. The page's card reads
+     * the note when the engine named no provider.
+     * @returns {string}
+     */
+    route_state_json() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_route_state_json(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
     }
     /**
      * Lock-prepare-unlock: snapshot handles under the lock, then build/sign/
@@ -3466,6 +3518,19 @@ export class LijWalletHandle {
         const ptr0 = passStringToWasm0(lsp_pubkey, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.lijwallethandle_switch_lsp(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+    /**
+     * v349 (S61, Step A — routes-r1 §3/§6.3): switch to a provider from a record the page holds (one registry
+     * record as GET /lsps serves it, JSON) — no registry read by the engine; the door is chosen in connect_lsp by the
+     * Reach preference. Rejects with the plain reason when no door is allowed.
+     * @param {string} lsp_json
+     * @returns {Promise<any>}
+     */
+    switch_lsp_with(lsp_json) {
+        const ptr0 = passStringToWasm0(lsp_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_switch_lsp_with(this.__wbg_ptr, ptr0, len0);
         return ret;
     }
     /**
@@ -4614,7 +4679,7 @@ function __wbg_get_imports() {
             console.warn(arg0, arg1, arg2, arg3);
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2544, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2550, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed);
             return ret;
         },
@@ -4625,16 +4690,16 @@ function __wbg_get_imports() {
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("ErrorEvent")], shim_idx: 8, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_207);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_210);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 8, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_208);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_211);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 2250, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 2256, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f);
             return ret;
         },
@@ -4677,12 +4742,12 @@ function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_207(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_207(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_210(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_210(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_208(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_208(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_211(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_211(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed(arg0, arg1, arg2) {

@@ -308,6 +308,22 @@ impl LijWallet {
         Ok(())
     }
 
+    /// v349 (S61, Step A): switch to a provider from a record the page already holds (its cached registry copy) — no
+    /// registry read, so a never-cloudflare wallet can switch without touching the Workers registry. The record is
+    /// connected through connect_lsp (the door chosen there) and persisted as the user's standing choice.
+    pub async fn switch_lsp_with(&mut self, target: LspInfo) -> LijResult<()> {
+        self.node.switch_lsp(target.clone()).await?;
+        if let Err(e) = self.node.persist_chosen_lsp(&target) {
+            log::warn!("chosen-lsp persist failed (switch still applied this session): {e}");
+        }
+        Ok(())
+    }
+
+    /// v349: move the active provider to another of its own doors (see LijNode::relink_active_lsp).
+    pub fn relink_active_lsp(&mut self, endpoint: &str) -> LijResult<LspInfo> {
+        self.node.relink_active_lsp(endpoint)
+    }
+
     /// Return the list of available LSPs from the registry.
     /// Ranked by score (fee + uptime).
     pub async fn list_lsps(&self) -> LijResult<Vec<LspInfo>> {
@@ -700,11 +716,24 @@ impl LijWallet {
     ///   4. default absent/unreachable: top VIABLE listing — rank_lsps'
     ///      last remaining selection job (display order keeps the other).
     async fn auto_select_lsp(&mut self, config: &WalletConfig) -> LijResult<()> {
-        let lsps = fetch_lsp_registry(&config.worker_url).await
-            .unwrap_or_else(|e| {
-                log::warn!("LSP registry fetch failed: {e}, using stored choice/default");
-                vec![]
-            });
+        // v349 (S61, Step A): the Reach preference is read before the engine's first network call, and the registry
+        // itself is a door: under never-cloudflare a Cloudflare-reached registry is not read when the wallet already
+        // has somewhere to go (a persisted choice or a channel counterparty — both carry the record); a fresh wallet
+        // reads it once, the one contact the setting cannot yet avoid (the page's copy says so).
+        self.node.set_route_pref(config.route_pref.as_deref().unwrap_or(crate::lsp::ROUTE_PREF_DIRECT_FIRST));
+        let registry_is_cloudflare = config.worker_reach.as_deref().map(|r| r != "direct").unwrap_or(true);
+        let has_somewhere = self.node.load_chosen_lsp().is_some() || self.node.get_channels().map(|c| !c.is_empty()).unwrap_or(false);
+        let skip_registry = self.node.route_pref() == crate::lsp::ROUTE_PREF_NEVER_CLOUDFLARE && registry_is_cloudflare && has_somewhere;
+        let lsps = if skip_registry {
+            log::info!("LSP select: never-cloudflare — the registry is reached through Cloudflare and this wallet has its provider; not read (the stored record is used)");
+            vec![]
+        } else {
+            fetch_lsp_registry(&config.worker_url).await
+                .unwrap_or_else(|e| {
+                    log::warn!("LSP registry fetch failed: {e}, using stored choice/default");
+                    vec![]
+                })
+        };
         let by_pk = |pk: &str| lsps.iter().find(|l| l.pubkey == pk).cloned();
 
         // 1. Explicit choice — honored even when the registry no longer

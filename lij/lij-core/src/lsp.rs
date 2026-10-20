@@ -75,6 +75,94 @@ pub struct LspInfo {
     /// rather than persisted per-record.
     #[serde(default)]
     pub wss_url: Option<String>,
+
+    /// v349 (S61, Step A — docs/design/routes/routes-r1.md): every door into this provider as the registry signed
+    /// them (lijox-register:v4), in the operator's order. Empty for a one-door record (register v1–v3); the top-level
+    /// `endpoint` / `wss_url` then are the only door and its reach is unknown.
+    #[serde(default)]
+    pub routes: Vec<LspRoute>,
+    /// v349: the reach word of the route the wallet APPLIED to the fields above (`direct` / `cloudflare`); None when
+    /// no route was applied (a one-door record). The page shows it as the badge.
+    #[serde(default)]
+    pub reach: Option<String>,
+}
+
+/// v349: one door into a provider — the operator's signed word for what sits between the wallet and the box on these
+/// addresses (`direct`: TLS ends on the operator's own machine; `cloudflare`: Cloudflare's edge ends TLS; `tor`: a slot
+/// no browser wallet can use), with that door's three addresses.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LspRoute {
+    pub reach: String,
+    pub endpoint: String,
+    #[serde(default)]
+    pub wss_url: Option<String>,
+    #[serde(default)]
+    pub filter_url: Option<String>,
+}
+
+/// v349: the wallet's Reach preference — the one choice, made in one place (the page's Privacy → Network dial), handed
+/// to the engine at init and applied wherever a provider is connected. `direct-first` (the default): direct doors,
+/// then Cloudflare doors, then a one-door record of unknown reach; `never-cloudflare`: direct doors only — a provider
+/// with none is not connected and no call is made to it; `cloudflare-first`: Cloudflare doors, then direct, then unknown.
+pub const ROUTE_PREF_DIRECT_FIRST: &str = "direct-first";
+pub const ROUTE_PREF_NEVER_CLOUDFLARE: &str = "never-cloudflare";
+pub const ROUTE_PREF_CLOUDFLARE_FIRST: &str = "cloudflare-first";
+
+/// v349: a preference word the engine knows, else the default.
+pub fn clean_route_pref(s: &str) -> &'static str {
+    match s.trim() {
+        ROUTE_PREF_NEVER_CLOUDFLARE => ROUTE_PREF_NEVER_CLOUDFLARE,
+        ROUTE_PREF_CLOUDFLARE_FIRST => ROUTE_PREF_CLOUDFLARE_FIRST,
+        _ => ROUTE_PREF_DIRECT_FIRST,
+    }
+}
+
+/// v349: where a reach word ranks under a preference — lower is tried first; None = never used under this preference.
+/// An unknown or empty word (a one-door record from an older adapter) ranks last, and is refused under never-cloudflare:
+/// a door the operator has not named may be Cloudflare, and the user chose privacy over availability.
+pub fn route_rank(reach: &str, pref: &str) -> Option<u8> {
+    match (clean_route_pref(pref), reach) {
+        (_, "tor") => None,
+        (ROUTE_PREF_NEVER_CLOUDFLARE, "direct") => Some(0),
+        (ROUTE_PREF_NEVER_CLOUDFLARE, _) => None,
+        (ROUTE_PREF_CLOUDFLARE_FIRST, "cloudflare") => Some(0),
+        (ROUTE_PREF_CLOUDFLARE_FIRST, "direct") => Some(1),
+        (_, "direct") => Some(0),
+        (_, "cloudflare") => Some(1),
+        _ => Some(2),
+    }
+}
+
+/// v349: the doors of a record the preference allows, in the order to try them (the operator's order within a rank).
+/// A one-door record (no `routes`) yields its top-level addresses as one route of unknown reach (`""`).
+pub fn allowed_routes(info: &LspInfo, pref: &str) -> Vec<LspRoute> {
+    let doors: Vec<LspRoute> = if info.routes.is_empty() {
+        vec![LspRoute { reach: info.reach.clone().unwrap_or_default(), endpoint: info.endpoint.clone(), wss_url: info.wss_url.clone(), filter_url: None }]
+    } else {
+        info.routes.clone()
+    };
+    let mut ranked: Vec<(u8, usize, LspRoute)> = doors.into_iter().enumerate()
+        .filter_map(|(i, r)| route_rank(&r.reach, pref).map(|k| (k, i, r)))
+        .collect();
+    ranked.sort_by_key(|(k, i, _)| (*k, *i));
+    ranked.into_iter().map(|(_, _, r)| r).collect()
+}
+
+/// v349: the record with one door applied — `endpoint`, `route_endpoint` and `wss_url` become that door's, `reach` its
+/// word; `routes` stays whole so a later relink can pick another door from the stored record without the registry.
+pub fn apply_route(info: &LspInfo, route: &LspRoute) -> LspInfo {
+    let mut out = info.clone();
+    out.endpoint = route.endpoint.clone();
+    out.route_endpoint = Some(route.endpoint.clone());
+    if route.wss_url.is_some() { out.wss_url = route.wss_url.clone(); }
+    out.reach = if route.reach.is_empty() { None } else { Some(route.reach.clone()) };
+    out
+}
+
+/// v349: the record with the first allowed door applied, or None when the preference allows none of its doors — then
+/// the provider is not connected and no call is made to it (the privacy-over-availability promise, kept literally).
+pub fn pick_route(info: &LspInfo, pref: &str) -> Option<LspInfo> {
+    allowed_routes(info, pref).first().map(|r| apply_route(info, r))
 }
 
 /// The currently active LSP configuration.
@@ -363,6 +451,81 @@ pub struct LspRegistration {
 mod tests {
     use super::*;
 
+    fn rec(routes: Vec<LspRoute>) -> LspInfo {
+        LspInfo { name: "LiJ-Node".into(), pubkey: "03aa".into(), endpoint: "https://lijox-lsp.example".into(), fee_ppm: 1000, fee_base_sats: 0,
+            channel_open_fee_sats: 0, max_channel_size_sats: 0, min_channel_size_sats: 0, uptime: 100, supports_jit: true,
+            route_endpoint: Some("https://lijox-lsp.example".into()), route_macaroon: Some("m".into()), wss_url: Some("wss://lijox-ws.example".into()),
+            routes, reach: None }
+    }
+    fn r(reach: &str, host: &str) -> LspRoute {
+        LspRoute { reach: reach.into(), endpoint: format!("https://{host}-lsp.example"), wss_url: Some(format!("wss://{host}-ws.example")), filter_url: Some(format!("https://{host}-filters.example")) }
+    }
+
+    #[test]
+    fn v349_the_record_parses_with_and_without_routes() {
+        let j = r#"{"name":"LiJ-Node","pubkey":"03aa","endpoint":"https://lijox-lsp.example","fee_ppm":1000,"uptime":100,"supports_jit":true,"wss_url":"wss://lijox-ws.example",
+            "routes":[{"reach":"cloudflare","endpoint":"https://lijox-lsp.example","wss_url":"wss://lijox-ws.example","filter_url":"https://filters.example"},{"reach":"direct","endpoint":"https://direct-lsp.example","wss_url":"wss://direct-ws.example","filter_url":null}]}"#;
+        let info: LspInfo = serde_json::from_str(j).unwrap();
+        assert_eq!(info.routes.len(), 2);
+        assert_eq!(info.routes[1].reach, "direct");
+        assert_eq!(info.routes[1].filter_url, None);
+        assert_eq!(info.reach, None);
+        let legacy: LspInfo = serde_json::from_str(r#"{"name":"n","pubkey":"03aa","endpoint":"https://x","fee_ppm":1,"uptime":100,"supports_jit":true}"#).unwrap();
+        assert!(legacy.routes.is_empty());
+    }
+
+    #[test]
+    fn v349_the_preference_orders_the_doors() {
+        // the UM890's intended record: the tunnel first (what old wallets read), the direct door second
+        let info = rec(vec![r("cloudflare", "lijox"), r("direct", "direct")]);
+        let d = allowed_routes(&info, "direct-first");
+        assert_eq!(d.iter().map(|x| x.reach.as_str()).collect::<Vec<_>>(), vec!["direct", "cloudflare"], "directly when possible: the direct door first, whatever the operator's order");
+        let n = allowed_routes(&info, "never-cloudflare");
+        assert_eq!(n.len(), 1); assert_eq!(n[0].reach, "direct");
+        let c = allowed_routes(&info, "cloudflare-first");
+        assert_eq!(c.iter().map(|x| x.reach.as_str()).collect::<Vec<_>>(), vec!["cloudflare", "direct"]);
+        // a tor door is a word in the record, never a door a browser can use
+        let t = rec(vec![r("tor", "t"), r("direct", "direct")]);
+        assert_eq!(allowed_routes(&t, "direct-first").len(), 1);
+        // two direct doors keep the operator's order
+        let two = rec(vec![r("direct", "a"), r("direct", "b"), r("cloudflare", "c")]);
+        assert_eq!(allowed_routes(&two, "direct-first").iter().map(|x| x.endpoint.as_str()).collect::<Vec<_>>(), vec!["https://a-lsp.example", "https://b-lsp.example", "https://c-lsp.example"]);
+        // an unknown preference word is the default
+        assert_eq!(clean_route_pref("whatever"), "direct-first");
+        assert_eq!(clean_route_pref(" never-cloudflare "), "never-cloudflare");
+    }
+
+    #[test]
+    fn v349_a_one_door_record_is_used_last_and_refused_under_never() {
+        let legacy = rec(vec![]);
+        let d = allowed_routes(&legacy, "direct-first");
+        assert_eq!(d.len(), 1); assert_eq!(d[0].reach, ""); assert_eq!(d[0].endpoint, "https://lijox-lsp.example");
+        assert!(pick_route(&legacy, "never-cloudflare").is_none(), "a door the operator has not named may be Cloudflare");
+        let picked = pick_route(&legacy, "direct-first").unwrap();
+        assert_eq!(picked.endpoint, "https://lijox-lsp.example"); assert_eq!(picked.reach, None);
+    }
+
+    #[test]
+    fn v349_apply_route_moves_the_three_addresses_and_keeps_the_list() {
+        let info = rec(vec![r("cloudflare", "lijox"), r("direct", "direct")]);
+        let p = pick_route(&info, "direct-first").unwrap();
+        assert_eq!(p.endpoint, "https://direct-lsp.example");
+        assert_eq!(p.route_endpoint.as_deref(), Some("https://direct-lsp.example"));
+        assert_eq!(p.wss_url.as_deref(), Some("wss://direct-ws.example"));
+        assert_eq!(p.reach.as_deref(), Some("direct"));
+        assert_eq!(p.routes.len(), 2, "the list rides with the applied record so a relink needs no registry");
+        assert_eq!(p.pubkey, info.pubkey); assert_eq!(p.route_macaroon, info.route_macaroon);
+        // never-cloudflare on a record with only Cloudflare doors: nothing to apply
+        let cf = rec(vec![r("cloudflare", "lijox")]);
+        assert!(pick_route(&cf, "never-cloudflare").is_none());
+        assert_eq!(pick_route(&cf, "direct-first").unwrap().reach.as_deref(), Some("cloudflare"));
+        // the stored record round-trips with its reach and routes
+        let s = serde_json::to_string(&p).unwrap();
+        let back: LspInfo = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.reach.as_deref(), Some("direct")); assert_eq!(back.routes, p.routes);
+    }
+
+
     fn mock_lsps() -> Vec<LspInfo> {
         vec![
             LspInfo {
@@ -379,6 +542,8 @@ mod tests {
                 route_endpoint: Default::default(),
                 route_macaroon: Default::default(),
                 wss_url: None,
+                routes: vec![],
+                reach: None,
             },
             LspInfo {
                 name: "Bob's Umbrel".into(),
@@ -394,6 +559,8 @@ mod tests {
                 route_endpoint: Default::default(),
                 route_macaroon: Default::default(),
                 wss_url: None,
+                routes: vec![],
+                reach: None,
             },
         ]
     }

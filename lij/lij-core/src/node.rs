@@ -464,6 +464,11 @@ pub struct LijNode {
     pub last_resubscribe_tick: std::sync::atomic::AtomicU64,
     root_key: Arc<RootKey>,
     active_lsp: Option<ActiveLsp>,
+    /// v349 (S61, Step A): the wallet's Reach preference (lsp::ROUTE_PREF_*), handed in from the page's config at init
+    /// and applied in connect_lsp — the one place a provider's door is chosen; relink_active_lsp moves to another door.
+    route_pref: String,
+    /// v349: what the last connect decided about doors, for the page's card (e.g. why no provider was connected).
+    route_note: Option<String>,
     keys_manager: Arc<KeysManager>,
     signer_provider: Arc<LijSignerProvider>,
     outstanding_close_attempts: Arc<Mutex<std::collections::HashMap<ChannelId, CloseAttemptRecord>>>,
@@ -804,6 +809,7 @@ impl LijNode {
 
         let mut node = Self {
             config, network, root_key, active_lsp: None,
+            route_pref: crate::lsp::ROUTE_PREF_DIRECT_FIRST.to_string(), route_note: None,   // v349
             last_resubscribe_tick: std::sync::atomic::AtomicU64::new(0),   // v249
             stream_watch: StreamWatch::default(),   // v295
             keys_manager, signer_provider,
@@ -1169,6 +1175,7 @@ impl LijNode {
             stream_watch: StreamWatch::default(),   // v295
             root_key,
             active_lsp: None,
+            route_pref: crate::lsp::ROUTE_PREF_DIRECT_FIRST.to_string(), route_note: None,   // v349
             keys_manager,
             signer_provider,
             outstanding_close_attempts: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -4171,8 +4178,31 @@ impl LijNode {
 
     // ── LSP ───────────────────────────────────────────────────────────────────
 
+    /// v349: the Reach preference (lsp::clean_route_pref keeps it one of the three words). Set before any connect.
+    pub fn set_route_pref(&mut self, pref: &str) {
+        self.route_pref = crate::lsp::clean_route_pref(pref).to_string();
+    }
+    pub fn route_pref(&self) -> &str { &self.route_pref }
+    /// v349: what the last connect decided about doors (None = nothing to say).
+    pub fn route_note(&self) -> Option<&str> { self.route_note.as_deref() }
+
     pub async fn connect_lsp(&mut self, lsp: LspInfo) -> LijResult<()> {
-        log::info!("Connecting to LSP: {} at {}", lsp.name, lsp.endpoint);
+        // v349 (S61, Step A): the door is chosen HERE, for every path that connects a provider (boot ladder, switch,
+        // restore). A record whose doors the preference forbids is not connected and no call is made to it — the page
+        // reads route_note and shows the provider as unreachable by the user's own setting.
+        let lsp = match crate::lsp::pick_route(&lsp, &self.route_pref) {
+            Some(applied) => {
+                self.route_note = Some(format!("{} reached {} ({})", lsp.name, applied.reach.as_deref().unwrap_or("by its only door, reach not stated"), applied.endpoint));
+                applied
+            }
+            None => {
+                let note = format!("no door into {} is allowed by your Reach setting ({}): the provider is not connected and nothing was sent to it", lsp.name, self.route_pref);
+                log::warn!("connect_lsp: {note}");
+                self.route_note = Some(note.clone());
+                return Err(LijError::Lsp(note));
+            }
+        };
+        log::info!("Connecting to LSP: {} at {} (reach {})", lsp.name, lsp.endpoint, lsp.reach.as_deref().unwrap_or("?"));
         let client = LspClient::new(lsp.clone());
         if !client.health_check().await {
             return Err(LijError::Lsp(format!("LSP {} unreachable", lsp.name)));
@@ -4196,6 +4226,33 @@ impl LijNode {
 
     pub async fn switch_lsp(&mut self, new_lsp: LspInfo) -> LijResult<()> {
         self.connect_lsp(new_lsp).await
+    }
+
+    /// v349 (S61, Step A): move the active provider to another of ITS OWN doors — the one whose `endpoint` is given
+    /// (it must be in the stored record's `routes` and allowed by the preference). The three addresses are swapped in
+    /// `active.info`, the record is persisted, and the Lightning peer link is dropped so the page's monitor reconnects
+    /// to the new `wss_url`. No registry read, no health check (the page calls this when the door in use has failed
+    /// and the new one is its next choice; a dead new door fails the next call in plain sight). Answers the record.
+    pub fn relink_active_lsp(&mut self, endpoint: &str) -> LijResult<LspInfo> {
+        let cur = self.active_lsp.as_ref().map(|a| a.info.clone()).ok_or_else(|| LijError::Lsp("No active LSP — nothing to relink".into()))?;
+        let want = endpoint.trim().trim_end_matches('/');
+        let route = crate::lsp::allowed_routes(&cur, &self.route_pref).into_iter().find(|r| r.endpoint.trim_end_matches('/') == want)
+            .ok_or_else(|| LijError::Lsp(format!("{want} is not a door of {} your Reach setting allows", cur.name)))?;
+        let applied = crate::lsp::apply_route(&cur, &route);
+        let moved = applied.endpoint != cur.endpoint || applied.wss_url != cur.wss_url;
+        let channel_ids = self.active_lsp.as_ref().map(|a| a.channel_ids.clone()).unwrap_or_default();
+        self.active_lsp = Some(ActiveLsp { info: applied.clone(), channel_ids });
+        if let Ok(json) = serde_json::to_vec(self.active_lsp.as_ref().unwrap()) { let _ = self.storage.set(KEY_LSP_CONFIG, &json); }
+        self.route_note = Some(format!("{} relinked to its {} door ({})", applied.name, applied.reach.as_deref().unwrap_or("?"), applied.endpoint));
+        if moved {
+            if let (Ok(pm), Ok(pk)) = (self.peer_manager(), hex::decode(&applied.pubkey).map_err(|_| ()).and_then(|b| bitcoin::secp256k1::PublicKey::from_slice(&b).map_err(|_| ()))) {
+                if pm.list_peers().iter().any(|p| p.counterparty_node_id == pk) {
+                    log::info!("relink_active_lsp: dropping the peer link to {} so the monitor reconnects at {}", applied.name, applied.wss_url.as_deref().unwrap_or("?"));
+                    pm.disconnect_by_node_id(pk);
+                }
+            }
+        }
+        Ok(applied)
     }
 
     /// v224: persist the user's explicit provider choice. Only
@@ -8010,6 +8067,7 @@ mod tests {
             backup_auth_token: "".into(),
             esplora_url: "http://localhost".into(),
             preferred_lsp_pubkey: None,
+            route_pref: None, worker_reach: None,   // v349
         }
     }
 

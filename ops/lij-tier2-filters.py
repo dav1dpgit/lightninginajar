@@ -51,6 +51,7 @@ import hashlib
 import json
 import os
 import re
+import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -191,13 +192,37 @@ def _unpack(blob):
     return [blob[i:i + 33].hex() for i in range(0, len(blob), 33)]
 
 
+_SP_RUN = {"top": None, "start": None, "at": 0.0}
+
+
+def _sp_served_run(db, meta_start):
+    """The run of consecutively indexed blocks that ends at the head: (start, indexed_to). 2026-10-19 (the
+    silentpayments.xyz review, finding 2): `indexed_to` was MAX(height), which overstated coverage while a backfill
+    was still filling the blocks below (a lowered start is indexed oldest-first BEHIND the live head), and a wallet
+    that asked for a height in the hole was told "no tweaks here". Now only the gap-free run that contains the head
+    is advertised: a backfill in progress shows the OLD start until its gap closes, then the new one — and the
+    engine (v348) pulls a wallet's sweep down to a start that drops. Cached for 30 s per head."""
+    top = db.execute("SELECT MAX(height) FROM blocks").fetchone()[0]
+    if top is None:
+        return meta_start, None
+    now = time.time()
+    if _SP_RUN["top"] == top and now - _SP_RUN["at"] < 30:
+        return _SP_RUN["start"], top
+    # the lowest height of the topmost run = the greatest "run start" (a height whose predecessor is missing)
+    run_start = db.execute("SELECT MAX(b.height) FROM blocks b WHERE b.height > ? AND NOT EXISTS (SELECT 1 FROM blocks WHERE height = b.height - 1)", (meta_start,)).fetchone()[0]
+    start = max(meta_start, int(run_start)) if run_start is not None else meta_start
+    _SP_RUN.update({"top": top, "start": start, "at": now})
+    return start, top
+
+
 def sp_info():
     db = _sp_db()
     try:
         meta = dict(db.execute("SELECT k, v FROM meta").fetchall())
-        top = db.execute("SELECT MAX(height) FROM blocks").fetchone()[0]
+        meta_start = int(meta.get("start_height", 0) or 0)
+        start, top = _sp_served_run(db, meta_start)
         seq = db.execute("SELECT COALESCE(MAX(seq),0) FROM mempool").fetchone()[0]
-        return {"format": "spcommit-v1", "start_height": int(meta.get("start_height", 0) or 0), "indexed_to": top,
+        return {"format": "spcommit-v1", "start_height": start, "indexed_to": top,
                 "tip": int(meta.get("tip", 0) or 0), "mempool_seq": seq, "dust_limit": 0, "filter_spent": "N/A"}
     finally:
         db.close()

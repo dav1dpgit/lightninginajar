@@ -49,6 +49,11 @@ Env:
   SP_MEMPOOL            default 1
   SP_POLL_SECS          default 10
   SP_BATCH              default 50 (blocks indexed between commits)
+  SP_REINDEX=1          2026-10-19 (the review, findings 1 and 3): re-index every block already in the DB, oldest
+                        first, a slice a pass BEHIND the live head, replacing each row in place (never a hole in
+                        what is served); the chain heads are re-linked when it ends. It runs only when the DB was
+                        built by an older parser (the DB carries the PARSER_VERSION that last indexed it), so it is
+                        harmless left set: a finished re-index, or a fresh DB, never starts another.
 """
 
 import base64
@@ -68,8 +73,11 @@ SP_DB = os.environ.get("SP_DB", "/var/lib/lij-sp-index/sp.sqlite")
 SP_START_HEIGHT = os.environ.get("SP_START_HEIGHT", "")
 SP_MEMPOOL = os.environ.get("SP_MEMPOOL", "1") == "1"
 SP_POLL_SECS = float(os.environ.get("SP_POLL_SECS", "10"))
+SP_REINDEX = os.environ.get("SP_REINDEX", "0") == "1"
 SP_BATCH = int(os.environ.get("SP_BATCH", "50"))
 SP_ONCE = os.environ.get("SP_ONCE", "0") == "1"   # one pass, then exit (a health check, and the test harness)
+# bumped whenever the way a block's tweaks are computed changes; a DB stamped with an older one is re-indexed under SP_REINDEX=1
+PARSER_VERSION = "2026-10-19"
 
 # ── secp256k1: coincurve when the box has it, a plain-Python fallback otherwise ─────────────────
 P = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
@@ -203,7 +211,12 @@ def tagged_hash(tag, data):
 
 # ── the input-key rules (BIP-352 "inputs for shared secret derivation") ─────────────────────────
 def _pushes(script):
-    """Every push in a script, as bytes; None on anything non-push (an op we don't model)."""
+    """Every push in a script, as bytes, in order. Non-push opcodes are SKIPPED, not fatal: BIP-352 says the receiver
+    "MUST parse the scriptSig for the public key, even if the scriptSig does not match the template" (third-party
+    malleability of P2PKH scriptSigs — e.g. <dummy> OP_DROP <sig> <key>, or OP_1 OP_IF <sig> <key> OP_ELSE … OP_ENDIF).
+    Until 2026-10-19 (the silentpayments.xyz review, finding 3) any non-push opcode returned None, so such an input
+    contributed no key, the transaction got a wrong tweak, and the receiver never found the payment.
+    A truncated push (data running past the end) ends the parse with what was read so far."""
     out = []
     i = 0
     n = len(script)
@@ -213,15 +226,25 @@ def _pushes(script):
         if op == 0:
             out.append(b"")
         elif op <= 75:
+            if i + op > n: break
             out.append(script[i:i + op]); i += op
         elif op == 76:
-            ln = script[i]; i += 1; out.append(script[i:i + ln]); i += ln
+            if i >= n: break
+            ln = script[i]; i += 1
+            if i + ln > n: break
+            out.append(script[i:i + ln]); i += ln
         elif op == 77:
-            ln = int.from_bytes(script[i:i + 2], "little"); i += 2; out.append(script[i:i + ln]); i += ln
+            if i + 2 > n: break
+            ln = int.from_bytes(script[i:i + 2], "little"); i += 2
+            if i + ln > n: break
+            out.append(script[i:i + ln]); i += ln
         elif op == 78:
-            ln = int.from_bytes(script[i:i + 4], "little"); i += 4; out.append(script[i:i + ln]); i += ln
+            if i + 4 > n: break
+            ln = int.from_bytes(script[i:i + 4], "little"); i += 4
+            if i + ln > n: break
+            out.append(script[i:i + ln]); i += ln
         else:
-            return None
+            continue   # a non-push opcode: skipped
     return out
 
 
@@ -252,13 +275,14 @@ def input_pubkey(spk_hex, script_sig_hex, witness_hexes):
             if len(wit) == 2 and len(wit[1]) == 33:
                 return Point.from_bytes(wit[1])
         return None
-    # P2PKH: OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG — the key is the last push (compressed only)
+    # P2PKH: OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG — the key is the compressed 33-byte push whose hash160
+    # matches the script, searched from the END of the scriptSig (BIP-352 reference: scan the pushes backwards; the
+    # malleated vectors put decoy keys and opcodes before the real one). Uncompressed keys are skipped by the BIP.
     if len(spk) == 25 and spk[0] == 0x76 and spk[1] == 0xA9 and spk[2] == 0x14 and spk[23] == 0x88 and spk[24] == 0xAC:
-        pushes = _pushes(ssig)
-        if pushes and len(pushes[-1]) == 33 and pushes[-1][0] in (2, 3):
-            # the BIP: the key whose hash matches the script (the last push is that key in every standard spend)
-            if hashlib.new("ripemd160", hashlib.sha256(pushes[-1]).digest()).digest() == spk[3:23]:
-                return Point.from_bytes(pushes[-1])
+        for push in reversed(_pushes(ssig) or []):
+            if len(push) == 33 and push[0] in (2, 3):
+                if hashlib.new("ripemd160", hashlib.sha256(push).digest()).digest() == spk[3:23]:
+                    return Point.from_bytes(push)
         return None
     return None
 
@@ -439,6 +463,14 @@ def run():
         if meta_get(db, "rechain_from") is None:
             meta_set(db, "rechain_from", start)
         start = int(SP_START_HEIGHT); meta_set(db, "start_height", start); db.commit()
+    top0 = db.execute("SELECT MAX(height) FROM blocks").fetchone()[0]
+    if top0 is None and meta_get(db, "parser_version") is None:
+        meta_set(db, "parser_version", PARSER_VERSION); db.commit()   # a fresh DB is built by this parser
+    if SP_REINDEX and meta_get(db, "reindex_cursor") is None and top0 is not None and meta_get(db, "parser_version") != PARSER_VERSION:
+        meta_set(db, "reindex_cursor", start); meta_set(db, "reindex_to", int(top0)); db.commit()
+        log("SP_REINDEX: the DB was indexed by parser %s; re-indexing %d..%d in place behind the live head under parser %s (the P2PKH keys in malleated scriptSigs)" % (meta_get(db, "parser_version") or "(unstamped, pre-2026-10-19)", start, int(top0), PARSER_VERSION))
+    elif SP_REINDEX and meta_get(db, "reindex_cursor") is None:
+        log("SP_REINDEX set, nothing to do: the DB is already indexed by parser %s" % PARSER_VERSION)
     log("start height %d · db %s · mempool %s" % (start, SP_DB, "on" if SP_MEMPOOL else "off"))
     while True:
         backfilling = False
@@ -476,6 +508,35 @@ def run():
                 db.commit()
                 log("indexed %d block(s) to %d in %.1fs (tip %d, %d left)" % (done, todo[done - 1], time.time() - t0, tip, max(0, len(gap) - done)))
             meta_set(db, "tip", tip); db.commit()
+            # 2a. the re-index (SP_REINDEX): a slice of the already-indexed blocks, oldest first, each row replaced in
+            #     place — the served range never has a hole; a changed tweak set changes that block's commitment;
+            #     the heads are re-linked from the start when the last slice is done
+            rc = meta_get(db, "reindex_cursor")
+            if rc is not None and not ahead:
+                rc = int(rc); rto = int(meta_get(db, "reindex_to"))
+                slice_to = min(rto, rc + SP_BATCH * 4 - 1)
+                t1 = time.time(); changed = 0; n_slice = 0
+                for h in range(rc, slice_to + 1):
+                    old = db.execute("SELECT commit_v1 FROM blocks WHERE height=?", (h,)).fetchone()
+                    prev = db.execute("SELECT head FROM blocks WHERE height=?", (h - 1,)).fetchone()
+                    bh, _, n = index_block(db, h, prev[0] if prev else GENESIS_HEAD_V1)
+                    new = db.execute("SELECT commit_v1 FROM blocks WHERE height=?", (h,)).fetchone()
+                    if old is None or old[0] != new[0]:
+                        changed += 1
+                    n_slice += 1
+                    if n_slice % SP_BATCH == 0:
+                        db.commit()
+                db.commit()
+                log("re-indexed %d..%d in %.1fs (%d block(s) changed; %d left)" % (rc, slice_to, time.time() - t1, changed, max(0, rto - slice_to)))
+                if slice_to >= rto:
+                    if meta_get(db, "rechain_from") is None:
+                        meta_set(db, "rechain_from", start)
+                    db.execute("DELETE FROM meta WHERE k IN ('reindex_cursor', 'reindex_to')")
+                    meta_set(db, "parser_version", PARSER_VERSION); db.commit()
+                    log("re-index complete (parser %s): the chain heads are re-linked from %d (this pass, once no gap is left below)" % (PARSER_VERSION, start))
+                else:
+                    meta_set(db, "reindex_cursor", slice_to + 1); db.commit()
+                backfilling = backfilling or slice_to < rto
             # 2b. the gap closed after a lowered start: re-link the chain heads from the old start up
             rf = meta_get(db, "rechain_from")
             if rf is not None and len(gap) == done:
@@ -522,10 +583,26 @@ def run():
 
 
 # ── self-test against the BIP-352 sending vectors (the private keys prove the public-key path) ──
-def selftest(vectors_path):
+def selftest(vectors_path, receive_vectors_path=None):
+    """Two checks over the BIP-352 vectors. (A) the BIP's own answer: for every send case, the tweak this indexer
+    computes from the vins must equal the `tweak` the matching receive case states (the value a light client gets from
+    an index) — the independent reference; until 2026-10-19 the check below (B) derived its reference through this
+    file's own input parser, so a parser that dropped an input agreed with itself (the malleated-P2PKH case passed
+    while wrong). (B) the sender's private-key derivation, as before."""
     v = json.load(open(vectors_path))
+    truth = {}
+    if receive_vectors_path:
+        for rc in json.load(open(receive_vectors_path)):
+            if rc.get("tweak"):
+                truth.setdefault(rc["comment"], rc["tweak"])
     ok = 0
+    checked_truth = 0
     for case in v:
+        if case["comment"] in truth:
+            vin = [{"txid": i["txid"], "vout": i["vout"], "spk": i["spk"], "scriptSig": i.get("scriptSig", ""), "witness": _witness_items(i.get("witness", ""))} for i in case["vin"]]
+            t = tx_tweak(vin, ["5120" + "00" * 32])
+            assert t == truth[case["comment"]], "BIP tweak: %s: %s != %s" % (case["comment"], t, truth[case["comment"]])
+            checked_truth += 1
         vin = [{"txid": i["txid"], "vout": i["vout"], "spk": i["spk"], "scriptSig": i.get("scriptSig", ""), "witness": _witness_items(i.get("witness", ""))} for i in case["vin"]]
         t = tx_tweak(vin, ["5120" + "00" * 32])   # a taproot output, so the tx is eligible
         # the sender's side: a_sum from the private keys (a taproot input with an odd-y key negates), then (input_hash·a_sum)·G
@@ -551,7 +628,10 @@ def selftest(vectors_path):
         want = _ser(_mul(ih * a_sum % N, G)).hex()
         assert t == want, "%s: %s != %s" % (case["comment"], t, want)
         ok += 1
-    print("selftest: %d cases agree with the sender's private-key derivation (coincurve=%s)" % (ok, HAVE_COINCURVE))
+    unchecked = [c["comment"] for c in v if c["comment"] not in truth]
+    print("selftest: %d cases agree with the sender's private-key derivation; %d match the BIP's own tweak (coincurve=%s)" % (ok, checked_truth, HAVE_COINCURVE))
+    if receive_vectors_path and unchecked:
+        print("  no BIP tweak to check for %d case(s) (no eligible inputs, a zero key sum, or no receive case in the file): %s" % (len(unchecked), "; ".join(unchecked)))
 
 
 def _witness_items(w):
@@ -570,6 +650,6 @@ def _witness_items(w):
 
 if __name__ == "__main__":
     if len(sys.argv) > 2 and sys.argv[1] == "--selftest":
-        selftest(sys.argv[2])
+        selftest(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)
     else:
         run()

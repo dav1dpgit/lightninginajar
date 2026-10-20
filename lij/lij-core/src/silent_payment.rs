@@ -145,6 +145,10 @@ fn convert_5_to_8(data: &[u8]) -> Option<Vec<u8>> {
 
 /// Does this string look like a silent-payment address for `network`? A
 /// cheap prefix test for callers that only need to branch; `parse` decides.
+/// BIP-352 K_max: the receiver stops at k == 2323 (a standard transaction cannot carry more taproot outputs; the
+/// bound keeps a hostile transaction from forcing unbounded work). v348 — it was 10,000 before the review.
+pub const SP_K_MAX: u32 = 2323;
+
 pub fn looks_like(s: &str, network: Network) -> bool {
     let l = s.trim().to_ascii_lowercase();
     let hrp = if network == Network::Bitcoin { "sp1" } else { "tsp1" };
@@ -533,6 +537,19 @@ impl SpKeys {
         by_key: &std::collections::HashMap<[u8; 32], Vec<(bitcoin::Txid, u32, u64)>>,
         labels: &[SpLabelTweak],
     ) -> Vec<SpFound> {
+        self.find_by_keys_capped(secp, tweaks, by_key, labels, SP_K_MAX)
+    }
+
+    /// v348 (S60, the silentpayments.xyz review): the search with its stop made explicit — k runs 0, 1, 2 … while an
+    /// output matches and stops when it would reach `k_max` (BIP-352: "If k == K_max (=2323), stop scanning").
+    fn find_by_keys_capped<C: Verification>(
+        &self,
+        secp: &Secp256k1<C>,
+        tweaks: &[PublicKey],
+        by_key: &std::collections::HashMap<[u8; 32], Vec<(bitcoin::Txid, u32, u64)>>,
+        labels: &[SpLabelTweak],
+        k_max: u32,
+    ) -> Vec<SpFound> {
         let mut found = Vec::new();
         for tw in tweaks {
             let Ok(ecdh) = self.ecdh(secp, tw) else { continue };
@@ -562,10 +579,10 @@ impl SpKeys {
                         }
                     }
                 }
-                if !hit || k >= 10_000 {
+                k += 1;
+                if !hit || k >= k_max {   // v348: BIP-352 K_max — the receiver never tries k = K_max
                     break;
                 }
-                k += 1;
             }
         }
         found
@@ -609,6 +626,31 @@ pub fn tweak_from_inputs<C: Verification>(secp: &Secp256k1<C>, keys: &[PublicKey
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// v348 (the silentpayments.xyz review): K_max — the receiver tries k = 0, 1, 2 … while an output matches and stops
+    /// when k would reach the cap. Exercised through the real search with a small cap: a transaction paying k = 0..=4
+    /// yields five coins under a cap of 10 and three under a cap of 3; the shipped cap is BIP-352's 2323.
+    #[test]
+    fn v348_the_receiver_stops_at_k_max() {
+        use std::collections::HashMap;
+        let secp = Secp256k1::new();
+        let m: bip39::Mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".parse().unwrap();
+        let keys = SpKeys::from_root(&crate::key::RootKey::from_mnemonic(&m, Network::Bitcoin).unwrap()).unwrap();
+        let tweak = PublicKey::from_secret_key(&secp, &SecretKey::from_slice(&[5u8; 32]).unwrap());
+        let ecdh = keys.ecdh(&secp, &tweak).unwrap();
+        let txid = bitcoin::Txid::all_zeros();
+        let mut by_key: HashMap<[u8; 32], Vec<(bitcoin::Txid, u32, u64)>> = HashMap::new();
+        for k in 0..5u32 {
+            let (_, pk) = keys.output_k_point(&secp, &ecdh, k).unwrap();
+            by_key.insert(pk.x_only_public_key().0.serialize(), vec![(txid, k, 1_000 + k as u64)]);
+        }
+        let all = keys.find_by_keys_capped(&secp, &[tweak], &by_key, &[], 10);
+        assert_eq!(all.iter().map(|f| f.k).collect::<Vec<_>>(), vec![0, 1, 2, 3, 4]);
+        let capped = keys.find_by_keys_capped(&secp, &[tweak], &by_key, &[], 3);
+        assert_eq!(capped.iter().map(|f| f.k).collect::<Vec<_>>(), vec![0, 1, 2], "k = K_max is never tried");
+        assert_eq!(SP_K_MAX, 2323, "BIP-352: If k == K_max (=2323), stop scanning");
+        assert_eq!(keys.find_by_keys(&secp, &[tweak], &by_key, &[]).len(), 5);
+    }
     use bitcoin::Txid;
     use std::str::FromStr;
 

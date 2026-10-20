@@ -253,18 +253,28 @@ pub async fn refresh_info(http: &Arc<dyn EsploraHttp>, base: &str, view: &mut Ti
     // answered 404 in between — a box whose index was away for a while, or (v296) a wallet that read another
     // provider's server — and a re-open of a walked view starts at the walk's top: every block between where the scan
     // stood and that top was never read, and a silent payment in them never found. An opened scan resumes where it was.
+    // v348 (the silentpayments.xyz review, finding 1): the sweep's start is the later of the provider's index start
+    // and the view's floor — the birthday written at birth or by a rescan (decision 1 for a fresh view). A view with
+    // no floor (from before v348: a wallet walked before v287, or one restored between v287 and v348) falls back to
+    // the launch block (DP 2026-10-19). Until v348 the rule read the walk's position to tell a fresh view from an
+    // old one — but the walk opens at the tip before the sweep opens, so every restore swept from the tip.
+    let floor = view.sp_floor.unwrap_or(SP_LAUNCH_HEIGHT);
+    let want = info.start_height.max(floor);
     if sp.from == 0 {
-        // a fresh view (restore / rescan / first ever walk) scans from the later of the index start and the
-        // birthday; a view already walked before this build starts at its current top — no LiJ wallet showed
-        // an sp1 address before v287 (DP's decision 1)
-        let fresh = view.cursor.scanned_to == 0;
-        sp.from = if fresh { info.start_height.max(view.cursor.birthday) } else { info.start_height.max(view.cursor.scanned_to) };
-        sp.scanned_to = sp.from.saturating_sub(1);
-        log::info!("[sp] the silent-payment scan opens: from {} (index start {}, birthday {}, top {}, fresh {fresh})", sp.from, info.start_height, view.cursor.birthday, view.cursor.scanned_to);
-    } else if info.start_height < sp.from && view.cursor.birthday < sp.from && info.start_height.max(view.cursor.birthday) < sp.from {
-        // the box backfilled below our start (DP: 840,000) — a restored wallet's history may sit there;
-        // only a fresh view / rescan takes it (an existing wallet's rule stands)
-        sp.last_note = format!("the provider's index now starts at {} (below this wallet's scan start {})", info.start_height, sp.from);
+        sp.from = want;
+        sp.scanned_to = want.saturating_sub(1);
+        log::info!("[sp] the silent-payment scan opens: from {} (index start {}, floor {} {}, top {})", sp.from, info.start_height, floor, if view.sp_floor.is_some() { "recorded" } else { "= the launch block" }, view.cursor.scanned_to);
+    } else if sp.from > want {
+        // the sweep stands above where it may start — a restore that opened at the tip before v348, a wallet walked
+        // before v287 whose top was taken as its start, a rescan year chosen later, a box that backfilled below the
+        // old start — pulled down ONCE and read again from `want`; coins already found stay (add_coin is idempotent)
+        log::info!("[sp] the silent-payment scan is pulled down: from {} to {} (index start {}, floor {})", sp.from, want, info.start_height, floor);
+        sp.last_note = format!("reading again from {} (the scan stood at {})", want, sp.from);
+        sp.from = want;
+        sp.scanned_to = want.saturating_sub(1);
+        sp.scanned_hash.clear();
+        sp.scanned_filter_header.clear();
+        sp.waiting_for_index = false;
     }
     view.sp = Some(sp);
     Ok(())
@@ -272,6 +282,11 @@ pub async fn refresh_info(http: &Arc<dyn EsploraHttp>, base: &str, view: &mut Ti
 
 /// v293: tweaks whose candidate scripts are computed between two budget checks (≈ 96 elliptic-curve operations).
 pub const SP_TWEAK_GROUP: usize = 32;
+
+/// v348: the block before the first LiJ wallet could show an sp1 address (v287 shipped on 2026-09-28; this is the
+/// block at 2026-09-27 23:58 UTC, a day earlier). A view with no recorded floor sweeps from here — nothing older can
+/// exist for a wallet born in LiJ; a seed that lived in another silent-payment wallet chooses its year on Restore.
+pub const SP_LAUNCH_HEIGHT: u32 = 968_900;
 
 /// One scan batch: fetch headers + filters + tweaks for [start, end], validate the header chain within
 /// the batch (and against the m/84 walk's known top hash when the batch ends there), recompute each
@@ -342,6 +357,13 @@ async fn scan_batch(
         }
         by_height.insert(b.height, (b.hash.clone(), b.tweaks.clone()));
     }
+    // v348 (the review, finding 2): a height the provider's tweak list does not carry is NOT a block with no tweaks —
+    // the indexer writes a row for every block, even an empty one — it is a gap (a backfill still filling, or a block
+    // withheld). The batch is refused BEFORE any of its blocks is applied, so nothing lands and the cursor holds;
+    // headers and filters were count-checked above, the tweak range now is too.
+    if let Some(missing) = flts.filters.iter().find(|f| !by_height.contains_key(&f.height)) {
+        return Err(LijError::Node(format!("sp scan {start}..{end}: the provider's tweak list has no entry for block {} — an index gap or a withheld block; the scan holds here", missing.height)));
+    }
     // v297 (S52): block by block, in order — a matching block is fetched and applied before the next filter is
     // tested, and a coin found in it joins the scripts tested from the next block on. Until v297 every filter of the
     // batch was tested first, against the coins held at the batch's start: a coin found in a batch and spent later in
@@ -360,7 +382,7 @@ async fn scan_batch(
         crate::tier2_sync::yield_if_due(&mut mark).await;
         let (tweaks, hash_ok) = match by_height.get(&f.height) {
             Some((bh, hexes)) => (parse_tweaks(hexes), *bh == f.hash),
-            None => (Vec::new(), true),
+            None => (Vec::new(), true),   // unreachable since v348: the coverage check below refuses the batch first
         };
         if !hash_ok {
             return Err(LijError::Node(format!("sp scan: the provider's tweak list for block {} names another block hash", f.height)));
@@ -782,7 +804,7 @@ mod tests {
         let keys = SpKeys::from_root(&root()).unwrap();
         // the m/84 walk has read 101 only, anchored by its hash + filter header
         let mut view = Tier2View::default();
-        view.cursor.birthday = 90;
+        crate::tier2_wallet::birth(&mut view, 90);   // v348: born, as the wasm does — the floor is written with the birthday
         view.cursor.scanned_to = 101;
         view.cursor.last_hash = Some(blocks[0].block.block_hash().to_string());
         view.cursor.last_filter_header = Some(bitcoin::hashes::sha256d::Hash::from_byte_array(blocks[0].fh).to_string());
@@ -875,7 +897,7 @@ mod tests {
         let http: Arc<dyn EsploraHttp> = http;
         let storage = crate::storage::native_storage::MemoryStorage::new();
         let mut view = Tier2View::default();
-        view.cursor.birthday = 90;
+        crate::tier2_wallet::birth(&mut view, 90);   // v348: born, as the wasm does — the floor is written with the birthday
         view.cursor.scanned_to = 101;   // the scan opens at 101 (the walk's top then), as a wallet's does
         view.cursor.last_hash = Some(blocks[0].block.block_hash().to_string());
         view.cursor.last_filter_header = Some(bitcoin::hashes::sha256d::Hash::from_byte_array(blocks[0].fh).to_string());
@@ -915,7 +937,7 @@ mod tests {
         let http: Arc<dyn EsploraHttp> = http;
         let fresh_view = || {
             let mut v = Tier2View::default();
-            v.cursor.birthday = 90;
+            crate::tier2_wallet::birth(&mut v, 90);
             v.cursor.scanned_to = 101;
             v.cursor.last_hash = Some(blocks[0].block.block_hash().to_string());
             v.cursor.last_filter_header = Some(bitcoin::hashes::sha256d::Hash::from_byte_array(blocks[0].fh).to_string());
@@ -962,6 +984,7 @@ mod tests {
         let http: Arc<dyn EsploraHttp> = http;
         let storage = crate::storage::native_storage::MemoryStorage::new();
         let mut view = Tier2View::default();
+        crate::tier2_wallet::birth(&mut view, 90);   // v348: born, so the sweep opens at the index start (an unfloored view would wait for the launch block)
         view.cursor.scanned_to = 101;
         view.cursor.last_hash = Some(blocks[0].block.block_hash().to_string());
         refresh_info(&http, "http://box", &mut view).await.unwrap();
@@ -969,6 +992,33 @@ mod tests {
         assert!(err.contains("commitment"), "{err}");
         assert!(view.utxos.is_empty());
         assert_eq!(view.sp.as_ref().unwrap().scanned_to, 100, "nothing advanced");
+    }
+
+    /// v348 (the review, finding 2): a height missing from the provider's tweak list is a gap, not an empty block —
+    /// the batch is refused, the cursor holds, the note names the block; the same blocks served whole scan through.
+    #[tokio::test]
+    async fn v348_a_tweak_list_with_a_missing_height_holds_the_scan() {
+        let (http, blocks, _, _) = build_world(false);
+        // the two-block answer (101..102) with block 102 left out of the tweak list, headers and filters whole
+        let tw101 = serde_json::json!({"height": blocks[0].height, "hash": blocks[0].block.block_hash().to_string(), "count": blocks[0].tweaks.len(),
+            "commit": spcommit_v1(blocks[0].height, &blocks[0].block.block_hash().to_string(), &blocks[0].tweaks), "tweaks": blocks[0].tweaks});
+        http.put("/sp/tweaks?start=101&count=2", 200, serde_json::json!({"blocks": [tw101]}).to_string());
+        let http: Arc<dyn EsploraHttp> = http;
+        let storage = crate::storage::native_storage::MemoryStorage::new();
+        let mut view = Tier2View::default();
+        crate::tier2_wallet::birth(&mut view, 90);
+        view.cursor.scanned_to = 102;
+        view.cursor.last_hash = Some(blocks[1].block.block_hash().to_string());
+        refresh_info(&http, "http://box", &mut view).await.unwrap();
+        let err = scan(&http, "http://box", &root(), &mut view, &storage, 100, 0).await.unwrap_err().to_string();
+        assert!(err.contains("no entry for block 102"), "{err}");
+        assert!(view.utxos.is_empty(), "nothing from a refused batch lands");
+        assert_eq!(view.sp.as_ref().unwrap().scanned_to, 100, "the cursor holds");
+        // one block at a time the list is whole: 101 scans (the payment lands), then 102 (its spend)
+        let (b, _) = scan(&http, "http://box", &root(), &mut view, &storage, 1, 0).await.unwrap();
+        assert_eq!(b, 2);
+        assert_eq!(view.sp.as_ref().unwrap().scanned_to, 102);
+        assert!(view.utxos.iter().any(|u| u.chain == CHAIN_SP), "the silent payment is found once the list is whole");
     }
 
     #[tokio::test]
@@ -988,8 +1038,72 @@ mod tests {
         let http2: Arc<dyn EsploraHttp> = http2;
         view.cursor.birthday = 200;
         refresh_info(&http2, "http://box", &mut view).await.unwrap();
-        assert_eq!(view.sp.as_ref().unwrap().from, 500, "decision 1: an existing wallet's scan starts at today's top");
+        assert_eq!(view.sp.as_ref().unwrap().from, SP_LAUNCH_HEIGHT, "v348: a view with no recorded floor (walked before v287, or restored before v348) sweeps from the launch block, not from today's top");
     }
+
+    /// v348 (the silentpayments.xyz review, finding 1): the restore order — the walk opens at the tip BEFORE the sweep
+    /// opens. Until v348 the sweep then took the view for an old wallet and started at the tip; a restored wallet showed
+    /// 0 for every silent payment it had received. The floor written at birth makes the order irrelevant.
+    #[tokio::test]
+    async fn v348_a_restore_sweeps_from_its_birthday_even_though_the_walk_moved_first() {
+        let http = Arc::new(MapHttp::new());
+        http.put("/sp/info", 200, serde_json::json!({"format": "spcommit-v1", "start_height": 100, "indexed_to": 500, "tip": 500}).to_string());
+        let http: Arc<dyn EsploraHttp> = http;
+        let mut view = Tier2View::default();
+        assert!(crate::tier2_wallet::birth(&mut view, 90), "a new view is born once");
+        assert!(!crate::tier2_wallet::birth(&mut view, 400), "a view with a birthday is not born again");
+        assert_eq!(view.sp_floor, Some(90));
+        view.cursor.scanned_to = 500;   // what sync_down does to a fresh view before refresh_info ever runs
+        view.down = Some(crate::tier2_wallet::DownCursor { low: 500, low_hash: String::new(), low_filter_header: String::new(), done: false });
+        refresh_info(&http, "http://box", &mut view).await.unwrap();
+        let sp = view.sp.as_ref().unwrap();
+        assert_eq!((sp.from, sp.scanned_to), (100, 99), "the sweep starts at the later of the index start and the birthday, not at the walk's top");
+    }
+
+    /// v348: a sweep standing above where it may start is pulled down once — a wallet restored between v287 and v348
+    /// (no floor: to the launch block), a restored wallet that opened at the tip (floor: to its birthday), a box that
+    /// backfilled below the old start; one that stands below its floor is never pulled up.
+    #[tokio::test]
+    async fn v348_a_sweep_above_its_floor_is_pulled_down_once_and_never_up() {
+        let http = Arc::new(MapHttp::new());
+        http.put("/sp/info", 200, serde_json::json!({"format": "spcommit-v1", "start_height": 100, "indexed_to": 980_000, "tip": 980_000}).to_string());
+        let http: Arc<dyn EsploraHttp> = http;
+        // (a) a floored view whose sweep opened at the tip before v348
+        let mut view = Tier2View::default();
+        crate::tier2_wallet::birth(&mut view, 90);
+        view.cursor.scanned_to = 500;
+        view.sp = Some(SpScan { available: true, index_start: 100, indexed_to: 500, from: 500, scanned_to: 500, scanned_hash: "ab".repeat(32), scanned_filter_header: "cd".repeat(32), ..Default::default() });
+        refresh_info(&http, "http://box", &mut view).await.unwrap();
+        let sp = view.sp.as_ref().unwrap();
+        assert_eq!((sp.from, sp.scanned_to, sp.scanned_hash.is_empty(), sp.scanned_filter_header.is_empty()), (100, 99, true, true), "pulled down to the index start / birthday and unlinked");
+        assert!(sp.last_note.contains("reading again from 100"));
+        refresh_info(&http, "http://box", &mut view).await.unwrap();
+        assert_eq!(view.sp.as_ref().unwrap().from, 100, "once: a second look changes nothing");
+        // (b) no floor, sweep above the launch block → the launch block
+        let mut old = Tier2View::default();
+        old.cursor.birthday = 200; old.cursor.scanned_to = 975_000;
+        old.sp = Some(SpScan { available: true, index_start: 100, indexed_to: 975_000, from: 972_000, scanned_to: 975_000, ..Default::default() });
+        refresh_info(&http, "http://box", &mut old).await.unwrap();
+        assert_eq!(view_from(&old), SP_LAUNCH_HEIGHT);
+        // (c) no floor, sweep below the launch block (a pre-v287 wallet that opened early) → stays: never pulled up
+        let mut early = Tier2View::default();
+        early.cursor.birthday = 200; early.cursor.scanned_to = 975_000;
+        early.sp = Some(SpScan { available: true, index_start: 100, indexed_to: 975_000, from: 960_000, scanned_to: 975_000, ..Default::default() });
+        refresh_info(&http, "http://box", &mut early).await.unwrap();
+        assert_eq!(view_from(&early), 960_000);
+        // (d) a rescan from a lower height lowers the floor; the next look pulls the sweep down to it
+        let mut again = Tier2View::default();
+        crate::tier2_wallet::birth(&mut again, 300);
+        again.cursor.scanned_to = 500;
+        again.sp = Some(SpScan { available: true, index_start: 100, indexed_to: 500, from: 300, scanned_to: 500, ..Default::default() });
+        let was = crate::tier2_wallet::rescan_from(&mut again, 150, 1);
+        assert_eq!((was, again.cursor.birthday, again.sp_floor), (300, 150, Some(150)));
+        refresh_info(&http, "http://box", &mut again).await.unwrap();
+        assert_eq!(view_from(&again), 150);
+        assert_eq!(crate::tier2_wallet::rescan_from(&mut again, 400, 1), 150, "a later height never raises the birthday");
+        assert_eq!((again.cursor.birthday, again.sp_floor), (150, Some(150)));
+    }
+    fn view_from(v: &Tier2View) -> u32 { v.sp.as_ref().unwrap().from }
 
     /// v297: the walk's anchors at `i` (0 = block 101, 1 = block 102) in the test world.
     fn walk_at(view: &mut Tier2View, blocks: &[Served], i: usize) {
@@ -1004,7 +1118,7 @@ mod tests {
         let http: Arc<dyn EsploraHttp> = http;
         let storage = crate::storage::native_storage::MemoryStorage::new();
         let mut view = Tier2View::default();
-        view.cursor.birthday = 90;
+        crate::tier2_wallet::birth(&mut view, 90);   // v348: born, as the wasm does — the floor is written with the birthday
         view.cursor.scanned_to = 100;   // the walk stands at 100 when the scan opens (a walked view, not fresh)
         refresh_info(&http, "http://box", &mut view).await.unwrap();
         assert_eq!((view.sp.as_ref().unwrap().from, view.sp.as_ref().unwrap().scanned_to), (101, 100));
@@ -1029,7 +1143,7 @@ mod tests {
         let http: Arc<dyn EsploraHttp> = http;
         let storage = crate::storage::native_storage::MemoryStorage::new();
         let mut view = Tier2View::default();
-        view.cursor.birthday = 90;
+        crate::tier2_wallet::birth(&mut view, 90);   // v348: born, as the wasm does — the floor is written with the birthday
         walk_at(&mut view, &blocks, 0);
         view.cursor.scanned_to = 0;   // fresh: the scan starts at the later of the index start and the birthday
         refresh_info(&http, "http://box", &mut view).await.unwrap();
@@ -1057,7 +1171,7 @@ mod tests {
         let http: Arc<dyn EsploraHttp> = http;
         let storage = crate::storage::native_storage::MemoryStorage::new();
         let mut view = Tier2View::default();
-        view.cursor.birthday = 90;
+        crate::tier2_wallet::birth(&mut view, 90);   // v348: born, as the wasm does — the floor is written with the birthday
         refresh_info(&http, "http://box", &mut view).await.unwrap();   // fresh: from 101
         walk_at(&mut view, &blocks, 1);
         let (batches, _) = scan(&http, "http://box", &root(), &mut view, &storage, 100, 0).await.unwrap();
@@ -1074,7 +1188,7 @@ mod tests {
         let http: Arc<dyn EsploraHttp> = http;
         let storage = crate::storage::native_storage::MemoryStorage::new();
         let mut view = Tier2View::default();
-        view.cursor.birthday = 90;
+        crate::tier2_wallet::birth(&mut view, 90);   // v348: born, as the wasm does — the floor is written with the birthday
         refresh_info(&http, "http://box", &mut view).await.unwrap();
         walk_at(&mut view, &blocks, 1);
         scan(&http, "http://box", &root(), &mut view, &storage, 100, 0).await.unwrap();

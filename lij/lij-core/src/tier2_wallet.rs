@@ -737,6 +737,15 @@ pub struct Tier2View {
     /// sync under v287 asks the provider whether it serves a tweak index.
     #[serde(default)]
     pub sp: Option<crate::sp_scan::SpScan>,
+    /// v348 (S60, the silentpayments.xyz review, finding 1): the block the silent-payment sweep may start from —
+    /// the birthday, written when the view is born (`birth`) and lowered by a user's rescan year (`rescan_from`).
+    /// The sweep's start is the later of the provider's index start and this; it is never inferred from the walk's
+    /// position again (the walk opens at the tip BEFORE the sweep opens, so every restore looked like an old
+    /// wallet and swept from the tip — Seth's finding). None on a view from before v348 — a wallet walked before
+    /// v287, or one restored between v287 and v348 — which falls back to `crate::sp_scan::SP_LAUNCH_HEIGHT`
+    /// (DP 2026-10-19: heal them all from the launch block).
+    #[serde(default)]
+    pub sp_floor: Option<u32>,
     /// v298 (S52, DP #2): this call's newly met own transactions (txid, height, raw hex), never persisted with the
     /// view — save_view hands them to the tx store (crate::tx_store), so every place that saves the view keeps them.
     #[serde(skip)]
@@ -943,6 +952,26 @@ pub fn note_closing_txids<I: IntoIterator<Item = String>>(view: &mut Tier2View, 
 /// v256: rebuild the ledger from scratch under the current rules — nothing copied but the
 /// birthday (and, v271/v272, the node's funding- and closing-txid records). Coins, spend
 /// marks, rows, tags and the head cursor are re-derived by the walk.
+/// v348: a view's birth — the first sync of a new or restored wallet hands in the page's birthday; the silent-payment
+/// floor is written at the same moment, so it never depends on where the walk stands. A view that already has a
+/// birthday is not born again (returns false) and keeps whatever floor it has.
+pub fn birth(view: &mut Tier2View, birthday: u32) -> bool {
+    if view.cursor.birthday != 0 { return false; }
+    view.cursor.birthday = birthday;
+    view.sp_floor = Some(birthday);
+    true
+}
+
+/// v348: a user's rescan from a chosen height (v257: rebuild = explicit) — the birthday is lowered to it (never
+/// raised), the silent-payment floor follows the birthday, and the ledger is rebuilt. Returns the previous birthday.
+pub fn rescan_from(view: &mut Tier2View, from_height: u32, now_ms: u64) -> u32 {
+    let old = view.cursor.birthday;
+    view.cursor.birthday = if old == 0 { from_height } else { old.min(from_height) };
+    view.sp_floor = Some(view.cursor.birthday);
+    rebuild_from_birthday(view, now_ms);
+    old
+}
+
 pub fn rebuild_from_birthday(view: &mut Tier2View, now_ms: u64) {
     view.utxos.clear();
     view.history.clear();
