@@ -1,0 +1,29 @@
+# The tweak index and the tier-2 filter server's tests, run on their own against a model chain (no bitcoind, no network):
+# ops/test-sp-index.py (the index end to end: the RPC shapes, the sqlite, the spcommit-v1 chain, a reorg, the mempool leg,
+# the tier-2 read routes) and ops/test-sp-reindex.py (the gap-free /sp/info run; the in-place re-index). Added 2026-10-20
+# after the silentpayments.xyz review noted these ran only by hand. Standard-library Python; a few minutes.
+name: lij-ops-tests
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ops/lij-sp-index.py'
+      - 'ops/lij-tier2-filters.py'
+      - 'ops/test-sp-index.py'
+      - 'ops/test-sp-reindex.py'
+      - 'lij/lij-core/src/testdata/bip352_send_vectors.json'
+      - '.github/workflows/lij-ops-tests.yml'
+  workflow_dispatch:
+jobs:
+  sp-index:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: the tweak index end to end
+        run: python3 ops/test-sp-index.py
+      - name: the served run and the re-index
+        run: python3 ops/test-sp-reindex.py

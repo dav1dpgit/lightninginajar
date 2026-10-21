@@ -47,14 +47,13 @@ and, if you want the byte comparison, diff the served page against `lij-pwa/fron
 
 The page's Content-Security-Policy (`lij-pwa/frontend/_headers`, `/wallet/*` block) lists a sha256 for each of the page's inline script blocks, written by the cut script from the final page bytes; a browser refuses any inline script whose hash is not in that list.
 
-## Current build (main at the time of this commit)
+## The current build's hashes
 
-| artifact | sha256 |
-|---|---|
-| `lij-pwa/frontend/pkg/lij_wasm_bg.wasm` (engine phase11-v239) | `6006fcfa3d548d7619526246133df97daea501177e0ce1250d2a788fa269f527` |
-| `lij-pwa/frontend/pkg/lij_wasm.js` | `51d0c0a706bcb12d517921b2294be07290633eb3fc92136a23c80b5ec1809f17` |
-| `lij-pwa/frontend/wallet/index.html` (page phase11-v709) | `f645d1c7c5fc9b81b315ce93845c3712dd1cb564b8d93a1f3e01138f187c72dd` |
-| `lij-pwa/frontend/wallet/sw.js` | `6bb8fe0e5d0933815ea77a235c85be87d0e9b62e54cad78d8590198548c61b93` |
+They are the **last row of [releases.md](releases.md)**, which CI writes from the committed files at every page or engine build — this page does not repeat them. (Until 2026-10-20 a table here carried one build's hashes — engine phase11-v239 / page phase11-v709, the first strict-CSP build — and was never updated; the silentpayments.xyz review pointed it out. The row in releases.md was correct throughout.) To compare the repository's own files with that row:
+
+```
+sha256sum lij-pwa/frontend/pkg/lij_wasm_bg.wasm lij-pwa/frontend/pkg/lij_wasm.js lij-pwa/frontend/wallet/index.html lij-pwa/frontend/wallet/sw.js
+```
 
 ## From engine v241 (2026-09-12): LDK 0.2.6, stable toolchain, release profile
 
