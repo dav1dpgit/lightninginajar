@@ -116,6 +116,10 @@ jobs:
           # v1049 (S61): the page carries TEN inline script blocks since the opening (the splash's own script) — nine
           # until v1048. The flip failed once on the old count (2026-10-19 23:05, engine v350's first run).
           python3 -c "import sys; sys.path.insert(0, 'ops/frontend'); import lij_csp; lij_csp.write_and_gate(expected_blocks=10, enforcing=True)"
+          # S62 (Phase B.2): the worker carries one sha256 per PRECACHE file (LIJ_EXPECTED) — the seds above changed the page
+          # and the engine files, so the stamps are rewritten from the final bytes here, and checked.
+          python3 ops/frontend/sw_stamp.py --write
+          python3 ops/frontend/sw_stamp.py --check
           test "$(grep -c "${EB}${CUREN}" "$SWF")" = "0"
           test "$(grep -c "phase11-v${CUREN}" "$W")" = "0"
           echo "flip: engine $ENG, page phase11-v${NPV}"

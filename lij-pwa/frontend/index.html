@@ -8,6 +8,13 @@
 <meta name="theme-color" content="#f3f2f2">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <!-- No web-app manifest here by design: install happens from /wallet/. /.well-known/lnurlp/* is a Pages Function and stays. -->
+<!-- S62 (2026-10-21, DP): Cloudflare Pages answers any path under /wallet/ with THIS page — it does not apply the
+     _redirects rewrite (/wallet/* → the wallet page), measured on the live name: /wallet/anything-under-wallet is this
+     file. A Push Key link (lightninginajar.xyz/wallet/claim#v1…) opened on a phone without the wallet landed here and the
+     "Open the wallet" link dropped the claim. The wallet reads a claim from the fragment alone, so a visitor under
+     /wallet/ goes to the wallet with the fragment kept, before anything here paints. The box (Phase B) serves the wallet
+     page for /wallet/* itself, so there this never runs. -->
+<script>if (/^\/wallet\/./.test(location.pathname)) location.replace('/wallet/' + location.search + location.hash);</script>
 <style>.lij-jar{width:100%;height:100%;display:block}</style>
 <style>/* phones: the hero screenshot sits centred under the copy; the desktop ride-left/up (script) is off */
 @media (max-width: 599px) { #lij-op-btns { grid-template-columns: 1fr !important; max-width: none !important; } #lij-op-node-panel { grid-template-columns: 1fr !important; } #lij-op-node-qr { justify-self: center !important; } }

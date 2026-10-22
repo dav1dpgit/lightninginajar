@@ -76,6 +76,10 @@ jobs:
             echo "::notice::pre-flip engine commit — built as a compile check only; lij-engine-build's flip commit will dispatch the publish"
           fi
 
+      - name: guard — the worker's stamps equal the files it will serve (S62, Phase B.2 — a copy file is kept only when it matches them)
+        if: steps.build.outputs.code == '0' && steps.guard.outputs.publish == 'true'
+        run: python3 ops/frontend/sw_stamp.py --check
+
       - name: zip frontend (mirrors Codespace command)
         if: steps.build.outputs.code == '0' && steps.guard.outputs.publish == 'true'
         run: |
@@ -94,6 +98,9 @@ jobs:
           # wasm-pack emits pkg/.gitignore containing '*' — it would exclude
           # the wasm from the publish commit; strip all gitignores from the site
           find /tmp/site -name ".gitignore" -delete
+          # S62 (Phase B step 3): the TypeScript declarations wasm-pack writes beside the engine are build by-products no
+          # browser loads — Pages served them as video/mp2t, Caddy as something else; they leave the site instead
+          rm -f /tmp/site/pkg/*.d.ts
           cd /tmp/site
           git init -q -b deploy
           git config user.name "lij-ci"

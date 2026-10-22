@@ -11,7 +11,7 @@
 // v873 (S51, DP): /pkg/ is served CACHE-FIRST on an exact-version hit (the pair is ?v= keyed) — the network only
 // for a version this cache does not hold; the install copies an exact-version engine file from an earlier
 // build's cache instead of re-fetching it. Everything else stays network-first as described above.
-const CACHE = 'lij-offline-v1056';  // v468 RITUAL: bump with EVERY page build — a changed sw.js re-runs install, refreshing the precached shell (the SW sat unchanged since v400, freezing iOS's offline-served index at v400-era)
+const CACHE = 'lij-offline-v1058';  // v468 RITUAL: bump with EVERY page build — a changed sw.js re-runs install, refreshing the precached shell (the SW sat unchanged since v400, freezing iOS's offline-served index at v400-era)
 // v687 (S45, DP): UPDATES DIAL. The mode lives in a settings cache that
 // survives CACHE bumps, so a freshly installed sw.js can read it in its own
 // install event. Under 'ask' the new build precaches, describes itself (page
@@ -24,6 +24,21 @@ const CACHE = 'lij-offline-v1056';  // v468 RITUAL: bump with EVERY page build �
 const SETTINGS_CACHE = 'lij-settings';
 const MODE_KEY = '/__lij_update_mode';
 const PENDING_KEY = '/__lij_pending_build';
+// v1057 (S62 Wed, DP 2026-10-21 "B.2 could be following the dial … Add it in"): WHERE AN UPDATE'S FILES COME FROM follows the
+// Reach dial (docs/design/routes/phase-b2-r1.md). The browser's own check of this file is always at the origin; the
+// install's downloads go to the host the dial names — lightninginajar.xyz itself, or Cloudflare's copy of the site (the
+// Pages project, the same deploy branch). A file from the copy is kept only when its sha256 equals the stamp this worker
+// carries (LIJ_EXPECTED, one per PRECACHE entry, written from the final bytes by ops/frontend/sw_stamp.py — the cut and
+// CI's flip); otherwise it is taken from the origin and the record names it. The preference reaches here as the Updates
+// mode does (the page posts lij-reach-pref at every load and on change); a test may seed /__lij_files_copy before the
+// first install to point the copy at a stand-in — the page has no code path that writes it.
+const REACH_KEY = '/__lij_reach';
+const COPY_KEY = '/__lij_files_copy';
+const FILES_COPY = 'https://lij-git.pages.dev';   // v1058: the Pages project is lij-git (v1057 named a host that does not exist)
+/* LIJ_EXPECTED_BEGIN */ const LIJ_EXPECTED = { '/wallet/': '3930f81350ad3905970c921dfb6d4486281c5e3d13232ef2b65cf28bdfd21f9f', '/wallet/index.html': '3930f81350ad3905970c921dfb6d4486281c5e3d13232ef2b65cf28bdfd21f9f', '/styles.css?v=328': '2d3af7a0cf38d26ae46ef9e74424ca059fbfd4c042f3ac308f85043a6e4fa993', '/wood-hinoki.jpg?v=1': 'a4fe645c952c1ea59c9a6f40b0a59b1420aa4252c065bc7118a0d22a1053bc63', '/pkg/lij_wasm.js?v=350': '022e19a20e89d0351532cfdef0583f545986435f0a514d91707fe448812396cf', '/pkg/lij_wasm_bg.wasm?v=350': '0e5a7d8eee8db9b8fdc77971cc515195b0ed62603254d37ae2944387d64ba14c', '/fonts/geist-sans-400.woff2': 'faed18848df4a6e1b5503b589bbbc055fbdab0e1780781edf5105457395e1e5d', '/fonts/geist-sans-500.woff2': '0b50074337a05ed834a1474d3d13fc6bd8480e2ce3075d02f1d38c017a8ac2a4', '/fonts/geist-mono-400.woff2': 'c88d20967768754cbdca230acd74ecb25de78d0dc47e31694aa8bd2c528fec26', '/fonts/geist-mono-500.woff2': '7b0d8cbf68357ade96d7d7d7721578ac6e8935aab14da68b89d31cc5816c323c', '/vendor/qrcode.min.js': 'c541ef06327885a8415bca8df6071e14189b4855336def4f36db54bde8484f36', '/vendor/qr-scanner.min.js': '0564e4cf84b94cac80213b4f779bd215bb0876a91c19df28baf97766f4fd5484', '/vendor/qr-scanner-worker.min.js': 'f4d8445f5a15c4e5f71a8c8c062c6443f09db370b8d3fe1fbdc7fe7889630d14', '/vendor/bc-ur.min.js': 'af24ecc278152f563077058574b8ef7556f071eb0b04e4c1e0b0f263620dcc14' }; /* LIJ_EXPECTED_END */
+async function readSetting(key) { try { const c = await caches.open(SETTINGS_CACHE); const r = await c.match(key); return r ? await r.json() : null; } catch (e) { return null; } }
+async function readReach() { const j = await readSetting(REACH_KEY); const v = j && j.pref; return (v === 'never-cloudflare' || v === 'cloudflare-first') ? v : 'direct-first'; }
+async function copyBase() { const j = await readSetting(COPY_KEY); return (j && typeof j.url === 'string' && /^https?:\/\//.test(j.url)) ? j.url.replace(/\/+$/, '') : FILES_COPY; }
 async function readMode() {
   try { const c = await caches.open(SETTINGS_CACHE); const r = await c.match(MODE_KEY); if (!r) return 'auto'; const j = await r.json(); return (j && j.mode === 'ask') ? 'ask' : 'auto'; }
   catch (e) { return 'auto'; }
@@ -67,18 +82,32 @@ self.addEventListener('install', (e) => {
   e.waitUntil((async () => {
     const c = await caches.open(CACHE);
     const fetched = {};   // v687: keep the bytes to describe this build
+    const pref = await readReach(); const copy = await copyBase();   // v1057: the dial's value and Cloudflare's copy
+    const order = pref === 'never-cloudflare' ? ['origin'] : (pref === 'cloudflare-first' ? ['copy', 'origin'] : ['origin', 'copy']);
+    const rec = { origin: 0, copy: 0, held: 0, verified: 0, mismatch: [], stale: [], failed: [] };
     await Promise.allSettled(PRECACHE.map(async (u) => {
       // v873 (S51, DP): the engine pair is exact-version keyed — an earlier build's cache holding this exact URL
       // has the right bytes; copy them instead of downloading 8.4 MB again for a page-only build
       if (u.indexOf('/pkg/') === 0) {
-        try { const prev = await caches.match(u); if (prev && prev.ok) { try { fetched[u] = await prev.clone().arrayBuffer(); } catch (e) {} await c.put(u, prev); return; } } catch (e) {}
+        try { const prev = await caches.match(u); if (prev && prev.ok) { try { fetched[u] = await prev.clone().arrayBuffer(); } catch (e) {} await c.put(u, prev); rec.held++; return; } } catch (e) {}
       }
-      return fetch(new Request(u, { cache: 'reload' })).then(async (r) => {
-        if (r && r.ok) {
-          try { fetched[u] = await r.clone().arrayBuffer(); } catch (e) {}
-          return c.put(u, await unredirected(r));   // v934: never store the redirect mark
-        }
-      }).catch(() => {});
+      // v1057: each source in the dial's order; a copy file must match its stamp; the stored response is rebuilt from the
+      // bytes — never the copy's address, never the redirect mark (v934)
+      for (const src of order) {
+        let r = null;
+        try { r = await fetch(src === 'copy' ? new Request(copy + u, { cache: 'reload', mode: 'cors' }) : new Request(u, { cache: 'reload' })); } catch (e) { r = null; }
+        if (!r || !r.ok) continue;
+        let buf; try { buf = await r.arrayBuffer(); } catch (e) { continue; }
+        const want = LIJ_EXPECTED[u] || null;
+        const got = want ? await sha256Hex(buf) : null;
+        if (src === 'copy' && (!want || got !== want)) { rec.mismatch.push(u); continue; }
+        if (src === 'origin' && want && got !== want) rec.stale.push(u);   // the origin is the trust root: kept, and the stamp named as stale
+        fetched[u] = buf;
+        await c.put(u, new Response(buf, { status: r.status, statusText: r.statusText, headers: r.headers }));
+        rec[src]++; if (want && got === want) rec.verified++;
+        return;
+      }
+      rec.failed.push(u);
     }));
     try {
       const pageBuf = fetched['/wallet/index.html'] || fetched['/wallet/'];
@@ -89,7 +118,7 @@ self.addEventListener('install', (e) => {
       const wasmKey = PRECACHE.find((u) => u.indexOf('/pkg/lij_wasm_bg.wasm') === 0);
       const glue = fetched[glueKey] ? await sha256Hex(fetched[glueKey]) : null;
       const wasm = fetched[wasmKey] ? await sha256Hex(fetched[wasmKey]) : null;
-      await writeSetting(PENDING_KEY, { cache: CACHE, page: pv, engine: ev, glue_sha256: glue, wasm_sha256: wasm, at: Date.now() });
+      await writeSetting(PENDING_KEY, { cache: CACHE, page: pv, engine: ev, glue_sha256: glue, wasm_sha256: wasm, at: Date.now(), pref: pref, copy_url: copy, source: rec });   // v1057: where the files came from
     } catch (err) {}
     const mode = await readMode();
     if (mode !== 'ask') await self.skipWaiting();   // v687: under Ask me this build waits for the user's tap
@@ -102,6 +131,7 @@ self.addEventListener('message', (e) => {
   const d = (e && e.data) || {};
   if (d.type === 'lij-update-mode') { e.waitUntil(writeSetting(MODE_KEY, { mode: d.mode === 'ask' ? 'ask' : 'auto' })); }
   else if (d.type === 'lij-skip-waiting') { self.skipWaiting(); }
+  else if (d.type === 'lij-reach-pref') { e.waitUntil(writeSetting(REACH_KEY, { pref: (d.pref === 'never-cloudflare' || d.pref === 'cloudflare-first') ? d.pref : 'direct-first' })); }   // v1057
 });
 
 self.addEventListener('activate', (e) => {
