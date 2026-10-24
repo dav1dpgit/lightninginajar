@@ -1,0 +1,37 @@
+# gitlab-mirror — after main changes on GitHub, the same commits go to the GitLab copy (gitlab.com/plotzwerks/<repo>).
+# DP 2026-10-23. It publishes nothing new: it copies, minutes later, exactly what was pushed to GitHub on DP's word.
+# It never deletes or rewrites anything on GitLab: .github/scripts/gitlab-mirror.sh refuses an empty tree, a missing
+# README/LICENSE, a rewritten history (GitLab's head must be an ancestor of ours) and a drop of more than 20 % of the files,
+# and pushes with a plain fast-forward (no --force, no --mirror); tags only when GitLab lacks them. GitLab's protected main
+# (force push off) is the backstop. Runs ONLY in the three public repositories; in the private one it does nothing.
+# Setup (DP): the GitLab project exists (empty, public); a GitLab token with write_repository only, saved on GitHub as the
+# Actions secret GITLAB_PUSH_TOKEN; optionally the repository variable GITLAB_PROJECT (default plotzwerks/<repo name>).
+name: gitlab-mirror
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: gitlab-mirror
+  cancel-in-progress: false
+jobs:
+  mirror:
+    if: github.repository == 'dav1dpgit/lightninginajar' || github.repository == 'dav1dpgit/lijox' || github.repository == 'dav1dpgit/lijox-lnd-adapter'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: copy main and new tags to GitLab (fast-forward only)
+        env:
+          GITLAB_PUSH_TOKEN: ${{ secrets.GITLAB_PUSH_TOKEN }}
+          PROJECT: ${{ vars.GITLAB_PROJECT || format('plotzwerks/{0}', github.event.repository.name) }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GITLAB_PUSH_TOKEN:-}" ]; then echo "::warning title=gitlab-mirror::GITLAB_PUSH_TOKEN is not set — nothing copied"; exit 0; fi
+          git branch -f main "origin/main" 2>/dev/null || true
+          bash .github/scripts/gitlab-mirror.sh "https://gitlab.com/${PROJECT}.git" main
