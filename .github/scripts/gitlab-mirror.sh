@@ -25,6 +25,9 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 g() { git -c credential.helper= -c "http.extraheader=$AUTH" "$@"; }
 say() { echo "gitlab-mirror: $*"; }
 stop() { echo "::error title=gitlab-mirror::$*"; say "STOPPED — nothing pushed: $*"; exit 1; }
+# git's own words on a failure, one line, the token and its header value blanked should they ever appear (they are never in
+# the URL — the token travels in a header — but a reported line must be safe to print whatever git says)
+why() { tr '\n' ' ' < "$1" | sed -e "s#${GITLAB_PUSH_TOKEN}#<token>#g" -e "s#${AUTH#Authorization: Basic }#<token>#g" | cut -c1-400; }
 
 # 1
 [ "$(git rev-parse --is-shallow-repository)" = "false" ] || stop "the checkout is shallow (fetch-depth must be 0)"
@@ -37,27 +40,35 @@ NF=$(git ls-tree -r --name-only "$OURS" | wc -l)
 [ "$NF" -ge 1 ] || stop "$BR's tree is empty"
 for f in README.md LICENSE; do git cat-file -e "$OURS:$f" 2>/dev/null || stop "$BR lacks $f — not this repository's tree"; done
 say "ours: $BR $OURS — $NC commits, $NF files"
-# 3 + 4
+# 3 + 4 — ls-remote answers 0 (the branch exists), 2 (the project answers but has no such branch: the first copy) or
+# fails outright (no project at that path, or the token refused); the last two are told apart, since the run's log is not
+# readable from everywhere but its annotations are
 THEIRS=""
-if g ls-remote --exit-code --heads "$URL" "$BR" >"$T/remote.txt" 2>/dev/null; then
+set +e; g ls-remote --exit-code --heads "$URL" "$BR" >"$T/remote.txt" 2>"$T/err.txt"; RC=$?; set -e
+if [ "$RC" = 0 ]; then
   THEIRS=$(cut -f1 "$T/remote.txt" | head -1)
-  g fetch -q "$URL" "refs/heads/$BR:refs/remotes/gitlab/$BR" || stop "could not fetch GitLab's $BR"
+  g fetch -q "$URL" "refs/heads/$BR:refs/remotes/gitlab/$BR" 2>"$T/err.txt" || stop "could not fetch GitLab's $BR — $(why "$T/err.txt")"
   if [ "$THEIRS" = "$OURS" ]; then say "GitLab already at $OURS — branch unchanged"; else
     git merge-base --is-ancestor "$THEIRS" "$OURS" || stop "GitLab's $BR ($THEIRS) is not an ancestor of ours — GitHub's history was rewritten or replaced; GitLab keeps its copy"
     TF=$(git ls-tree -r --name-only "$THEIRS" | wc -l)
     [ $((NF * 100)) -ge $((TF * MIN_KEEP_PCT)) ] || stop "ours has $NF files, GitLab's $TF — more than $((100 - MIN_KEEP_PCT)) % would disappear"
     say "GitLab: $THEIRS ($TF files) → a fast-forward of $(git rev-list --count "$THEIRS..$OURS") commit(s)"
   fi
-else
+elif [ "$RC" = 2 ]; then
   say "GitLab has no $BR yet — the first copy"
+elif git -c credential.helper= ls-remote "$URL" >/dev/null 2>"$T/anon.txt"; then
+  stop "GitLab refused the token for $URL (the project answers without it — the token's scope or the token itself): $(why "$T/err.txt")"
+else
+  stop "GitLab did not answer for $URL — no public project at that path (set the repository variable GITLAB_PROJECT to the real path) or a bad token: $(why "$T/err.txt") / without the token: $(why "$T/anon.txt")"
 fi
 # the push — plain, no force
-if [ "$THEIRS" != "$OURS" ]; then g push "$URL" "$OURS:refs/heads/$BR"; fi
+if [ "$THEIRS" != "$OURS" ]; then g push "$URL" "$OURS:refs/heads/$BR" 2>"$T/push.txt" || stop "the push of $BR to $URL failed: $(why "$T/push.txt")"; cat "$T/push.txt"; fi
 # tags GitLab lacks, one by one, never moved
-g ls-remote --tags "$URL" | awk '{print $2}' | sed 's#refs/tags/##; s#\^{}##' | sort -u > "$T/tags.txt"
+g ls-remote --tags "$URL" 2>"$T/err.txt" | awk '{print $2}' | sed 's#refs/tags/##; s#\^{}##' | sort -u > "$T/tags.txt" || stop "could not list GitLab's tags: $(why "$T/err.txt")"
 NEW=0
 for t in $(git tag --list); do
   grep -qx "$t" "$T/tags.txt" && continue
-  g push "$URL" "refs/tags/$t:refs/tags/$t" && NEW=$((NEW + 1))
+  g push "$URL" "refs/tags/$t:refs/tags/$t" 2>"$T/push.txt" || stop "the push of tag $t failed: $(why "$T/push.txt")"
+  NEW=$((NEW + 1))
 done
 say "done — $BR at $OURS on GitLab; $NEW new tag(s)"

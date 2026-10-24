@@ -18,7 +18,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   mirror:
-    if: github.repository == 'dav1dpgit/lightninginajar' || github.repository == 'dav1dpgit/lijox' || github.repository == 'dav1dpgit/lijox-lnd-adapter'
+    if: github.repository == 'dav1dpgit/lightninginajar' || github.repository == 'dav1dpgit/LIJOX' || github.repository == 'dav1dpgit/lijox-lnd-adapter'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
