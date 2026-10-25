@@ -1,0 +1,29 @@
+# The vendored joinstr v2 copy against upstream's bytes and the recorded diff (ops/joinstr/gate.sh), with its tests and
+# vectors. The Rust toolchain comes from lij/rust-toolchain.toml.
+name: joinstr-gate
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'lij/patches/joinstr-v2/**'
+      - 'docs/joinstr-patches.diff'
+      - 'ops/joinstr/**'
+      - 'lij/Cargo.lock'
+      - '.github/workflows/joinstr-gate.yml'
+  pull_request:
+    paths:
+      - 'lij/patches/joinstr-v2/**'
+      - 'docs/joinstr-patches.diff'
+      - 'ops/joinstr/**'
+      - 'lij/Cargo.lock'
+  workflow_dispatch:
+jobs:
+  gate:
+    # the private repository runs the same script through lij-joinstr-gate.yml, which also records the result on main
+    if: github.repository != 'dav1dpgit/lightning-in-a-jar'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: the gate
+        run: ops/joinstr/gate.sh

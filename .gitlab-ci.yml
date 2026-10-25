@@ -1,0 +1,14 @@
+joinstr-gate:
+  image: rust:1.90.0-bookworm
+  rules:
+    - changes:
+        - lij/patches/joinstr-v2/**/*
+        - lij/lij-core/src/tatara/**/*
+        - docs/joinstr-patches.diff
+        - ops/joinstr/**/*
+        - lij/Cargo.lock
+        - .gitlab-ci.yml
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq python3 patch > /dev/null
+  script:
+    - ops/joinstr/gate.sh   # runs the crate's tests, the Tatara core's tests and the vectors itself
