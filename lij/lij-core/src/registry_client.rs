@@ -47,6 +47,9 @@ const ACTION_POST_CHANNEL: &[u8] = b"post-channel";
 #[allow(dead_code)] // used by Phase 1c-recover; kept here for symmetry
 const ACTION_GET_CHANNELS: &[u8] = b"get-channels";
 const ACTION_PUSH_SUBSCRIBE: &[u8] = b"push-subscribe";
+// v352 (S63, the external review's adapter F7): the wallet signs its Lightning-address registration and release.
+const ACTION_LNURL_REGISTER: &[u8] = b"lnurl-register";
+const ACTION_LNURL_RELEASE: &[u8] = b"lnurl-release";
 
 // ─── Wire types ─────────────────────────────────────────────────────────────
 
@@ -441,11 +444,102 @@ pub async fn register_push_subscription(
     Ok(())
 }
 
+// ─── v352 (S63): the Lightning address — signed register and release ───────────────────────────────────────────────
+//
+// /lnurl/register and /lnurl/release checked only that the pubkey string matched the record; the name is the address
+// itself and the node pubkey is in every invoice, so anyone holding the route token could release a wallet's name and
+// register it under another key — payers' sats to the attacker. Both calls now carry the push-subscribe proof: a
+// single-use challenge from the LSP, signed by the node key over
+//   sha256(domain || action || nonce || pubkey || record_id)
+// with record_id binding what is asked:
+//   lnurl-register: "<name>:<count>:<sha256 hex of the hash fields, lowercased, sorted, joined>"  (an empty probe: count 0)
+//   lnurl-release:  "<name>"
+// The adapter (0.112.0) builds the same record_id from the body it received and refuses anything else. The page keeps
+// doing the HTTP; the engine only answers with the proof — the key never leaves it.
+
+/// The record_id a registration binds: the name, the count of hashes, and a digest over the hash fields.
+pub fn lnurlp_register_record_id(name: &str, hashes_json: &str) -> LijResult<String> {
+    let v: serde_json::Value = if hashes_json.trim().is_empty() { serde_json::Value::Array(vec![]) } else {
+        serde_json::from_str(hashes_json).map_err(|e| LijError::Lsp(format!("hashes JSON: {e}")))?
+    };
+    let arr = v.as_array().ok_or_else(|| LijError::Lsp("hashes must be a JSON array".into()))?;
+    let mut hs: Vec<String> = arr.iter()
+        .filter_map(|e| e.get("hash").and_then(|h| h.as_str()).map(|h| h.to_ascii_lowercase()))
+        .collect();
+    hs.sort();
+    let mut h = Sha256::new();
+    for x in &hs { h.update(x.as_bytes()); }
+    Ok(format!("{}:{}:{}", name.to_ascii_lowercase(), hs.len(), hex::encode(h.finalize())))
+}
+
+#[derive(Serialize)]
+struct LnurlpAuth<'a> {
+    node_pubkey: &'a str,
+    nonce: &'a str,
+    signature: &'a str,
+}
+
+/// Fetch the LSP's challenge and sign the register or release proof. Returns `{node_pubkey, nonce, signature}` as JSON
+/// for the page to put beside `name`, `client_pubkey` and `hashes` in its POST.
+pub async fn lnurlp_auth(
+    keys_manager: &Arc<KeysManager>,
+    lsp_endpoint: &str,
+    action: &str,
+    name: &str,
+    hashes_json: &str,
+) -> LijResult<String> {
+    let endpoint = lsp_endpoint.trim_end_matches('/');
+    let (action_bytes, record_id) = match action {
+        "lnurl-register" => (ACTION_LNURL_REGISTER, lnurlp_register_record_id(name, hashes_json)?),
+        "lnurl-release" => (ACTION_LNURL_RELEASE, name.to_ascii_lowercase()),
+        other => return Err(LijError::Lsp(format!("lnurlp_auth: unknown action {other}"))),
+    };
+    let challenge_url = format!("{endpoint}/lsps/registry/challenge");
+    let challenge_body = http_get(&challenge_url).await?;
+    let challenge: ChallengeResponse = serde_json::from_str(&challenge_body)
+        .map_err(|e| LijError::Lsp(format!("parse challenge: {e} — body: {challenge_body}")))?;
+    if challenge.nonce.len() != 64 {
+        return Err(LijError::Lsp(format!("challenge nonce wrong length: {} (expected 64)", challenge.nonce.len())));
+    }
+    let pubkey_hex = node_pubkey_hex(keys_manager);
+    let digest = build_message_digest(action_bytes, &challenge.nonce, &pubkey_hex, Some(&record_id))?;
+    let signature = sign_digest(keys_manager, &digest);
+    let out = LnurlpAuth { node_pubkey: &pubkey_hex, nonce: &challenge.nonce, signature: &signature };
+    serde_json::to_string(&out).map_err(|e| LijError::Lsp(format!("serialize auth: {e}")))
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // v352 (S63): the record a signed registration binds — the adapter (0.112.0) builds the same string from the body it
+    // received; these pin the rule: name lowercased, the count, sha256 over the hash fields lowercased + sorted + joined.
+    #[test]
+    fn lnurlp_register_record_id_rule() {
+        let empty = lnurlp_register_record_id("Alice", "[]").unwrap();
+        // sha256 of the empty string
+        assert_eq!(empty, "alice:0:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert_eq!(lnurlp_register_record_id("alice", "").unwrap(), empty, "no JSON at all is an empty probe");
+        let two = r#"[{"hash":"BB","secret":"x","index":2},{"hash":"aa","secret":"y"}]"#;
+        let id = lnurlp_register_record_id("alice", two).unwrap();
+        let mut h = Sha256::new(); h.update(b"aa"); h.update(b"bb");
+        assert_eq!(id, format!("alice:2:{}", hex::encode(h.finalize())), "lowercased, sorted, joined; secrets and indexes never enter");
+        let swapped = r#"[{"hash":"aa"},{"hash":"bb"}]"#;
+        assert_eq!(lnurlp_register_record_id("ALICE", swapped).unwrap(), id, "order and case do not change the record");
+        assert!(lnurlp_register_record_id("alice", "{}").is_err(), "not an array");
+    }
+
+    #[test]
+    fn lnurlp_digest_differs_by_action_and_record() {
+        let nonce = "ab".repeat(32); let pk = format!("02{}", "cd".repeat(32));
+        let reg = build_message_digest(ACTION_LNURL_REGISTER, &nonce, &pk, Some("alice:0:x")).unwrap();
+        let rel = build_message_digest(ACTION_LNURL_RELEASE, &nonce, &pk, Some("alice")).unwrap();
+        let reg_other = build_message_digest(ACTION_LNURL_REGISTER, &nonce, &pk, Some("alice:1:y")).unwrap();
+        let push = build_message_digest(ACTION_PUSH_SUBSCRIBE, &nonce, &pk, None).unwrap();
+        assert!(reg != rel && reg != reg_other && reg != push && rel != push, "a proof for one action or record is no proof for another");
+    }
 
     #[test]
     fn channel_record_serialization_field_order_matches_js() {

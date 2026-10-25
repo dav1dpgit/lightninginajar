@@ -329,6 +329,19 @@ export class LijWalletHandle {
      * fetches `login_url&sig=…&key=…` itself. Nothing is paid, nothing else leaves the wallet.
      */
     lnurl_auth_answer(login_url: string, k1_hex: string): string;
+    /**
+     * Register a Web Push wake subscription (D-1 2c offline-receive). Takes the
+     * browser PushSubscription serialized to JSON; signs the `push-subscribe`
+     * challenge with the node key and POSTs to the active LSP. The returned
+     * Promise resolves on success and rejects with the error string on failure.
+     * v352 (S63, the external review's adapter F7): the proof for a signed Lightning-address register or release.
+     * `action` is "lnurl-register" (with the hashes JSON the page is about to send; "[]" for a probe) or
+     * "lnurl-release". The engine GETs the LSP's single-use challenge and signs it with the node key over the action, the
+     * nonce, the pubkey and the record (name + count + a digest of the hashes; the name alone for a release). Resolves
+     * to `{node_pubkey, nonce, signature}` for the page to put in its POST body. The key never leaves the engine; the
+     * wallet lock is held only to clone the signer, never across the network.
+     */
+    lnurlp_auth(endpoint: string, action: string, name: string, hashes_json: string): Promise<any>;
     lnurlp_prepare_hashes(count: number, start_hint?: number | null): Promise<any>;
     /**
      * Estimate for the + Add channel UI: spendable on-chain, the MAX channel
@@ -865,12 +878,6 @@ export class LijWalletHandle {
      * sighting like quote_route_fee. Resolves to the same JSON shape.
      */
     quote_route_fee_to_pubkey(dest_pubkey_hex: string, route_endpoint: string, route_macaroon_hex: string, amount_sats: bigint): Promise<any>;
-    /**
-     * Register a Web Push wake subscription (D-1 2c offline-receive). Takes the
-     * browser PushSubscription serialized to JSON; signs the `push-subscribe`
-     * challenge with the node key and POSTs to the active LSP. The returned
-     * Promise resolves on success and rejects with the error string on failure.
-     */
     register_push_subscription(subscription_json: string): Promise<any>;
     /**
      * v349: move the active provider to another of its own doors — the one with this `endpoint` (from the stored
@@ -1372,6 +1379,7 @@ export interface InitOutput {
     readonly lijwallethandle_list_pending_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_list_recent_payments_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_lnurl_auth_answer: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly lijwallethandle_lnurlp_auth: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => any;
     readonly lijwallethandle_lnurlp_prepare_hashes: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_lsp_channel_open_estimate: (a: number, b: number) => any;
     readonly lijwallethandle_lsp_channel_open_estimate_with: (a: number, b: number, c: number) => any;
@@ -1527,8 +1535,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_211: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_212: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_213: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

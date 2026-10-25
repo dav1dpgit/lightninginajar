@@ -635,3 +635,20 @@ fn a_member_who_withholds_its_nonces_is_named_at_the_timeout_and_its_coin_is_ref
     let (reason, named) = stopped.expect("refused");
     assert!(reason.contains("refused") && named == vec![session(2)]);
 }
+
+#[test]
+fn a_refused_coin_registered_by_a_key_that_cannot_prove_it_is_ignored() {
+    let id = hex::encode(&tagged("lij/test/pool", &[&3u32.to_le_bytes()])[..16]);
+    let params = Params::new(&id, D, 3, RATE * 1000);
+    let (fresh, _) = Attempt::new(params.clone(), Network::Bitcoin, my_part(0), 1_000, Timeouts { phase_s: 600 }).unwrap();
+    let mut fresh = fresh.refusing(vec![my_part(2).coins[0].0]);
+    let (_, acts) = Attempt::new(params, Network::Bitcoin, my_part(2), 1_000, Timeouts { phase_s: 600 }).unwrap();
+    for a in acts {
+        if let Action::Post(j) = a {
+            let out = fresh.on(Input::Msg { from: session(9), json: j });
+            assert!(out.is_empty(), "{out:?}");
+        }
+    }
+    assert_eq!(*fresh.phase(), Phase::Inputs);
+    assert_eq!(fresh.registered(), 0);
+}

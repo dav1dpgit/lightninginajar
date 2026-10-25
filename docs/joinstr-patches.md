@@ -1,9 +1,9 @@
 # joinstr v2 — our patches (lij/patches/joinstr-v2)
 
 Upstream: gitlab.com/1440000bytes/joinstr-v2 at 83637efafd6fdf04691bbe9930c95d5e026fa231 (lij/patches/joinstr-v2/
-REFERENCE.md). The pristine copy is docs/design/mix/ref/joinstr-v2-20261006 (byte for byte upstream's at that commit).
-**docs/joinstr-patches.diff is the whole difference** between the pristine files and ours, and ops/joinstr/gate.sh
-fails CI when the two disagree by a single byte — so every change is listed below and recorded there. The patches come
+REFERENCE.md). **docs/joinstr-patches.diff is the whole difference** between upstream's files and ours: ops/joinstr/gate.sh
+reverse-applies it to the vendored files and fails CI unless every result has upstream's sha256 (REFERENCE.md), so
+every change is listed below and recorded there. The patches come
 from the review report (docs/design/mix/joinstr-v2-review-r1.md §4, DP's word 2026-10-12 17:54); each has its tests.
 When upstream moves, its new zip is read against this list (review §6: the fixes are ours to carry).
 

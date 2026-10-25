@@ -458,16 +458,16 @@ impl Attempt {
         caps::registration_inputs(inputs.len())?;
         let mut ins = Vec::new();
         for i in &inputs {
-            let op0 = OutPoint::new(Txid::from_str(&i.txid).context("bad txid")?, i.vout);
-            if self.refused.contains(&op0) {
-                return Ok(self.stop("a member brought a coin refused after an earlier pool", vec![from]));
-            }
             ensure!(i.txid.len() == 64 && i.txid.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)), "bad txid");
             let op = OutPoint::new(Txid::from_str(&i.txid)?, i.vout);
             let spk = ScriptBuf::from_bytes(joinstr_v2::util::strict_hex_range(&i.script_pubkey, 22, 34)?);
             ensure!(spk.is_p2wpkh() || spk.is_p2tr(), "an input is neither P2WPKH nor P2TR");
             verify_proof(&spk, ownership_msg(&self.id, &from, &op), &i.proof).context("ownership proof")?;
             ins.push((op, TxOut { value: Amount::from_sat(i.amount), script_pubkey: spk }));
+        }
+        // only after the ownership proofs: anyone can name a refused coin, only its owner can prove it
+        if ins.iter().any(|(op, _)| self.refused.contains(op)) {
+            return Ok(self.stop("a member brought a coin refused after an earlier pool", vec![from]));
         }
         let change = match change {
             Some(c) => Some(TxOut {
@@ -596,8 +596,7 @@ impl Attempt {
         let regs: Vec<InputRegistration> = self.regs.values().map(|(r, _)| r.clone()).collect();
         let members = self.members();
         // the fee limit (v0.10 §8.7)
-        let rate = self.rate_milli / 1000;
-        ensure!(caps::within_fee_limit(rate, self.me.rate_at_join, u64::MAX), "fees rose since you joined");
+        ensure!(caps::within_fee_limit_milli(self.rate_milli, self.me.rate_at_join, u64::MAX), "fees rose since you joined");
         // S10 our own re-derivation; S4 scripts apart; S5 the build is exactly it, my payout once, my coins as registered
         let r = rederive(&self.id, self.d, self.rate_milli, &members, &self.payouts, self.me.tip)?;
         let pay: Vec<ScriptBuf> = self.payouts.iter().map(|(s, _)| s.clone()).collect();

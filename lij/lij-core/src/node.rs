@@ -3960,6 +3960,11 @@ impl LijNode {
         self.active_lsp.as_ref()
     }
 
+    /// v352 (S63): the node key's signer, for proofs made outside the wallet lock (lnurlp_auth).
+    pub fn keys_manager_arc(&self) -> Arc<KeysManager> {
+        self.keys_manager.clone()
+    }
+
     /// Access the Worker URL from config (used for HTTP calls that go through the proxy).
     pub fn worker_url(&self) -> &str {
         &self.config.worker_url

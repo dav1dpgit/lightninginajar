@@ -1066,6 +1066,35 @@ export class LijWalletHandle {
         }
     }
     /**
+     * Register a Web Push wake subscription (D-1 2c offline-receive). Takes the
+     * browser PushSubscription serialized to JSON; signs the `push-subscribe`
+     * challenge with the node key and POSTs to the active LSP. The returned
+     * Promise resolves on success and rejects with the error string on failure.
+     * v352 (S63, the external review's adapter F7): the proof for a signed Lightning-address register or release.
+     * `action` is "lnurl-register" (with the hashes JSON the page is about to send; "[]" for a probe) or
+     * "lnurl-release". The engine GETs the LSP's single-use challenge and signs it with the node key over the action, the
+     * nonce, the pubkey and the record (name + count + a digest of the hashes; the name alone for a release). Resolves
+     * to `{node_pubkey, nonce, signature}` for the page to put in its POST body. The key never leaves the engine; the
+     * wallet lock is held only to clone the signer, never across the network.
+     * @param {string} endpoint
+     * @param {string} action
+     * @param {string} name
+     * @param {string} hashes_json
+     * @returns {Promise<any>}
+     */
+    lnurlp_auth(endpoint, action, name, hashes_json) {
+        const ptr0 = passStringToWasm0(endpoint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(action, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passStringToWasm0(hashes_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_lnurlp_auth(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
+        return ret;
+    }
+    /**
      * @param {number} count
      * @param {number | null} [start_hint]
      * @returns {Promise<any>}
@@ -3045,10 +3074,6 @@ export class LijWalletHandle {
         return ret;
     }
     /**
-     * Register a Web Push wake subscription (D-1 2c offline-receive). Takes the
-     * browser PushSubscription serialized to JSON; signs the `push-subscribe`
-     * challenge with the node key and POSTs to the active LSP. The returned
-     * Promise resolves on success and rejects with the error string on failure.
      * @param {string} subscription_json
      * @returns {Promise<any>}
      */
@@ -4710,7 +4735,7 @@ function __wbg_get_imports() {
             console.warn(arg0, arg1, arg2, arg3);
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2550, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2555, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed);
             return ret;
         },
@@ -4721,16 +4746,16 @@ function __wbg_get_imports() {
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("ErrorEvent")], shim_idx: 8, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_211);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_212);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 8, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_212);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_213);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 2256, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 2261, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f);
             return ret;
         },
@@ -4773,12 +4798,12 @@ function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_211(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_211(arg0, arg1, arg2);
-}
-
 function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_212(arg0, arg1, arg2) {
     wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_212(arg0, arg1, arg2);
+}
+
+function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_213(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_213(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed(arg0, arg1, arg2) {

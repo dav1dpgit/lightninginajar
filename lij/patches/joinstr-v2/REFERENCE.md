@@ -3,8 +3,8 @@
 **Upstream:** gitlab.com/1440000bytes/joinstr-v2 (MIT, LICENSE kept), branch main at commit
 **83637efafd6fdf04691bbe9930c95d5e026fa231** — named in the comment of the zip DP attached on 2026-10-12 16:42
 (joinstr-v2-main.zip, 3,920,335 bytes, sha256 47d9adcf54ffeb6ce4f76d8e8e5818984ec3e1e97e4f4f5eb3ca895b7da3d4ed; byte
-for byte the 10-06 download in docs/design/mix/ref/joinstr-v2-20261006, which is the pristine copy the patch gate diffs
-against). Reviewed before it came in: docs/design/mix/joinstr-v2-review-r1.md (DP's word 2026-10-12 17:54).
+for byte the 10-06 download in docs/design/mix/ref/joinstr-v2-20261006, which is not in the public repository; the gate
+needs only the hashes below). Reviewed before it came in: docs/design/mix/joinstr-v2-review-r1.md (DP's word 2026-10-12 17:54).
 
 **What came in (Tatara v0.9 §15.2)** — upstream's bytes, each file's sha256 as upstream ships it:
 
@@ -19,7 +19,7 @@ against). Reviewed before it came in: docs/design/mix/joinstr-v2-review-r1.md (D
 | src/funding.rs | f03b7f382d1eb3b87abcb6feb55659474b7636ddef1e14f80f0d36852d71218e | see docs/joinstr-patches.md |
 | src/msg.rs | 80c4f1ecd97dd38755361949c5535680e24d82749af82245abd1831ea25e86b3 | see docs/joinstr-patches.md |
 | src/util.rs | 6ab74b24bd759cb2fae06c2dd01f138bb4f5f151df979912c0ebd99391569320 | see docs/joinstr-patches.md |
-| tests/vectors.rs | 0a201aeb06cc3d14f0724859acafb1c4874188a4fbd13c5ccc54f8de68383ade | see docs/joinstr-patches.md |
+| tests/vectors.rs | 0a201aeb06cc3d14f0724859acafb1c4874188a4fbd13c5ccc54f8de68383ade | never |
 | tests/vectors.json | 77717e68c9eed64a17b32dfe8b3598d9945ea38612a97efdaaba80271fba4efe | never (the vectors are the check) |
 | contrib/check_vectors.py | 705e79a33cd963796df0ea96f67e31cfeb7a5933f664f3d7e10b2e77a4421758 | never |
 
@@ -29,6 +29,6 @@ against). Reviewed before it came in: docs/design/mix/joinstr-v2-review-r1.md (D
 wallet.rs; upstream's Cargo.toml and Cargo.lock (tungstenite, rustls, webpki-roots, socks5 and nostrd from git, nostr,
 clap, env_logger, log, bip39, base64); contrib/regtest.sh; docs/.
 
-**The gate** (ops/joinstr/gate.sh, run in CI on every change here): the unchanged files hash as above; every changed
-file differs from the pristine copy exactly by the recorded patch (docs/joinstr-patches.diff); the dependency tree holds
+**The gate** (ops/joinstr/gate.sh, run in CI on every change here): the recorded patch (docs/joinstr-patches.diff)
+reverse-applied to the vendored files gives exactly the hashes above; no other file but ours; the dependency tree holds
 only the allowed crates; no `unsafe`; the vectors (Rust and Python) and the failing tests pass.
