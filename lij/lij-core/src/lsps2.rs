@@ -452,14 +452,40 @@ pub async fn lsps2_register_invoice_secret(
     payment_secret_hex: &str,
     total_msat: u64,
 ) -> LijResult<()> {
+    lsps2_register_invoice_secret_with_scid(endpoint, route_macaroon, payment_hash_hex, payment_secret_hex, total_msat, None).await
+}
+
+/// v356 (S63, Kimi K3.1 Pro round 2 F9 — DP's (b), 2026-10-26 19:13): a JIT invoice's payment_secret registered by
+/// payment_hash TOO, with the promise's scid beside it. The adapter's B-19 (the early-arrival sibling rescue — a shard
+/// of a JIT payment that rides the wallet's existing real channel before any binding exists) keyed on the hash store,
+/// which only plain invoices ever filled — so it could only misfire. With `jit_scid` on the entry the adapter binds
+/// the shard to THAT promise, and only when the registered secret equals the promise's; the trampoline (B-10, plain
+/// invoices only) skips entries that carry a scid. Best-effort, like the plain registration: a miss never fails the
+/// invoice.
+pub async fn lsps2_register_invoice_secret_with_scid(
+    endpoint: &str,
+    route_macaroon: &str,
+    payment_hash_hex: &str,
+    payment_secret_hex: &str,
+    total_msat: u64,
+    jit_scid: Option<&str>,
+) -> LijResult<()> {
     let url = format!("{endpoint}/lsps2/register_secret");
     log::info!(
-        "Registering plain-invoice payment_secret with LSP: hash={payment_hash_hex} total_msat={total_msat}"
+        "Registering {}invoice payment_secret with LSP: hash={payment_hash_hex} total_msat={total_msat}{}",
+        if jit_scid.is_some() { "JIT " } else { "plain-" },
+        jit_scid.map(|s| format!(" jit_scid={s}")).unwrap_or_default()
     );
-    let body_json = format!(
-        r#"{{"payment_hash":"{}","payment_secret":"{}","total_msat":{}}}"#,
-        payment_hash_hex, payment_secret_hex, total_msat
-    );
+    let body_json = match jit_scid {
+        Some(scid) if !scid.is_empty() => format!(
+            r#"{{"payment_hash":"{}","payment_secret":"{}","total_msat":{},"jit_scid":"{}"}}"#,
+            payment_hash_hex, payment_secret_hex, total_msat, scid
+        ),
+        _ => format!(
+            r#"{{"payment_hash":"{}","payment_secret":"{}","total_msat":{}}}"#,
+            payment_hash_hex, payment_secret_hex, total_msat
+        ),
+    };
 
     #[cfg(target_arch = "wasm32")]
     {

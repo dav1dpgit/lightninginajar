@@ -96,7 +96,11 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v352".to_string()  // v352 (S63 Sat, DP 2026-10-24 22:08 "Go on the next steps" — the external review's adapter F7): the wallet signs its Lightning-address register and release with its node key (lnurlp_auth; registry_client ACTION_LNURL_REGISTER / _RELEASE over the push-subscribe challenge) — adapter 0.112.0 refuses unsigned ones, no grace period (DP)
+    "phase11-v356".to_string()  // v356 (S63 Mon 2026-10-26, Kimi K3.1 Pro's round 2 F9 — DP's (b) at 19:13): a fixed-amount JIT invoice's payment_secret is registered by HASH as well as by scid (lsps2_register_invoice_secret_with_scid, the promise's jit_scid beside it) so the adapter's B-19 (the early-arrival sibling rescue — specimen 3d832527) binds a shard of THIS payment that rides the wallet's existing real channel to THIS promise, and only when the registered secret equals the promise's (adapter 0.117.0); until now the hash store held plain invoices only and B-19 could only misfire. Best-effort: a miss never fails the invoice.
+    // "phase11-v355".to_string()  // v355 (S63 Mon 2026-10-26, Kimi K3.1 Pro's round 2 — DP's rulings of 17:00/17:17): lsp_proof(endpoint, action, record_id) — the 0.112.0 proof for any action on lij_core's fixed list (heartbeat, lsps2-pending, client-prefs, push-claim, push-deliver, push-claim-status, lnurl-note): the page assembles the record from the body it sends, the engine signs the LSP's single-use challenge over it with the node key, the adapter (0.116.0) rebuilds the record and refuses anything else. F10: the awake proof (touchWalletActive only on a verified heartbeat / pending poll); F4/F6: a Push claim, delivery and claim-status read signed by the claimant's node key — a stranger with the hash can no longer squat the claim. lij-core test lsp_proof_actions_and_digest.
+    // "phase11-v354".to_string()  // v354 (S63 Mon 2026-10-26, Kimi K3.1 Pro's round 2 and r9 §3d's last line): (1) W-4 — a Black start kit envelope whose nonce is not 12 bytes used to PANIC the engine (Nonce::from_slice asserts; with panic=abort the wallet mutex was never released — the engine dead for the rest of the page session, every push "busy"), plantable by any holder or, in full mode, any relay; BlackStartKeys::open checks the lengths and answers an error (lij-core test). (2) send_cancel(bolt11|hash): Stop DURING an extended run — the loop ends before its next try (the try that is out is LDK's to finish), the result says "stopped by you", can_continue false; a fresh send or a continue clears a stale Stop.
+    // "phase11-v353".to_string()  // v353 (S63 Mon 2026-10-26, DP's opening list): (1) PATHFINDING, docs/design/pathfinding/pathfinding-r9.md §3a–§3d: THE SEND MEMORY — what a send learned lives in the engine, keyed by its payment hash (the refusing channel pairs, the refusing NODES, every try's hops and its refusal, the tries used; SEND_MEMORY, 32 sends); send_payment_with_retries starts it fresh, continue_payment(bolt11, …, more_tries) runs more tries from it (DP: after the 5th failure the page asks "Try 5 more / 10 more / Stop" — the attempt numbers continue, nothing refused is tried again), send_memory_json / send_memory_clear; the NODE-FIRST rule (§3c): the node that refused is avoided whole on the next ask (prepare_lsp_route_request_full → ignored_nodes, adapter 0.113.0 passes it to LND) unless it is this wallet's own provider, and when the provider finds no route that way the ask goes once more avoiding only the refusing channels; THE RECORD (§3b): every try logged with its hops (pubkey:scid:msat) and, on a refusal, the failed channel's amount (PaymentOutcome::PathFailed gains failed_amount_msat + path_hops); THE REPORT (§3a/§3e): route_report(bolt11|hash, endpoint, macaroon) — one signed report of every refusal to the provider (registry_client route_report_auth over "route-report" + the record_id twin route_report_record_id; the page calls it only with Privacy → LSP → Routing reports ON); the result JSON carries payment_hash / tries_used / can_continue / refusals. (2) The on-chain summary counts coins a Mix pool holds out of sendable_sats (mix_held_sats / mix_held_count; DP: the available amount must know what a pool holds). (3) W2: push_lock caps the lock's amount and timelock at what the quote showed (max_total_msat, max_cltv). lij-core: route_report_record_id vectors, the mix-held summary test.
+    // "phase11-v352".to_string()  // v352 (S63 Sat, DP 2026-10-24 22:08 "Go on the next steps" — the external review's adapter F7): the wallet signs its Lightning-address register and release with its node key (lnurlp_auth; registry_client ACTION_LNURL_REGISTER / _RELEASE over the push-subscribe challenge) — adapter 0.112.0 refuses unsigned ones, no grace period (DP)
     // "phase11-v351".to_string()  // v351 (S62 Fri, DP 2026-10-23 23:11 "Agreed on all points" — /dev/fd0's merge request !1 at gitlab.com/1440000bytes/lightninginajar, the two Tatara fixes under his name): (1) tatara/machine.rs on_inputs checked the REFUSED set before the ownership proof — refused coins are the coins of members named in an earlier stop, seen on the relay by every member of that pool, so a fake registration carrying one from a throwaway key, no proof, stopped this phone's pool for free and named only the throwaway; the check now runs after every proof holds — only the coin's owner can trigger it, and is then rightly named; test a_refused_coin_registered_by_a_key_that_cannot_prove_it_is_ignored. (2) build_and_check's fee re-check compared whole sat/vB (rate_milli / 1000, the fraction lost, no cap) where Join compares thousandths (phone.rs, caps::within_fee_limit_milli) — the same comparison now. 486 green.
     // "phase11-v350".to_string()  // v350 (S61 Mon, DP 2026-10-19 21:31 "the wallet as a login … the scan flow recognizes the login QR, asks 'Log in to <site>?', done"): lnurl_auth_answer — LNURL-auth (LUD-04/05), the key per site from m/138'/…, the challenge signed; lij-core/src/lnurl_auth.rs, its linking keys pinned to an independent Python computation. · v349 (S61 Mon, DP 2026-10-19 "Get A done now" — Step A, THE DOORS INTO A PROVIDER; docs/design/routes/routes-r1.md): the registry record carries `routes` (lijox-register:v4; lij-worker 0.13.0, adapter 0.108.0) — every door into the same provider with the operator's signed word for what sits between the wallet and the box (direct: TLS ends on the operator's machine; cloudflare: Cloudflare's edge ends TLS). LspInfo.routes + LspInfo.reach (the word of the door applied). The wallet's Reach preference (WalletConfig.route_pref: direct-first (default) / never-cloudflare / cloudflare-first) is handed in at init and applied in ONE place, Node::connect_lsp — every path that connects a provider (the boot ladder, a switch, a restore) picks the first allowed door (lsp::pick_route: direct, then cloudflare, then a one-door record of unknown reach; never-cloudflare = direct only; a record with no allowed door is NOT connected and nothing is sent to it; tor is a word, never a door). The registry is a door too: under never-cloudflare a Cloudflare-reached registry (WalletConfig.worker_reach) is not read when the wallet has a persisted choice or a channel counterparty — a fresh wallet reads it once. New calls: switch_lsp_with(record_json) (no registry read), relink_active_lsp(endpoint) (another door of the active provider's own record: the addresses swapped, persisted, the peer link dropped so the monitor reconnects at the new wss_url), route_state_json() (the preference and the last connect's note). Tests v349_the_record_parses_with_and_without_routes, v349_the_preference_orders_the_doors, v349_a_one_door_record_is_used_last_and_refused_under_never, v349_apply_route_moves_the_three_addresses_and_keeps_the_list.
     // "phase11-v348".to_string()  // v348 (S60 Mon, DP 2026-10-19 "Go on 5-9" — the silentpayments.xyz review, sethforprivacy/silentpaymentsxyz#80, all four findings reproduced in the bytes): (1) THE RESTORE SWEPT FROM THE TIP — the sweep told a fresh view from an old one by the walk's position, but the walk opens at the tip before the sweep opens, so every restore looked like an old wallet; now the floor is RECORDED (Tier2View.sp_floor) at birth (tier2_wallet::birth) and by a rescan year (rescan_from), the sweep starts at the later of the index start and the floor, a sweep standing above its floor is pulled down once (coins stay), a view with no floor (walked before v287, or restored between v287 and v348) sweeps from SP_LAUNCH_HEIGHT 968,900 (DP: heal them all); (2) a height missing from the provider's tweak list is a gap, not an empty block — the batch is refused and the cursor holds; (3) K_max 2323 (was 10,000), the cap exercised by a test. Tests v348_a_restore_sweeps_from_its_birthday_even_though_the_walk_moved_first, v348_a_sweep_above_its_floor_is_pulled_down_once_and_never_up, v348_a_tweak_list_with_a_missing_height_holds_the_scan, v348_the_receiver_stops_at_k_max.
@@ -293,6 +297,87 @@ fn note_inflight(blob: &lij_core::storage::StateBlob) {
 }
 /// v302 (S54): the last receive-watch check's report (watch_report) — kept outside the wallet lock.
 static WATCH_REPORT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+// ── v353 (S63, pathfinding r9 §3b/§3c/§3d — DP 2026-10-25: "the engine keeps the memory"): THE SEND MEMORY ──
+// What one send has learned, keyed by its payment hash: the channel pairs that refused (ignored_pairs on the next
+// ask), the nodes that refused (ignored_nodes — the node-first rule), every try's hops and its failure, the tries
+// used. send_payment_with_retries starts it fresh; continue_payment runs more tries from it (the page's "Try 5
+// more" after the 5th failure); route_report hands it to the provider signed; send_memory_clear drops it (Stop, the
+// screen closing, the invoice expiring). Bounded at 32 sends — the oldest goes.
+#[derive(Clone, Debug, serde::Serialize)]
+struct SendTry {
+    attempt: u32,
+    /// (pubkey hex, scid, msat carried over that hop's channel) from the route the try went out on
+    hops: Vec<(String, u64, u64)>,
+    /// the refusal: from, to (hex), scid, msat on that channel, "temporary" | "permanent"; None while the try runs or on success
+    failed: Option<(String, String, u64, u64, String)>,
+}
+#[derive(Clone, Debug, Default, serde::Serialize)]
+struct SendMemory {
+    #[serde(skip)] pairs: Vec<(Vec<u8>, Vec<u8>)>,
+    #[serde(skip)] nodes: Vec<Vec<u8>>,
+    tries_used: u32,
+    tries: Vec<SendTry>,
+    succeeded: bool,
+    permanent: bool,
+    held: bool,
+    /// v354 (§3d): the user pressed Stop during an extended run — honoured between tries (an HTLC that is out is
+    /// LDK's to finish); no question follows a stopped send
+    #[serde(default)] stopped: bool,
+    started_ms: f64,
+    ended_ms: f64,
+}
+static SEND_MEMORY: std::sync::Mutex<Vec<(String, SendMemory)>> = std::sync::Mutex::new(Vec::new());
+const SEND_MEMORY_CAP: usize = 32;
+/// v354 (S63, r9 §3d — "a Stop button stays on screen during the extended run"): the hashes whose running send the
+/// page asked to stop. Read and consumed at the head of the next try; cleared when a fresh send or a continue starts.
+static SEND_CANCEL: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+fn send_cancel_set(hash_hex: &str) { if let Ok(mut v) = SEND_CANCEL.lock() { if !v.iter().any(|h| h == hash_hex) { v.push(hash_hex.to_string()); } while v.len() > SEND_MEMORY_CAP { v.remove(0); } } }
+fn send_cancel_take(hash_hex: &str) -> bool { match SEND_CANCEL.lock() { Ok(mut v) => { let n = v.len(); v.retain(|h| h != hash_hex); v.len() != n } Err(_) => false } }
+fn send_memory_put(hash_hex: &str, m: SendMemory) {
+    if let Ok(mut v) = SEND_MEMORY.lock() {
+        v.retain(|(h, _)| h != hash_hex);
+        v.push((hash_hex.to_string(), m));
+        while v.len() > SEND_MEMORY_CAP { v.remove(0); }
+    }
+}
+fn send_memory_get(hash_hex: &str) -> Option<SendMemory> {
+    SEND_MEMORY.lock().ok().and_then(|v| v.iter().find(|(h, _)| h == hash_hex).map(|(_, m)| m.clone()))
+}
+fn send_memory_drop(hash_hex: &str) -> bool {
+    match SEND_MEMORY.lock() { Ok(mut v) => { let n = v.len(); v.retain(|(h, _)| h != hash_hex); v.len() != n } Err(_) => false }
+}
+/// The hops of the first route in a route/build answer — (pub_key hex, chan_id, amt_to_forward_msat) — for the record.
+fn route_answer_hops(response_text: &str) -> Vec<(String, u64, u64)> {
+    let v: serde_json::Value = match serde_json::from_str(response_text) { Ok(v) => v, Err(_) => return Vec::new() };
+    v.get("routes").and_then(|r| r.as_array()).and_then(|a| a.first()).and_then(|r| r.get("hops")).and_then(|h| h.as_array())
+        .map(|hops| hops.iter().map(|h| (
+            h.get("pub_key").and_then(|p| p.as_str()).unwrap_or("").to_ascii_lowercase(),
+            h.get("chan_id").and_then(|c| c.as_str()).and_then(|c| c.parse::<u64>().ok()).or_else(|| h.get("chan_id").and_then(|c| c.as_u64())).unwrap_or(0),
+            h.get("amt_to_forward_msat").and_then(|a| a.as_str()).and_then(|a| a.parse::<u64>().ok()).or_else(|| h.get("amt_to_forward_msat").and_then(|a| a.as_u64())).unwrap_or(0),
+        )).collect())
+        .unwrap_or_default()
+}
+fn route_answer_count(response_text: &str) -> usize {
+    serde_json::from_str::<serde_json::Value>(response_text).ok()
+        .and_then(|v| v.get("routes").and_then(|r| r.as_array()).map(|a| a.len())).unwrap_or(0)
+}
+/// v353 (§3d): the result JSON with the memory's facts beside it — the page asks "Try 5 more?" when can_continue.
+fn payment_result_json_with_memory(hash_hex: &str, success: bool, preimage: Option<String>, fee_msat: Option<u64>, error: Option<String>) -> JsValue {
+    let base = payment_result_json(success, preimage, fee_msat, error);
+    let text = base.as_string().unwrap_or_default();
+    let mut v: serde_json::Value = match serde_json::from_str(&text) { Ok(v) => v, Err(_) => return base };
+    if let Some(m) = send_memory_get(hash_hex) {
+        let can_continue = !success && !m.permanent && !m.held && !m.stopped && m.tries.iter().any(|t| t.failed.is_some());   // v354: never after a Stop
+        if let Some(o) = v.as_object_mut() {
+            o.insert("payment_hash".into(), serde_json::Value::String(hash_hex.to_string()));
+            o.insert("tries_used".into(), serde_json::Value::from(m.tries_used));
+            o.insert("can_continue".into(), serde_json::Value::Bool(can_continue));
+            o.insert("refusals".into(), serde_json::Value::from(m.tries.iter().filter(|t| t.failed.is_some()).count()));
+        }
+    }
+    JsValue::from_str(&v.to_string())
+}
 /// v256 (S46, DP: "Encrypt it"): the tier-2 ledger and the pending list live encrypted
 /// at rest under the wallet's persistence key — the same key the channel blobs use.
 fn t2_storage(root_key: &lij_core::key::RootKey) -> Arc<dyn lij_core::storage::LijStorage> {
@@ -3747,6 +3832,149 @@ impl LijWalletHandle {
         let amount_sats_override: Option<u64> = amount_sats_override.or(amount_msat_override.map(|m| m / 1000));
         let progress_callback = progress_callback.clone();
         future_to_promise(async move {
+            // v353 (S63, §3d): a fresh send starts with a fresh memory (a second press after a Stop learns nothing
+            // from the first — the page's "Try N more" is continue_payment, which keeps it)
+            send_memory_drop(&payment_hash_hex_of(&bolt11).unwrap_or_default());
+            send_cancel_take(&payment_hash_hex_of(&bolt11).unwrap_or_default());   // v354: a fresh send, no stale Stop
+            send_loop(inner, bolt11, route_endpoint, route_macaroon_hex, 1, max_retries, progress_callback, amount_sats_override, amount_msat_override).await
+        })
+    }
+
+    /// v353 (S63, pathfinding r9 §3d — DP 2026-10-25 "after the 5th failed try, the wallet asks the user whether to keep
+    /// trying (5 or 10 more), and the failed paths are not forgotten"): more tries of a send whose memory this engine
+    /// holds. Every pair and node that refused stays avoided; new refusals join them; the attempt numbers continue
+    /// ("6 of 10"). Refused when nothing is remembered for the invoice (a reload, a Stop, a success).
+    pub fn continue_payment(
+        &self,
+        bolt11: &str,
+        route_endpoint: &str,
+        route_macaroon_hex: &str,
+        more_tries: u32,
+        progress_callback: &js_sys::Function,
+        amount_sats_override: Option<u64>,
+        amount_msat_override: Option<u64>,
+    ) -> js_sys::Promise {
+        let inner = self.inner.clone();
+        let bolt11 = bolt11.to_string();
+        let route_endpoint = route_endpoint.to_string();
+        let route_macaroon_hex = route_macaroon_hex.to_string();
+        let more_tries = more_tries.max(1);
+        let amount_sats_override: Option<u64> = amount_sats_override.or(amount_msat_override.map(|m| m / 1000));
+        let progress_callback = progress_callback.clone();
+        future_to_promise(async move {
+            let hash_hex = match payment_hash_hex_of(&bolt11) { Some(h) => h, None => return Ok(payment_result_json(false, None, None, Some("continue: the invoice does not parse".into()))) };
+            let used = match send_memory_get(&hash_hex) {
+                Some(m) if !m.succeeded => m.tries_used,
+                Some(_) => return Ok(payment_result_json(false, None, None, Some("continue: this payment already succeeded".into()))),
+                None => return Ok(payment_result_json(false, None, None, Some("continue: nothing is remembered for this invoice — start the send again".into()))),
+            };
+            log::info!("[v353] continue_payment: {} more tr{} after {} used", more_tries, if more_tries == 1 { "y" } else { "ies" }, used);
+            send_cancel_take(&hash_hex);   // v354: the user asked for more — a stale Stop does not apply
+            send_loop(inner, bolt11, route_endpoint, route_macaroon_hex, used + 1, used + more_tries, progress_callback, amount_sats_override, amount_msat_override).await
+        })
+    }
+
+    /// v353 (§3d): what this engine remembers of a send — JSON {tries_used, tries:[{attempt, hops, failed}], succeeded,
+    /// permanent, held, started_ms, ended_ms} or null.
+    pub fn send_memory_json(&self, bolt11_or_hash: &str) -> Result<String, JsValue> {
+        let h = if bolt11_or_hash.len() == 64 && bolt11_or_hash.chars().all(|c| c.is_ascii_hexdigit()) { bolt11_or_hash.to_ascii_lowercase() } else { payment_hash_hex_of(bolt11_or_hash).unwrap_or_default() };
+        Ok(send_memory_get(&h).map(|m| serde_json::to_string(&m).unwrap_or_else(|_| "null".into())).unwrap_or_else(|| "null".into()))
+    }
+
+    /// v354 (S63, r9 §3d): Stop DURING an extended run — the running loop ends before its next try (the try that is
+    /// out finishes on its own: an HTLC in flight is LDK's to settle or fail back). The result then says "stopped by
+    /// you", can_continue false. Answers whether a memory (a run) exists for the invoice.
+    pub fn send_cancel(&self, bolt11_or_hash: &str) -> Result<bool, JsValue> {
+        let h = if bolt11_or_hash.len() == 64 && bolt11_or_hash.chars().all(|c| c.is_ascii_hexdigit()) { bolt11_or_hash.to_ascii_lowercase() } else { payment_hash_hex_of(bolt11_or_hash).unwrap_or_default() };
+        if h.is_empty() { return Ok(false); }
+        send_cancel_set(&h);
+        log::info!("[v354] send_cancel: {}… — the loop stops before its next try", &h[..16.min(h.len())]);
+        Ok(send_memory_get(&h).is_some())
+    }
+
+    /// v353 (§3d): the memory is dropped — Stop, the Send screen closing, the invoice expiring. Answers whether one was held.
+    pub fn send_memory_clear(&self, bolt11_or_hash: &str) -> Result<bool, JsValue> {
+        let h = if bolt11_or_hash.len() == 64 && bolt11_or_hash.chars().all(|c| c.is_ascii_hexdigit()) { bolt11_or_hash.to_ascii_lowercase() } else { payment_hash_hex_of(bolt11_or_hash).unwrap_or_default() };
+        Ok(send_memory_drop(&h))
+    }
+
+    /// v353 (S63, pathfinding r9 §3a/§3e — DP 2026-10-25): ONE signed routing report to the provider after a send ends,
+    /// from the memory: every refusal (from, to, scid, msat, temporary|permanent) of every try, signed by the node key
+    /// over a single-use challenge (the 0.112.0 shape: sha256("lij-registry-v1" ‖ "route-report" ‖ nonce ‖ pubkey ‖
+    /// record_id), record_id = "<hash>:<count>:<sha256 of the sorted refusal lines>"). The adapter (0.113.0) writes the
+    /// temporary refusals into its own LND's routing memory. The page calls this only with Privacy → LSP → Routing
+    /// reports ON — Off means nothing is sent (§3e). Answers {ok, sent, refusals, status, body} as JSON; the memory is
+    /// kept (the page clears it) so a "Try more" after a report still knows the failed paths.
+    pub fn route_report(&self, bolt11_or_hash: &str, route_endpoint: &str, route_macaroon_hex: &str) -> js_sys::Promise {
+        let inner = self.inner.clone();
+        let key = bolt11_or_hash.to_string();
+        let route_endpoint = route_endpoint.to_string();
+        let route_macaroon_hex = route_macaroon_hex.to_string();
+        future_to_promise(async move {
+            let h = if key.len() == 64 && key.chars().all(|c| c.is_ascii_hexdigit()) { key.to_ascii_lowercase() } else { payment_hash_hex_of(&key).unwrap_or_default() };
+            let m = match send_memory_get(&h) { Some(m) => m, None => return Ok(JsValue::from_str(r#"{"ok":false,"sent":false,"error":"nothing remembered for this invoice"}"#)) };
+            let refusals: Vec<serde_json::Value> = m.tries.iter().filter_map(|t| t.failed.as_ref().map(|(from, to, scid, msat, code)| serde_json::json!({
+                "attempt": t.attempt, "from": from, "to": to, "scid": scid.to_string(), "amount_msat": msat.to_string(), "code": code,
+            }))).collect();
+            if refusals.is_empty() { return Ok(JsValue::from_str(r#"{"ok":true,"sent":false,"refusals":0,"note":"no refusal to report"}"#)); }
+            let refusals_json = serde_json::Value::Array(refusals.clone()).to_string();
+            let km = {
+                let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                wallet.node().keys_manager_arc()
+            };
+            let auth_json = match lij_core::registry_client::route_report_auth(&km, &route_endpoint, &h, &refusals_json).await {
+                Ok(j) => j,
+                Err(e) => return Ok(JsValue::from_str(&serde_json::json!({ "ok": false, "sent": false, "error": format!("challenge/signature: {e}") }).to_string())),
+            };
+            let auth: serde_json::Value = serde_json::from_str(&auth_json).unwrap_or(serde_json::Value::Null);
+            let body = serde_json::json!({
+                "client_pubkey": auth.get("node_pubkey").cloned().unwrap_or(serde_json::Value::Null),
+                "node_pubkey": auth.get("node_pubkey").cloned().unwrap_or(serde_json::Value::Null),
+                "nonce": auth.get("nonce").cloned().unwrap_or(serde_json::Value::Null),
+                "signature": auth.get("signature").cloned().unwrap_or(serde_json::Value::Null),
+                "payment_hash": h,
+                "tries_used": m.tries_used,
+                "succeeded": m.succeeded,
+                "failures": refusals,
+            }).to_string();
+            let url = format!("{}/v1/route/report", route_endpoint.trim_end_matches('/'));
+            match lij_core::node::fetch_post_with_macaroon(&url, &route_macaroon_hex, &body).await {
+                Ok(t) => {
+                    log::info!("[v353] routing report sent: {} refusal(s) for {}… — provider: {}", refusals.len(), &h[..16.min(h.len())], t.chars().take(200).collect::<String>());
+                    Ok(JsValue::from_str(&serde_json::json!({ "ok": true, "sent": true, "refusals": refusals.len(), "body": t }).to_string()))
+                }
+                Err(e) => Ok(JsValue::from_str(&serde_json::json!({ "ok": false, "sent": false, "refusals": refusals.len(), "error": e.to_string() }).to_string())),
+            }
+        })
+    }
+}
+
+/// v353: the payment hash of an invoice, hex, lowercased.
+fn payment_hash_hex_of(bolt11: &str) -> Option<String> {
+    lij_core::invoice_facts::invoice_facts(bolt11).ok().map(|f| f.payment_hash.to_ascii_lowercase())
+}
+
+/// v353 (S63): the single-path retry loop of send_payment_with_retries, lifted out so continue_payment can run more
+/// tries of the same send from its memory. Tries `first_attempt..=last_attempt`; the MPP gate and the in-flight guard
+/// run once at the start, as before.
+#[allow(clippy::too_many_arguments)]
+async fn send_loop(
+    inner: Arc<std::sync::Mutex<LijWallet>>,
+    bolt11: String,
+    route_endpoint: String,
+    route_macaroon_hex: String,
+    first_attempt: u32,
+    last_attempt: u32,
+    progress_callback: js_sys::Function,
+    amount_sats_override: Option<u64>,
+    amount_msat_override: Option<u64>,
+) -> Result<JsValue, JsValue> {
+    let max_retries = last_attempt;
+    let hash_hex = payment_hash_hex_of(&bolt11).unwrap_or_default();
+    let mut mem = send_memory_get(&hash_hex).unwrap_or_else(|| SendMemory { started_ms: js_sys::Date::now(), ..Default::default() });
+    mem.ended_ms = 0.0;
+    send_memory_put(&hash_hex, mem.clone());
+    {
             use lij_core::node::PaymentOutcome;
 
             // v10: emit progress events to JS so the wallet UI can render
@@ -3968,23 +4196,39 @@ impl LijWalletHandle {
                 }
             }
 
-            let mut excluded_pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+            // v353 (§3b/§3c/§3d): the pairs and nodes that refused live in the send's memory, so a continued send
+            // (continue_payment) avoids everything the earlier tries learned
+            let mut excluded_pairs: Vec<(Vec<u8>, Vec<u8>)> = mem.pairs.clone();
             let mut last_error: Option<String> = None;
 
-            for attempt in 1..=max_retries {
-                log::info!("[Phase10b-retry] attempt {}/{}, {} excluded pair(s) so far",
-                    attempt, max_retries, excluded_pairs.len());
+            'attempts: for attempt in first_attempt..=last_attempt {
+                // v354 (§3d): the user's Stop, honoured between tries
+                if attempt > first_attempt && send_cancel_take(&hash_hex) {
+                    log::info!("[v354] stopped by the user before try {} — no more tries", attempt);
+                    mem.stopped = true; mem.ended_ms = js_sys::Date::now(); send_memory_put(&hash_hex, mem.clone());
+                    emit(format!(r#"{{"phase":"stopped","attempt":{},"max_retries":{}}}"#, attempt, max_retries));
+                    return Ok(payment_result_json_with_memory(&hash_hex, false, None, None, Some("stopped by you — no more tries; your sats have not left".to_string())));
+                }
+                log::info!("[Phase10b-retry] attempt {}/{}, {} excluded pair(s), {} ignored node(s) so far",
+                    attempt, max_retries, excluded_pairs.len(), mem.nodes.len());
                 emit(format!(
-                    r#"{{"phase":"attempt_start","attempt":{},"max_retries":{},"excluded":{}}}"#,
-                    attempt, max_retries, excluded_pairs.len()
+                    r#"{{"phase":"attempt_start","attempt":{},"max_retries":{},"excluded":{},"ignored_nodes":{}}}"#,
+                    attempt, max_retries, excluded_pairs.len(), mem.nodes.len()
                 ));
+                mem.tries_used = attempt;
+                send_memory_put(&hash_hex, mem.clone());
 
-                // ── Phase 1: lock, prepare (new PaymentId), release ──────────
-                let mut prep = {
+                // ── Phase 1 + 2: prepare and the route ask — v353 (§3c): first avoiding every node that refused;
+                // when the provider finds NO route that way, once more avoiding only those nodes' channels
+                // (DP: "If LND then finds no route at all, ask again avoiding only that one channel")
+                let mut nodes_relaxed = false;
+                let (mut prep, dest_is_lsp, lsp_height, response_text) = loop {
+                let nodes_now: Vec<Vec<u8>> = if nodes_relaxed { Vec::new() } else { mem.nodes.clone() };
+                let prep = {
                     let wallet = inner.lock()
                         .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
                     match wallet.node()
-                        .prepare_lsp_route_request_msat(&bolt11, &route_endpoint, &excluded_pairs, amount_msat_override.or(amount_sats_override.map(|s| s.saturating_mul(1000)))) // B1: open-invoice amount ride; S45: msat-exact when the page gives its the single path
+                        .prepare_lsp_route_request_full(&bolt11, &route_endpoint, &excluded_pairs, &nodes_now, amount_msat_override.or(amount_sats_override.map(|s| s.saturating_mul(1000)))) // B1: open-invoice amount ride; S45: msat-exact when the page gives its the single path; v353: the refusing nodes
                     {
                         Ok(p) => p,
                         Err(e) => {
@@ -3993,6 +4237,7 @@ impl LijWalletHandle {
                                 r#"{{"phase":"prepare_error","attempt":{},"max_retries":{}}}"#,
                                 attempt, max_retries
                             ));
+                            mem.permanent = true; mem.ended_ms = js_sys::Date::now(); send_memory_put(&hash_hex, mem.clone());
                             return Ok(payment_result_json(false, None, None,
                                 Some(format!("prepare failed: {}", e))));
                         }
@@ -4008,8 +4253,7 @@ impl LijWalletHandle {
                     wallet.node().dest_is_active_lsp(&prep.dest_pubkey_hex)
                 };
 
-                let payment_id = prep.payment_id;
-                let mut lsp_height: Option<u32> = None;   // v249: LND's height from the hold verdict (internal sends)
+                let lsp_height: Option<u32>;   // v249: LND's height from the hold verdict (internal sends)
 
                 // ── Phase 2: HTTP fetch WITHOUT lock ──────────────────────
                 // v227 (S43, speed): an INTERNAL send (dest == the active LSP)
@@ -4042,7 +4286,7 @@ impl LijWalletHandle {
                         log::info!("[v244] hold verdict: owner_live={:?} peer={:?} heard_s={:?} cap_s={:?} height={:?}",
                             v.get("owner_live"), v.get("owner_peer"), v.get("owner_heard_s"), v.get("hold_cap_s"), v.get("height"));
                         lsp_height = v.get("height").and_then(|h| h.as_u64()).map(|h| h as u32);   // v249 (adapter 0.76.1)
-                    }
+                    } else { lsp_height = None; }
                     match verdict.as_ref().and_then(|v| v.get("owner_live")).and_then(|b| b.as_bool()) {
                         Some(false) => {
                             let cap = verdict.as_ref().and_then(|v| v.get("hold_cap_s")).and_then(|c| c.as_u64()).unwrap_or(3600);
@@ -4051,13 +4295,21 @@ impl LijWalletHandle {
                         }
                         _ => String::from(r#"{"ok":false,"error":"destination_is_lsp","routes":[],"internal":true}"#),
                     }
-                } else { match lij_core::node::fetch_post_with_macaroon(
+                } else { lsp_height = None; match lij_core::node::fetch_post_with_macaroon(
                     &prep.url,
                     &route_macaroon_hex,
                     &prep.request_body,
                 ).await {
                     Ok(t) => t,
                     Err(e) => {
+                        // v353 (§3c): no route around the refusing nodes (the provider answers an error when LND finds
+                        // no path) — ask once more avoiding only their channels, within this try
+                        if !nodes_relaxed && !nodes_now.is_empty() {
+                            log::warn!("[v353] no route avoiding {} node(s) ({}) — asking again avoiding only their channels", nodes_now.len(), e);
+                            emit(format!(r#"{{"phase":"nodes_relaxed","attempt":{},"nodes":{}}}"#, attempt, nodes_now.len()));
+                            nodes_relaxed = true;
+                            continue;
+                        }
                         last_error = Some(format!("HTTP error: {}", e));
                         log::warn!("[Phase10b-retry] {}", last_error.as_ref().unwrap());
                         emit(format!(
@@ -4065,11 +4317,33 @@ impl LijWalletHandle {
                             attempt, max_retries
                         ));
                         if attempt >= max_retries {
-                            return Ok(payment_result_json(false, None, None, last_error));
+                            mem.ended_ms = js_sys::Date::now(); send_memory_put(&hash_hex, mem.clone());
+                            return Ok(payment_result_json_with_memory(&hash_hex, false, None, None, last_error));
                         }
-                        continue;
+                        continue 'attempts;
                     }
                 } };
+                // v353 (§3c): an answer with no route while nodes were avoided — the same second ask
+                if !dest_is_lsp && !nodes_relaxed && !nodes_now.is_empty() && route_answer_count(&response_text) == 0 {
+                    log::warn!("[v353] the provider found no route avoiding {} node(s) — asking again avoiding only their channels", nodes_now.len());
+                    emit(format!(r#"{{"phase":"nodes_relaxed","attempt":{},"nodes":{}}}"#, attempt, nodes_now.len()));
+                    nodes_relaxed = true;
+                    continue;
+                }
+                break (prep, dest_is_lsp, lsp_height, response_text);
+                };
+                let payment_id = prep.payment_id;
+                // v353 (§3b): this try's route on record — the hops as the provider answered them (an internal send
+                // has no route answer: its one hop is the provider)
+                {
+                    let hops = if dest_is_lsp { vec![(prep.dest_pubkey_hex.clone(), 0u64, prep.amount_msat)] } else { route_answer_hops(&response_text) };
+                    log::info!("[route] try {}: hops=[{}]{}", attempt,
+                        hops.iter().map(|(pk, scid, a)| format!("{}:{}:{}", &pk[..8.min(pk.len())], scid, a)).collect::<Vec<_>>().join(" -> "),
+                        if nodes_relaxed { " (nodes relaxed — pairs only)" } else { "" });
+                    mem.tries.retain(|t| t.attempt != attempt);
+                    mem.tries.push(SendTry { attempt, hops, failed: None });
+                    send_memory_put(&hash_hex, mem.clone());
+                }
 
                 // #29-hold (v167): adapter-signaled bounded hold — recipient
                 // offline, LSP parks the HTLC (B-1/B-7). One HTLC, patient
@@ -4119,7 +4393,8 @@ impl LijWalletHandle {
                         attempt, max_retries
                     ));
                     if attempt >= max_retries {
-                        return Ok(payment_result_json(false, None, None, last_error));
+                        mem.ended_ms = js_sys::Date::now(); send_memory_put(&hash_hex, mem.clone());
+                        return Ok(payment_result_json_with_memory(&hash_hex, false, None, None, last_error));
                     }
                     continue;
                 }
@@ -4147,7 +4422,9 @@ impl LijWalletHandle {
                             r#"{{"phase":"succeeded","attempt":{},"max_retries":{}}}"#,
                             attempt, max_retries
                         ));
-                        return Ok(payment_result_json(
+                        mem.succeeded = true; mem.ended_ms = js_sys::Date::now(); send_memory_put(&hash_hex, mem.clone());   // v353: kept for the report; the page clears it
+                        return Ok(payment_result_json_with_memory(
+                            &hash_hex,
                             true,
                             preimage_hex,
                             fee_paid_msat,   // v270: msat through
@@ -4159,8 +4436,21 @@ impl LijWalletHandle {
                         failed_from_pubkey,
                         failed_to_pubkey,
                         is_permanent,
+                        failed_amount_msat,
+                        path_hops,
                     }) => {
                         let scid_str = failed_scid.map(|s| s.to_string()).unwrap_or_else(|| "none".into());
+                        // v353 (§3b): the refusal on this try's record (LDK's path is the truth of what went out)
+                        if let Some(t) = mem.tries.iter_mut().find(|t| t.attempt == attempt) {
+                            if !path_hops.is_empty() { t.hops = path_hops.clone(); }
+                            t.failed = Some((
+                                failed_from_pubkey.as_ref().map(hex::encode).unwrap_or_default(),
+                                failed_to_pubkey.as_ref().map(hex::encode).unwrap_or_default(),
+                                failed_scid.unwrap_or(0),
+                                failed_amount_msat.unwrap_or(0),
+                                if is_permanent { "permanent".to_string() } else { "temporary".to_string() },
+                            ));
+                        }
                         last_error = Some(format!(
                             "path failed at scid={} (attempt {}/{}{})",
                             scid_str, attempt, max_retries,
@@ -4177,22 +4467,38 @@ impl LijWalletHandle {
                             // hold's verdict (recipient stayed offline past
                             // the window); the sats are already returned.
                             log::warn!("[Phase10b-retry] held payment failed — recipient stayed offline; not retrying");
-                            return Ok(payment_result_json(false, None, None, Some(
+                            mem.held = true; mem.ended_ms = js_sys::Date::now(); send_memory_put(&hash_hex, mem.clone());
+                            return Ok(payment_result_json_with_memory(&hash_hex, false, None, None, Some(
                                 "recipient stayed offline — the held payment expired and your sats were returned".to_string())));
                         }
                         if is_permanent {
                             log::warn!("[Phase10b-retry] permanent failure — not retrying");
-                            return Ok(payment_result_json(false, None, None, last_error));
+                            mem.permanent = true; mem.ended_ms = js_sys::Date::now(); send_memory_put(&hash_hex, mem.clone());
+                            return Ok(payment_result_json_with_memory(&hash_hex, false, None, None, last_error));
                         }
 
                         if let (Some(from), Some(to)) = (failed_from_pubkey, failed_to_pubkey) {
                             log::info!("[Phase10b-retry] adding exclusion: from={}… to={}…",
                                 hex::encode(&from[..8.min(from.len())]),
                                 hex::encode(&to[..8.min(to.len())]));
+                            // v353 (§3c, DP agreed 2026-10-25): the node that refused is avoided whole on the next
+                            // ask — unless it is this wallet's own provider, whose channels are the only way out
+                            // (then the pair alone, as before)
+                            let from_hex = hex::encode(&from);
+                            let is_provider = {
+                                let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                                wallet.node().dest_is_active_lsp(&from_hex)
+                            };
+                            if !is_provider && !mem.nodes.iter().any(|n| *n == from) {
+                                log::info!("[v353] node-first: {}… refused — the whole node is avoided on the next ask", &from_hex[..16]);
+                                mem.nodes.push(from.clone());
+                            }
                             excluded_pairs.push((from, to));
+                            mem.pairs = excluded_pairs.clone();
                         } else {
                             log::warn!("[Phase10b-retry] no exclusion data (failed scid=0 or self-channel) — retry may hit same path");
                         }
+                        send_memory_put(&hash_hex, mem.clone());
 
                         // Abandon the old payment_id in LDK so its Retryable
                         // state is cleaned up. This fires PaymentFailed for
@@ -4210,7 +4516,8 @@ impl LijWalletHandle {
                         }
 
                         if attempt >= max_retries {
-                            return Ok(payment_result_json(false, None, None, last_error));
+                            mem.ended_ms = js_sys::Date::now(); send_memory_put(&hash_hex, mem.clone());
+                            return Ok(payment_result_json_with_memory(&hash_hex, false, None, None, last_error));
                         }
                         // continue loop for next attempt
                     }
@@ -4242,7 +4549,8 @@ impl LijWalletHandle {
                             r#"{{"phase":"terminal_failure","attempt":{},"max_retries":{}}}"#,
                             attempt, max_retries
                         ));
-                        return Ok(payment_result_json(false, None, None,
+                        mem.permanent = true; mem.ended_ms = js_sys::Date::now(); send_memory_put(&hash_hex, mem.clone());
+                        return Ok(payment_result_json_with_memory(&hash_hex, false, None, None,
                             Some(format!("terminal failure: {}", reason))));
                     }
                     None => {
@@ -4254,7 +4562,8 @@ impl LijWalletHandle {
                                 .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
                             let _ = wallet.node().abandon_payment(payment_id);
                             outcomes_handle.lock().unwrap().remove(&payment_id);
-                            return Ok(payment_result_json(false, None, None, Some(
+                            mem.held = true; mem.ended_ms = js_sys::Date::now(); send_memory_put(&hash_hex, mem.clone());
+                            return Ok(payment_result_json_with_memory(&hash_hex, false, None, None, Some(
                                 "hold window elapsed — recipient did not return; your sats return automatically".to_string())));
                         }
                         last_error = Some(format!(
@@ -4301,7 +4610,8 @@ impl LijWalletHandle {
                                 // exact case where a blind retry double-pays.
                                 log::info!("[6a-guard] late settle after timeout — payment succeeded");
                                 emit(format!(r#"{{"phase":"late_settle","attempt":{}}}"#, attempt));
-                                return Ok(payment_result_json(true, preimage_hex,
+                                mem.succeeded = true; mem.ended_ms = js_sys::Date::now(); send_memory_put(&hash_hex, mem.clone());
+                                return Ok(payment_result_json_with_memory(&hash_hex, true, preimage_hex,
                                     fee_paid_msat, None));   // v270: msat through
                             }
                             Some(PaymentOutcome::PathFailed { .. }) => {
@@ -4336,7 +4646,8 @@ impl LijWalletHandle {
                         }
 
                         if attempt >= max_retries {
-                            return Ok(payment_result_json(false, None, None, last_error));
+                            mem.ended_ms = js_sys::Date::now(); send_memory_put(&hash_hex, mem.clone());
+                            return Ok(payment_result_json_with_memory(&hash_hex, false, None, None, last_error));
                         }
                         // continue — retry without specific exclusion
                     }
@@ -4344,10 +4655,14 @@ impl LijWalletHandle {
             }
 
             // Loop fell through (shouldn't happen — every branch returns).
+            send_memory_put(&hash_hex, mem.clone());
             Ok(payment_result_json(false, None, None,
                 last_error.or_else(|| Some("retry loop exhausted".into()))))
-        })
     }
+}
+
+#[wasm_bindgen]
+impl LijWalletHandle {
 
     /// S45 (DP): the same quote for a PUBKEY destination with no invoice —
     /// Max pricing a route to another LSP's node (an LNURL address that LSP
@@ -4595,6 +4910,20 @@ impl LijWalletHandle {
             .await
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
+            // v356 (S63, Kimi round 2 F9 — DP's (b)): the same secret registered by HASH too, with the promise's scid
+            // beside it, so the adapter's B-19 can bind a shard of this payment that rides an existing real channel
+            // to THIS promise (and only when the secret matches). Best-effort — a miss never fails the invoice.
+            if let Err(e) = lij_core::lsps2::lsps2_register_invoice_secret_with_scid(
+                &endpoint,
+                &macaroon,
+                &result.invoice.payment_hash,
+                &result.payment_secret_hex,
+                amount_msat + prefund_msat,
+                Some(&result.jit.jit_channel_scid),
+            ).await {
+                log::warn!("v356: JIT invoice-secret-by-hash registration failed (non-fatal): {}", e);
+            }
+
             let json = serde_json::to_string(&result)
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
             Ok(JsValue::from_str(&json))
@@ -4623,7 +4952,11 @@ impl LijWalletHandle {
     /// meant to sit for the window, so there is nothing to wait for here. LDK's later word (settled =
     /// taken, failed back = returned) reaches the record through the event latch and push_out_json.
     /// JSON {ok, payment_id, hash} or {ok:false, error}.
-    pub fn push_lock(&self, bolt11: &str, route_endpoint: &str, route_macaroon_hex: &str) -> js_sys::Promise {
+    /// v353 (S63, the first outside review's W2): the lock pays only what the sender was shown — `max_total_msat`
+    /// (the push's amount + the fee the quote showed) and `max_cltv` (the quote's timelock + a little slack) cap the
+    /// provider's invoice; a provider asking more, or a timelock past the cap, is refused before anything is sent.
+    /// An older page passes neither and the lock behaves as before.
+    pub fn push_lock(&self, bolt11: &str, route_endpoint: &str, route_macaroon_hex: &str, max_total_msat: Option<f64>, max_cltv: Option<u32>) -> js_sys::Promise {
         let inner = self.inner.clone();
         let bolt11 = bolt11.to_string();
         let route_endpoint = route_endpoint.to_string();
@@ -4641,6 +4974,17 @@ impl LijWalletHandle {
                 (prep, dest_is_lsp, hash_hex)
             };
             if !dest_is_lsp { return fail("the lock invoice is not from this wallet's provider".into()); }
+            // v353 (W2): the amount and the timelock against what the quote showed
+            if let Some(cap) = max_total_msat.filter(|c| c.is_finite() && *c > 0.0) {
+                if prep.amount_msat as f64 > cap {
+                    return fail(format!("the lock asks {} msat; the quote showed {} — refusing to pay more than you were shown", prep.amount_msat, cap as u64));
+                }
+            }
+            if let Some(cap) = max_cltv.filter(|c| *c > 0) {
+                if prep.final_cltv_delta > cap {
+                    return fail(format!("the lock's timelock is {} blocks; the quote showed at most {} — refusing", prep.final_cltv_delta, cap));
+                }
+            }
             // the record must exist and be ours (prepared) — a foreign invoice is refused
             {
                 let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
@@ -5286,6 +5630,26 @@ impl LijWalletHandle {
                 wallet.node().keys_manager_arc()
             };
             let json = lij_core::registry_client::lnurlp_auth(&km, &endpoint, &action, &name, &hashes_json)
+                .await
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            Ok(JsValue::from_str(&json))
+        })
+    }
+
+    /// v355 (S63, Kimi round 2 — DP's F10 and F4/F6 rulings): THE PROOF, generalised. Signs the LSP's single-use challenge
+    /// over an action from lij_core's fixed list (heartbeat, lsps2-pending, client-prefs, push-claim, push-deliver,
+    /// push-claim-status, lnurl-note) and a record_id the page assembles from the body it is about to send; the adapter
+    /// rebuilds the record and refuses anything else. Resolves to `{node_pubkey, nonce, signature}`. An action off the
+    /// list is refused in the engine — the key is never a general signing oracle.
+    #[wasm_bindgen]
+    pub fn lsp_proof(&self, endpoint: String, action: String, record_id: String) -> js_sys::Promise {
+        let inner = self.inner.clone();
+        future_to_promise(async move {
+            let km = {
+                let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                wallet.node().keys_manager_arc()
+            };
+            let json = lij_core::registry_client::lsp_proof(&km, &endpoint, &action, &record_id)
                 .await
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
             Ok(JsValue::from_str(&json))

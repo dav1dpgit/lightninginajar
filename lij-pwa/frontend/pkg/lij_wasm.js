@@ -479,6 +479,30 @@ export class LijWalletHandle {
         return ret;
     }
     /**
+     * v353 (S63, pathfinding r9 §3d — DP 2026-10-25 "after the 5th failed try, the wallet asks the user whether to keep
+     * trying (5 or 10 more), and the failed paths are not forgotten"): more tries of a send whose memory this engine
+     * holds. Every pair and node that refused stays avoided; new refusals join them; the attempt numbers continue
+     * ("6 of 10"). Refused when nothing is remembered for the invoice (a reload, a Stop, a success).
+     * @param {string} bolt11
+     * @param {string} route_endpoint
+     * @param {string} route_macaroon_hex
+     * @param {number} more_tries
+     * @param {Function} progress_callback
+     * @param {bigint | null} [amount_sats_override]
+     * @param {bigint | null} [amount_msat_override]
+     * @returns {Promise<any>}
+     */
+    continue_payment(bolt11, route_endpoint, route_macaroon_hex, more_tries, progress_callback, amount_sats_override, amount_msat_override) {
+        const ptr0 = passStringToWasm0(bolt11, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(route_endpoint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(route_macaroon_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_continue_payment(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, more_tries, progress_callback, !isLikeNone(amount_sats_override), isLikeNone(amount_sats_override) ? BigInt(0) : amount_sats_override, !isLikeNone(amount_msat_override), isLikeNone(amount_msat_override) ? BigInt(0) : amount_msat_override);
+        return ret;
+    }
+    /**
      * On-chain send (option D, increment 2): P2WPKH spend from the m/84
      * spendable chain, change to m/84'/{coin}'/0'/1/0. `amount_sats` is a JS
      * number (f64 is exact up to 2^53, far above the 2.1e15-sat supply cap);
@@ -1154,6 +1178,27 @@ export class LijWalletHandle {
         } finally {
             wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
         }
+    }
+    /**
+     * v355 (S63, Kimi round 2 — DP's F10 and F4/F6 rulings): THE PROOF, generalised. Signs the LSP's single-use challenge
+     * over an action from lij_core's fixed list (heartbeat, lsps2-pending, client-prefs, push-claim, push-deliver,
+     * push-claim-status, lnurl-note) and a record_id the page assembles from the body it is about to send; the adapter
+     * rebuilds the record and refuses anything else. Resolves to `{node_pubkey, nonce, signature}`. An action off the
+     * list is refused in the engine — the key is never a general signing oracle.
+     * @param {string} endpoint
+     * @param {string} action
+     * @param {string} record_id
+     * @returns {Promise<any>}
+     */
+    lsp_proof(endpoint, action, record_id) {
+        const ptr0 = passStringToWasm0(endpoint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(action, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(record_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_lsp_proof(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+        return ret;
     }
     /**
      * Dev tool: manually mark a funding transaction as confirmed at a
@@ -2913,19 +2958,25 @@ export class LijWalletHandle {
      * meant to sit for the window, so there is nothing to wait for here. LDK's later word (settled =
      * taken, failed back = returned) reaches the record through the event latch and push_out_json.
      * JSON {ok, payment_id, hash} or {ok:false, error}.
+     * v353 (S63, the first outside review's W2): the lock pays only what the sender was shown — `max_total_msat`
+     * (the push's amount + the fee the quote showed) and `max_cltv` (the quote's timelock + a little slack) cap the
+     * provider's invoice; a provider asking more, or a timelock past the cap, is refused before anything is sent.
+     * An older page passes neither and the lock behaves as before.
      * @param {string} bolt11
      * @param {string} route_endpoint
      * @param {string} route_macaroon_hex
+     * @param {number | null} [max_total_msat]
+     * @param {number | null} [max_cltv]
      * @returns {Promise<any>}
      */
-    push_lock(bolt11, route_endpoint, route_macaroon_hex) {
+    push_lock(bolt11, route_endpoint, route_macaroon_hex, max_total_msat, max_cltv) {
         const ptr0 = passStringToWasm0(bolt11, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(route_endpoint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
         const ptr2 = passStringToWasm0(route_macaroon_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.lijwallethandle_push_lock(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+        const ret = wasm.lijwallethandle_push_lock(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, !isLikeNone(max_total_msat), isLikeNone(max_total_msat) ? 0 : max_total_msat, isLikeNone(max_cltv) ? Number.MAX_SAFE_INTEGER : (max_cltv) >>> 0);
         return ret;
     }
     /**
@@ -3139,6 +3190,29 @@ export class LijWalletHandle {
         return ret;
     }
     /**
+     * v353 (S63, pathfinding r9 §3a/§3e — DP 2026-10-25): ONE signed routing report to the provider after a send ends,
+     * from the memory: every refusal (from, to, scid, msat, temporary|permanent) of every try, signed by the node key
+     * over a single-use challenge (the 0.112.0 shape: sha256("lij-registry-v1" ‖ "route-report" ‖ nonce ‖ pubkey ‖
+     * record_id), record_id = "<hash>:<count>:<sha256 of the sorted refusal lines>"). The adapter (0.113.0) writes the
+     * temporary refusals into its own LND's routing memory. The page calls this only with Privacy → LSP → Routing
+     * reports ON — Off means nothing is sent (§3e). Answers {ok, sent, refusals, status, body} as JSON; the memory is
+     * kept (the page clears it) so a "Try more" after a report still knows the failed paths.
+     * @param {string} bolt11_or_hash
+     * @param {string} route_endpoint
+     * @param {string} route_macaroon_hex
+     * @returns {Promise<any>}
+     */
+    route_report(bolt11_or_hash, route_endpoint, route_macaroon_hex) {
+        const ptr0 = passStringToWasm0(bolt11_or_hash, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(route_endpoint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(route_macaroon_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_route_report(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+        return ret;
+    }
+    /**
      * v349: the Reach preference the engine is applying (`direct-first` / `never-cloudflare` / `cloudflare-first`)
      * and what the last connect decided about doors — `{"pref": "...", "note": "..."|null}`. The page's card reads
      * the note when the engine named no provider.
@@ -3160,6 +3234,62 @@ export class LijWalletHandle {
             return getStringFromWasm0(ptr1, len1);
         } finally {
             wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * v354 (S63, r9 §3d): Stop DURING an extended run — the running loop ends before its next try (the try that is
+     * out finishes on its own: an HTLC in flight is LDK's to settle or fail back). The result then says "stopped by
+     * you", can_continue false. Answers whether a memory (a run) exists for the invoice.
+     * @param {string} bolt11_or_hash
+     * @returns {boolean}
+     */
+    send_cancel(bolt11_or_hash) {
+        const ptr0 = passStringToWasm0(bolt11_or_hash, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_send_cancel(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
+    }
+    /**
+     * v353 (§3d): the memory is dropped — Stop, the Send screen closing, the invoice expiring. Answers whether one was held.
+     * @param {string} bolt11_or_hash
+     * @returns {boolean}
+     */
+    send_memory_clear(bolt11_or_hash) {
+        const ptr0 = passStringToWasm0(bolt11_or_hash, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_send_memory_clear(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
+    }
+    /**
+     * v353 (§3d): what this engine remembers of a send — JSON {tries_used, tries:[{attempt, hops, failed}], succeeded,
+     * permanent, held, started_ms, ended_ms} or null.
+     * @param {string} bolt11_or_hash
+     * @returns {string}
+     */
+    send_memory_json(bolt11_or_hash) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(bolt11_or_hash, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_send_memory_json(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
         }
     }
     /**
@@ -4735,27 +4865,27 @@ function __wbg_get_imports() {
             console.warn(arg0, arg1, arg2, arg3);
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2555, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2570, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed);
             return ret;
         },
         __wbindgen_generic_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("CloseEvent")], shim_idx: 8, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("CloseEvent")], shim_idx: 9, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965);
             return ret;
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("ErrorEvent")], shim_idx: 8, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_212);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("ErrorEvent")], shim_idx: 9, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_218);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 8, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_213);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 9, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_219);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 2261, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 2276, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f);
             return ret;
         },
@@ -4798,12 +4928,12 @@ function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_212(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_212(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_218(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_218(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_213(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_213(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_219(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_219(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed(arg0, arg1, arg2) {

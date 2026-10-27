@@ -614,6 +614,13 @@ pub enum PaymentOutcome {
         failed_from_pubkey: Option<Vec<u8>>, // 33-byte compressed
         failed_to_pubkey: Option<Vec<u8>>,   // 33-byte compressed
         is_permanent: bool,
+        /// v353 (S63, pathfinding r9 §3a/§3b): the msat the failed channel was asked to carry (the sum of the
+        /// hop fees from that hop to the end — LDK's RouteHop.fee_msat is the amount at the last hop) — what the
+        /// routing report hands the provider as `fail_amt_msat`; None when the failed scid was not on the path.
+        failed_amount_msat: Option<u64>,
+        /// v353 (§3b): every hop of the try — (pubkey hex, scid, msat forwarded over that hop's channel) — so the
+        /// tape and the report name the whole route, not the one failed channel.
+        path_hops: Vec<(String, u64, u64)>,
     },
     /// PaymentFailed fired — payment is terminally failed, retries exhausted
     /// from LDK's perspective (which is always immediately for us since we use
@@ -627,6 +634,22 @@ pub enum PaymentOutcome {
 /// edge in a PaymentPathFailed event, given the route path and the failed scid.
 /// Returns None if the scid isn't found in the path (shouldn't happen but is
 /// handled defensively).
+/// v353 (S63, §3b): the hops of a path as (pubkey hex, scid, msat carried over that hop's channel) — the amount over
+/// hop i's channel is the sum of fee_msat from hop i to the end (LDK keeps the final amount in the last hop's fee_msat).
+pub fn path_hop_records(path: &lightning::routing::router::Path) -> Vec<(String, u64, u64)> {
+    let n = path.hops.len();
+    (0..n).map(|i| {
+        let carried: u64 = path.hops[i..].iter().map(|h| h.fee_msat).sum();
+        (hex::encode(path.hops[i].pubkey.serialize()), path.hops[i].short_channel_id, carried)
+    }).collect()
+}
+
+/// v353: the msat the failed channel was asked to carry (see path_hop_records).
+fn failed_amount_on_path(path: &lightning::routing::router::Path, failed_scid: u64) -> Option<u64> {
+    path.hops.iter().position(|h| h.short_channel_id == failed_scid)
+        .map(|i| path.hops[i..].iter().map(|h| h.fee_msat).sum())
+}
+
 fn extract_failed_pair_from_path(
     path: &lightning::routing::router::Path,
     failed_scid: u64,
@@ -2149,6 +2172,13 @@ impl LijNode {
                         Some((f, t)) => (Some(f), Some(t)),
                         None => (None, None),
                     };
+                    // v353 (S63, §3b): the whole try on the tape — every hop as pubkey:scid:msat — beside LDK's own
+                    // Onion Error line, so the next failure can be read from the box alone
+                    let hops = path_hop_records(&path);
+                    let failed_amount_msat = short_channel_id.and_then(|scid| failed_amount_on_path(&path, scid));
+                    log::warn!("[route] try failed: hops=[{}] failed_scid={:?} failed_msat={:?} permanent={}",
+                        hops.iter().map(|(pk, scid, a)| format!("{}:{}:{}", &pk[..8.min(pk.len())], scid, a)).collect::<Vec<_>>().join(" -> "),
+                        short_channel_id, failed_amount_msat, payment_failed_permanently);
                     // Only record if no terminal outcome already there (Sent or
                     // Failed). PathFailed is non-terminal — record only on a
                     // vacant slot so a later Sent for the same id wins.
@@ -2162,6 +2192,8 @@ impl LijNode {
                                     failed_from_pubkey: failed_from,
                                     failed_to_pubkey: failed_to,
                                     is_permanent: payment_failed_permanently,
+                                    failed_amount_msat,
+                                    path_hops: hops,
                                 },
                             );
                         }
@@ -5156,6 +5188,21 @@ impl LijNode {
         excluded_pairs: &[(Vec<u8>, Vec<u8>)],
         override_amount_msat: Option<u64>,
     ) -> LijResult<LspRoutePreparation> {
+        self.prepare_lsp_route_request_full(bolt11, route_endpoint, excluded_pairs, &[], override_amount_msat)
+    }
+
+    /// v353 (S63, pathfinding r9 §3c — DP 2026-10-25: "after a node's first refusal, the next ask should avoid the
+    /// whole node"): the same preparation with `ignored_nodes` — the 33-byte keys of nodes that refused on an earlier
+    /// try of this send; they ride the ask as `ignored_nodes` (hex), which adapter 0.113.0 passes to LND's QueryRoutes.
+    #[cfg(target_arch = "wasm32")]
+    pub fn prepare_lsp_route_request_full(
+        &self,
+        bolt11: &str,
+        route_endpoint: &str,
+        excluded_pairs: &[(Vec<u8>, Vec<u8>)],
+        ignored_nodes: &[Vec<u8>],
+        override_amount_msat: Option<u64>,
+    ) -> LijResult<LspRoutePreparation> {
         let override_amount_sat: Option<u64> = override_amount_msat.map(|m| m / 1000);
         require_can_send(self.sync_state.current())?;
         log::info!("Phase10b: prepare request for {}…", &bolt11[..20.min(bolt11.len())]);
@@ -5249,10 +5296,17 @@ impl LijNode {
             body_map.insert("ignored_pairs".to_string(),
                 serde_json::Value::Array(ignored_pairs_json));
         }
+        if !ignored_nodes.is_empty() {   // v353 (§3c): the nodes that refused — the whole node, not one of its channels
+            body_map.insert("ignored_nodes".to_string(),
+                serde_json::Value::Array(ignored_nodes.iter().map(|n| serde_json::Value::String(hex::encode(n))).collect()));
+        }
+        // v353 (§3a): the payment hash rides the ask, so the provider can remember which routes it handed out for it
+        // and later accept only a routing report that names pairs on those routes (an older adapter ignores the field)
+        body_map.insert("payment_hash".to_string(), serde_json::Value::String(hex::encode(payment_hash.0)));
         let request_body = serde_json::Value::Object(body_map).to_string();
 
-        log::info!("Phase10b: POST {} with {} route_hint(s), {} excluded pair(s)",
-            url, route_hints_json.len(), excluded_pairs.len());
+        log::info!("Phase10b: POST {} with {} route_hint(s), {} excluded pair(s), {} ignored node(s)",
+            url, route_hints_json.len(), excluded_pairs.len(), ignored_nodes.len());
 
         Ok(LspRoutePreparation {
             url,

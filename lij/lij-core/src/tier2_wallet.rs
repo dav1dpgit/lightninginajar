@@ -1700,6 +1700,14 @@ pub struct Tier2Summary {
     pub frozen_sats: u64,
     pub sendable_sats: u64,
     pub frozen_count: u32,
+    /// v353 (S63, DP 2026-10-26 — "the error of unavailable amounts earlier in the process should take into account
+    /// what is not available due to being included in a mix pool"): the value and count of coins a Mix pool holds
+    /// (CoinMarks::mix_locks) among the rows, NOT counting those also frozen (those sit in the frozen figure);
+    /// `sendable_sats` subtracts them too — what a send, Max or an open may use, as every picker already refuses them.
+    #[serde(default)]
+    pub mix_held_sats: u64,
+    #[serde(default)]
+    pub mix_held_count: u32,
     pub scanned_to: u32,
     pub tip_height: u32,
     pub caught_up: bool,
@@ -1796,7 +1804,10 @@ pub fn summary(view: &Tier2View, pending: &[PendingTx], tip_height: u32, marks: 
         .map(|r| r.value_sats)
         .sum();
     let frozen_count = utxos.iter().filter(|r| r.frozen && r.chain != CHAIN_LEGACY).count() as u32;
-    let sendable_sats = spendable_sats.saturating_sub(frozen_sats);
+    // v353: the coins a Mix pool holds (held and not frozen — a frozen-and-held coin is already out above)
+    let mix_held_sats: u64 = utxos.iter().filter(|r| r.mix_held && !r.frozen && r.chain != CHAIN_LEGACY).map(|r| r.value_sats).sum();
+    let mix_held_count = utxos.iter().filter(|r| r.mix_held && !r.frozen && r.chain != CHAIN_LEGACY).count() as u32;
+    let sendable_sats = spendable_sats.saturating_sub(frozen_sats).saturating_sub(mix_held_sats);
     let history = derive_history(view);   // v255/v256: rows come from the coins; ordered inside
     // v256: the invariants — the double-entry checks from S15, on every summary.
     let mut invariants: Vec<String> = Vec::new();
@@ -1825,6 +1836,8 @@ pub fn summary(view: &Tier2View, pending: &[PendingTx], tip_height: u32, marks: 
         frozen_sats,
         sendable_sats,
         frozen_count,
+        mix_held_sats,
+        mix_held_count,
         scanned_to: view.cursor.scanned_to,
         tip_height,
         caught_up: view.down.as_ref().map(|d| d.done).unwrap_or(true) && view.cursor.scanned_to >= tip_height,   // v257: done when the downward walk reached the birthday and the top is at the tip (no down cursor = nothing left below)
@@ -2657,6 +2670,38 @@ mod tests {
         view.closing_txids.insert(b_txid.clone());
         let sm2 = summary(&view, &[], 900_000, &marks);
         assert_eq!(sm2.utxos.iter().find(|r| r.txid == b_txid).unwrap().tag, "channel_return");
+    }
+
+    // v353 (S63, DP 2026-10-26): a coin a Mix pool holds is out of the sendable figure, named apart from the freezes;
+    // a coin both frozen and held is counted once, in the frozen figure
+    #[test]
+    fn summary_counts_mix_held_coins_out_of_sendable() {
+        let s = scripts();
+        let mut view = Tier2View::default();
+        let a = tx_paying(our_receive_spk(&s), 50_000);
+        let b = tx_paying(our_receive_spk(&s), 20_000);
+        let c = tx_paying(our_receive_spk(&s), 5_000);
+        let (a_txid, b_txid, c_txid) = (a.txid().to_string(), b.txid().to_string(), c.txid().to_string());
+        apply_txs(&mut view, &s, &[a, b, c], 900_000);
+        view.cursor.scanned_to = 900_000;
+        let mut marks = CoinMarks::default();
+        marks.mix_lock(&[(a_txid.clone(), 0)], 1);
+        let sm = summary(&view, &[], 900_000, &marks);
+        assert_eq!(sm.spendable_sats, 75_000, "the balance card figure does not move");
+        assert_eq!((sm.mix_held_sats, sm.mix_held_count), (50_000, 1));
+        assert_eq!((sm.frozen_sats, sm.frozen_count), (0, 0));
+        assert_eq!(sm.sendable_sats, 25_000, "sendable = spendable − held");
+        assert!(sm.utxos.iter().find(|r| r.txid == a_txid).unwrap().mix_held);
+        // held and frozen: once, in the frozen figure; a second frozen coin beside it
+        marks.set_frozen(&a_txid, 0, true, 2);
+        marks.set_frozen(&c_txid, 0, true, 3);
+        let sm2 = summary(&view, &[], 900_000, &marks);
+        assert_eq!((sm2.frozen_sats, sm2.frozen_count), (55_000, 2));
+        assert_eq!((sm2.mix_held_sats, sm2.mix_held_count), (0, 0), "a frozen-and-held coin sits in the frozen figure only");
+        assert_eq!(sm2.sendable_sats, 20_000);
+        assert!(!sm2.utxos.iter().find(|r| r.txid == b_txid).unwrap().mix_held);
+        let json: serde_json::Value = serde_json::from_str(&sm2.to_json().unwrap()).unwrap();
+        assert_eq!(json["mix_held_sats"], 0, "the figures ride the summary JSON the page reads");
     }
 
     #[test]

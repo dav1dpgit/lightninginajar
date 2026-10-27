@@ -167,6 +167,13 @@ export class LijWalletHandle {
      */
     connect_to_peer(pubkey_hex: string, wss_url: string): Promise<any>;
     /**
+     * v353 (S63, pathfinding r9 §3d — DP 2026-10-25 "after the 5th failed try, the wallet asks the user whether to keep
+     * trying (5 or 10 more), and the failed paths are not forgotten"): more tries of a send whose memory this engine
+     * holds. Every pair and node that refused stays avoided; new refusals join them; the attempt numbers continue
+     * ("6 of 10"). Refused when nothing is remembered for the invoice (a reload, a Stop, a success).
+     */
+    continue_payment(bolt11: string, route_endpoint: string, route_macaroon_hex: string, more_tries: number, progress_callback: Function, amount_sats_override?: bigint | null, amount_msat_override?: bigint | null): Promise<any>;
+    /**
      * On-chain send (option D, increment 2): P2WPKH spend from the m/84
      * spendable chain, change to m/84'/{coin}'/0'/1/0. `amount_sats` is a JS
      * number (f64 is exact up to 2^53, far above the 2.1e15-sat supply cap);
@@ -362,6 +369,14 @@ export class LijWalletHandle {
      * {"problem"} in plain words. The open's own pick.
      */
     lsp_channel_open_pick(req: string): string;
+    /**
+     * v355 (S63, Kimi round 2 — DP's F10 and F4/F6 rulings): THE PROOF, generalised. Signs the LSP's single-use challenge
+     * over an action from lij_core's fixed list (heartbeat, lsps2-pending, client-prefs, push-claim, push-deliver,
+     * push-claim-status, lnurl-note) and a record_id the page assembles from the body it is about to send; the adapter
+     * rebuilds the record and refuses anything else. Resolves to `{node_pubkey, nonce, signature}`. An action off the
+     * list is refused in the engine — the key is never a general signing oracle.
+     */
+    lsp_proof(endpoint: string, action: string, record_id: string): Promise<any>;
     /**
      * Dev tool: manually mark a funding transaction as confirmed at a
      * given height. Synthesizes block headers and notifies LDK's chain
@@ -837,8 +852,12 @@ export class LijWalletHandle {
      * meant to sit for the window, so there is nothing to wait for here. LDK's later word (settled =
      * taken, failed back = returned) reaches the record through the event latch and push_out_json.
      * JSON {ok, payment_id, hash} or {ok:false, error}.
+     * v353 (S63, the first outside review's W2): the lock pays only what the sender was shown — `max_total_msat`
+     * (the push's amount + the fee the quote showed) and `max_cltv` (the quote's timelock + a little slack) cap the
+     * provider's invoice; a provider asking more, or a timelock past the cap, is refused before anything is sent.
+     * An older page passes neither and the lock behaves as before.
      */
-    push_lock(bolt11: string, route_endpoint: string, route_macaroon_hex: string): Promise<any>;
+    push_lock(bolt11: string, route_endpoint: string, route_macaroon_hex: string, max_total_msat?: number | null, max_cltv?: number | null): Promise<any>;
     /**
      * The page reports a void (the provider failed the unclaimed HTLC back on the sender's signed ask).
      */
@@ -896,11 +915,36 @@ export class LijWalletHandle {
     reserve_onchain_index(index: number): void;
     static restore(mnemonic: string, config_json: string): Promise<any>;
     /**
+     * v353 (S63, pathfinding r9 §3a/§3e — DP 2026-10-25): ONE signed routing report to the provider after a send ends,
+     * from the memory: every refusal (from, to, scid, msat, temporary|permanent) of every try, signed by the node key
+     * over a single-use challenge (the 0.112.0 shape: sha256("lij-registry-v1" ‖ "route-report" ‖ nonce ‖ pubkey ‖
+     * record_id), record_id = "<hash>:<count>:<sha256 of the sorted refusal lines>"). The adapter (0.113.0) writes the
+     * temporary refusals into its own LND's routing memory. The page calls this only with Privacy → LSP → Routing
+     * reports ON — Off means nothing is sent (§3e). Answers {ok, sent, refusals, status, body} as JSON; the memory is
+     * kept (the page clears it) so a "Try more" after a report still knows the failed paths.
+     */
+    route_report(bolt11_or_hash: string, route_endpoint: string, route_macaroon_hex: string): Promise<any>;
+    /**
      * v349: the Reach preference the engine is applying (`direct-first` / `never-cloudflare` / `cloudflare-first`)
      * and what the last connect decided about doors — `{"pref": "...", "note": "..."|null}`. The page's card reads
      * the note when the engine named no provider.
      */
     route_state_json(): string;
+    /**
+     * v354 (S63, r9 §3d): Stop DURING an extended run — the running loop ends before its next try (the try that is
+     * out finishes on its own: an HTLC in flight is LDK's to settle or fail back). The result then says "stopped by
+     * you", can_continue false. Answers whether a memory (a run) exists for the invoice.
+     */
+    send_cancel(bolt11_or_hash: string): boolean;
+    /**
+     * v353 (§3d): the memory is dropped — Stop, the Send screen closing, the invoice expiring. Answers whether one was held.
+     */
+    send_memory_clear(bolt11_or_hash: string): boolean;
+    /**
+     * v353 (§3d): what this engine remembers of a send — JSON {tries_used, tries:[{attempt, hops, failed}], succeeded,
+     * permanent, held, started_ms, ended_ms} or null.
+     */
+    send_memory_json(bolt11_or_hash: string): string;
     /**
      * Lock-prepare-unlock: snapshot handles under the lock, then build/sign/
      * broadcast with the lock released (network I/O). Returns SendResult JSON.
@@ -1350,6 +1394,7 @@ export interface InitOutput {
     readonly lijwallethandle_cloud_backup_meta: (a: number) => any;
     readonly lijwallethandle_coin_mark: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_connect_to_peer: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly lijwallethandle_continue_payment: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: any, j: number, k: bigint, l: number, m: bigint) => any;
     readonly lijwallethandle_coop_cpfp: (a: number, b: number, c: number, d: number) => any;
     readonly lijwallethandle_create: (a: number, b: number) => any;
     readonly lijwallethandle_create_invoice: (a: number, b: number, c: bigint, d: number, e: number, f: bigint, g: number, h: number, i: number, j: number) => any;
@@ -1384,6 +1429,7 @@ export interface InitOutput {
     readonly lijwallethandle_lsp_channel_open_estimate: (a: number, b: number) => any;
     readonly lijwallethandle_lsp_channel_open_estimate_with: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_lsp_channel_open_pick: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_lsp_proof: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
     readonly lijwallethandle_mark_funding_confirmed: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly lijwallethandle_maturing_balances_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_maturing_outputs: (a: number) => [number, number, number, number];
@@ -1464,7 +1510,7 @@ export interface InitOutput {
     readonly lijwallethandle_push_accept: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_push_in_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_push_link_parse: (a: number, b: number) => [number, number, number, number];
-    readonly lijwallethandle_push_lock: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
+    readonly lijwallethandle_push_lock: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => any;
     readonly lijwallethandle_push_mark: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly lijwallethandle_push_out_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_push_out_preimage: (a: number, b: number, c: number) => [number, number, number, number];
@@ -1475,7 +1521,11 @@ export interface InitOutput {
     readonly lijwallethandle_relink_active_lsp: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_reserve_onchain_index: (a: number, b: number) => [number, number];
     readonly lijwallethandle_restore: (a: number, b: number, c: number, d: number) => any;
+    readonly lijwallethandle_route_report: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
     readonly lijwallethandle_route_state_json: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_send_cancel: (a: number, b: number, c: number) => [number, number, number];
+    readonly lijwallethandle_send_memory_clear: (a: number, b: number, c: number) => [number, number, number];
+    readonly lijwallethandle_send_memory_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_send_onchain: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly lijwallethandle_send_onchain_all: (a: number, b: number, c: number, d: number) => any;
     readonly lijwallethandle_send_onchain_multi: (a: number, b: number, c: number) => any;
@@ -1535,8 +1585,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_212: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_213: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_218: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_219: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

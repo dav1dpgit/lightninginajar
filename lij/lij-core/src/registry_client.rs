@@ -50,6 +50,7 @@ const ACTION_PUSH_SUBSCRIBE: &[u8] = b"push-subscribe";
 // v352 (S63, the external review's adapter F7): the wallet signs its Lightning-address registration and release.
 const ACTION_LNURL_REGISTER: &[u8] = b"lnurl-register";
 const ACTION_LNURL_RELEASE: &[u8] = b"lnurl-release";
+const ACTION_ROUTE_REPORT: &[u8] = b"route-report";   // v353 (S63, pathfinding r9 §3a)
 
 // ─── Wire types ─────────────────────────────────────────────────────────────
 
@@ -472,6 +473,108 @@ pub fn lnurlp_register_record_id(name: &str, hashes_json: &str) -> LijResult<Str
     Ok(format!("{}:{}:{}", name.to_ascii_lowercase(), hs.len(), hex::encode(h.finalize())))
 }
 
+// ─── v353 (S63, pathfinding r9 §3a): the signed routing report ────────────────────────────────────────────────────────
+//
+// After a send ends, the wallet tells its provider which nodes and channels refused it, so the provider's LND stops
+// offering those paths to this wallet and its other customers. The report carries the 0.112.0 proof — a single-use
+// challenge signed by the node key over "route-report" and a record_id that binds the report's content:
+//   record_id = "<payment hash, lowercased>:<count>:<sha256 hex over the refusal lines, each
+//                '<from>:<to>:<scid>:<amount_msat>:<code>\n' lowercased, sorted bytewise, concatenated>"
+// The adapter (0.113.0) rebuilds the same string from the body it received and refuses anything else, then imports only
+// the temporary refusals (XImportMissionControl) that were on routes it handed out for that hash. The twin on the
+// adapter side is routeReportRecordId; route-report.test.js and the test below pin the same vectors.
+
+/// The record a routing report binds. `failures_json` is a JSON array of {from, to, scid, amount_msat, code}.
+pub fn route_report_record_id(payment_hash_hex: &str, failures_json: &str) -> LijResult<String> {
+    let v: serde_json::Value = if failures_json.trim().is_empty() { serde_json::Value::Array(vec![]) } else {
+        serde_json::from_str(failures_json).map_err(|e| LijError::Lsp(format!("failures JSON: {e}")))?
+    };
+    let arr = v.as_array().ok_or_else(|| LijError::Lsp("failures must be a JSON array".into()))?;
+    let field = |e: &serde_json::Value, k: &str| -> String {
+        match e.get(k) {
+            Some(serde_json::Value::String(x)) => x.to_ascii_lowercase(),
+            Some(serde_json::Value::Number(n)) => n.to_string(),
+            _ => String::new(),
+        }
+    };
+    let mut lines: Vec<String> = arr.iter()
+        .map(|e| format!("{}:{}:{}:{}:{}\n", field(e, "from"), field(e, "to"), field(e, "scid"), field(e, "amount_msat"), field(e, "code")))
+        .collect();
+    lines.sort();
+    let mut h = Sha256::new();
+    for l in &lines { h.update(l.as_bytes()); }
+    Ok(format!("{}:{}:{}", payment_hash_hex.to_ascii_lowercase(), lines.len(), hex::encode(h.finalize())))
+}
+
+/// Fetch the LSP's challenge and sign the routing report's proof. Returns `{node_pubkey, nonce, signature}` as JSON.
+pub async fn route_report_auth(
+    keys_manager: &Arc<KeysManager>,
+    lsp_endpoint: &str,
+    payment_hash_hex: &str,
+    failures_json: &str,
+) -> LijResult<String> {
+    let endpoint = lsp_endpoint.trim_end_matches('/');
+    let record_id = route_report_record_id(payment_hash_hex, failures_json)?;
+    let challenge_url = format!("{endpoint}/lsps/registry/challenge");
+    let challenge_body = http_get(&challenge_url).await?;
+    let challenge: ChallengeResponse = serde_json::from_str(&challenge_body)
+        .map_err(|e| LijError::Lsp(format!("parse challenge: {e} — body: {challenge_body}")))?;
+    if challenge.nonce.len() != 64 {
+        return Err(LijError::Lsp(format!("challenge nonce wrong length: {} (expected 64)", challenge.nonce.len())));
+    }
+    let pubkey_hex = node_pubkey_hex(keys_manager);
+    let digest = build_message_digest(ACTION_ROUTE_REPORT, &challenge.nonce, &pubkey_hex, Some(&record_id))?;
+    let signature = sign_digest(keys_manager, &digest);
+    let out = LnurlpAuth { node_pubkey: &pubkey_hex, nonce: &challenge.nonce, signature: &signature };
+    serde_json::to_string(&out).map_err(|e| LijError::Lsp(format!("serialize auth: {e}")))
+}
+
+// ─── v355 (S63, Kimi K3.1 Pro round 2 — DP's rulings F10 and F4/F6 of 2026-10-26) ────────────────────────────────────
+//
+// THE PROOF, generalised. The adapter's lnurlpAuthCheck already verifies any action over the 0.112.0 digest; the engine
+// only knew two actions and computed their record_ids itself. `lsp_proof` signs a single-use challenge over an action
+// from a FIXED LIST and a record_id the page hands over — the page assembles the record from the body it is about to
+// send (the adapter rebuilds the same string and refuses anything else), the engine proves the node key holds it. The
+// list is the whole set of things the key will vouch for; an action not on it is refused here, so a page bug cannot
+// turn the node key into a general signing oracle. The records (the adapter's twins, 0.116.0):
+//   heartbeat          "<unix minute>"                              — the awake proof (F10): touchWalletActive only on this
+//   lsps2-pending      "pending:<unix minute>"                      — the wake poll (F10)
+//   client-prefs       "prefs:<hold_ms>"                            — the hold dial (F10)
+//   push-claim         "claim:<hash>:<claimant>:<sha256(secret)>:<amount_sats|0>:<expiry|0>:<holder_prefix|>"   (F4/F6)
+//   push-deliver       "deliver:<hash>:<claimant>:<sha256(bolt11 lowercased)>"
+//   push-claim-status  "claim-status:<hash>:<claimant>"
+//   lnurl-note         "note:<hash>:<client>"                       — the payer's note read (F14, the second half)
+pub const PROOF_ACTIONS: &[&str] = &["heartbeat", "lsps2-pending", "client-prefs", "push-claim", "push-deliver", "push-claim-status", "lnurl-note"];
+
+/// Fetch the LSP's challenge and sign `action` over `record_id` with the node key. Returns `{node_pubkey, nonce, signature}`
+/// as JSON. The action must be on PROOF_ACTIONS; the record_id is the page's (≤ 512 bytes, no control characters).
+pub async fn lsp_proof(
+    keys_manager: &Arc<KeysManager>,
+    lsp_endpoint: &str,
+    action: &str,
+    record_id: &str,
+) -> LijResult<String> {
+    if !PROOF_ACTIONS.contains(&action) {
+        return Err(LijError::Lsp(format!("lsp_proof: action not on the list: {action}")));
+    }
+    if record_id.is_empty() || record_id.len() > 512 || record_id.chars().any(|c| c.is_control()) {
+        return Err(LijError::Lsp("lsp_proof: record_id empty, over 512 bytes or with control characters".into()));
+    }
+    let endpoint = lsp_endpoint.trim_end_matches('/');
+    let challenge_url = format!("{endpoint}/lsps/registry/challenge");
+    let challenge_body = http_get(&challenge_url).await?;
+    let challenge: ChallengeResponse = serde_json::from_str(&challenge_body)
+        .map_err(|e| LijError::Lsp(format!("parse challenge: {e} — body: {challenge_body}")))?;
+    if challenge.nonce.len() != 64 {
+        return Err(LijError::Lsp(format!("challenge nonce wrong length: {} (expected 64)", challenge.nonce.len())));
+    }
+    let pubkey_hex = node_pubkey_hex(keys_manager);
+    let digest = build_message_digest(action.as_bytes(), &challenge.nonce, &pubkey_hex, Some(record_id))?;
+    let signature = sign_digest(keys_manager, &digest);
+    let out = LnurlpAuth { node_pubkey: &pubkey_hex, nonce: &challenge.nonce, signature: &signature };
+    serde_json::to_string(&out).map_err(|e| LijError::Lsp(format!("serialize auth: {e}")))
+}
+
 #[derive(Serialize)]
 struct LnurlpAuth<'a> {
     node_pubkey: &'a str,
@@ -529,6 +632,41 @@ mod tests {
         let swapped = r#"[{"hash":"aa"},{"hash":"bb"}]"#;
         assert_eq!(lnurlp_register_record_id("ALICE", swapped).unwrap(), id, "order and case do not change the record");
         assert!(lnurlp_register_record_id("alice", "{}").is_err(), "not an array");
+    }
+
+    // v355 (S63): the proof list is the whole set of things the node key vouches for through lsp_proof; the digest a
+    // listed action signs is the 0.112.0 digest with the action's bytes — the adapter's lnurlpAuthCheck twin.
+    #[test]
+    fn lsp_proof_actions_and_digest() {
+        assert_eq!(PROOF_ACTIONS, &["heartbeat", "lsps2-pending", "client-prefs", "push-claim", "push-deliver", "push-claim-status", "lnurl-note"]);
+        assert!(!PROOF_ACTIONS.contains(&"post-channel"), "the channel record keeps its own path");
+        assert!(!PROOF_ACTIONS.contains(&"lnurl-register"), "the register keeps lnurlp_auth (the engine computes its record)");
+        let nonce = "11".repeat(32);
+        let pk = "02".to_string() + &"03".repeat(32);
+        let a = build_message_digest(b"push-claim", &nonce, &pk, Some("claim:ab:02cd:x:0:0:")).unwrap();
+        let b = build_message_digest("push-claim".as_bytes(), &nonce, &pk, Some("claim:ab:02cd:x:0:0:")).unwrap();
+        assert_eq!(a, b);
+        let c = build_message_digest(b"push-deliver", &nonce, &pk, Some("claim:ab:02cd:x:0:0:")).unwrap();
+        assert_ne!(a, c, "the action is inside the digest — a claim's proof cannot deliver");
+    }
+
+    // v353 (S63): the routing report's record — the adapter's routeReportRecordId builds the same string; these vectors
+    // are shared with route-report.test.js in the adapter repo.
+    #[test]
+    fn route_report_record_id_rule() {
+        let h = "AB".repeat(32);
+        let empty = route_report_record_id(&h, "[]").unwrap();
+        assert_eq!(empty, format!("{}:0:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "ab".repeat(32)));
+        let two = r#"[{"from":"02AA","to":"03BB","scid":"123456789","amount_msat":"31020000","code":"temporary","attempt":3},{"from":"02cc","to":"03dd","scid":"5","amount_msat":"7","code":"permanent"}]"#;
+        let id = route_report_record_id(&h, two).unwrap();
+        let mut sha = Sha256::new();
+        sha.update(b"02aa:03bb:123456789:31020000:temporary\n");
+        sha.update(b"02cc:03dd:5:7:permanent\n");
+        assert_eq!(id, format!("{}:2:{}", "ab".repeat(32), hex::encode(sha.finalize())), "lowercased, sorted, joined; the attempt number never enters");
+        let swapped = r#"[{"from":"02cc","to":"03dd","scid":5,"amount_msat":7,"code":"permanent"},{"from":"02aa","to":"03bb","scid":123456789,"amount_msat":31020000,"code":"TEMPORARY"}]"#;
+        assert_eq!(route_report_record_id(&h, swapped).unwrap(), id, "order, case and number-vs-string do not change the record");
+        assert_eq!(id, format!("{}:2:{}", "ab".repeat(32), "c7cb69c11102edfd7e855283051a57954ee30f825fc95ed93497bdce28ff693d"), "the pinned vector (route-report.test.js carries the same)");
+        assert!(route_report_record_id(&h, "{}").is_err(), "not an array");
     }
 
     #[test]

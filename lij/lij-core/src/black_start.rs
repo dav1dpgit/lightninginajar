@@ -100,6 +100,15 @@ impl BlackStartKeys {
         if v["npub"].as_str() != Some(self.npub_hex().as_str()) {
             return Err(LijError::Key("kit envelope: not this identity's".into()));
         }
+        // v354 (S63, Kimi K3.1 Pro round 2, wallet finding 4): `Nonce::from_slice` ASSERTS the length — a 10-byte nonce
+        // from a holder or a relay used to panic here, and with panic=abort the wasm engine's wallet mutex was never
+        // released (dead for the rest of the page session). A plain error now, like every other bad envelope.
+        if nonce.len() != 12 {
+            return Err(LijError::Key(format!("kit envelope: nonce is {} bytes, not 12", nonce.len())));
+        }
+        if ct.len() < 16 {
+            return Err(LijError::Key(format!("kit envelope: ciphertext too short ({} bytes)", ct.len())));
+        }
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&self.kit_key));
         let aad = self.aad();
         cipher
@@ -183,6 +192,30 @@ mod tests {
         // a flipped byte of ciphertext does not open
         let mut bad = env.clone(); let i = bad.rfind("\"ct\":\"").unwrap() + 8; let c = bad.as_bytes()[i]; bad.replace_range(i..i + 1, if c == b'a' { "b" } else { "a" });
         assert!(k.open(&bad).is_err());
+    }
+
+    /// v354 (S63, Kimi K3.1 Pro round 2, wallet finding 4): a malformed nonce or a short ciphertext is an error, never a
+    /// panic — the trap used to leave the wasm engine's wallet mutex held for the rest of the page session.
+    #[test]
+    fn malformed_envelope_is_an_error_not_a_panic() {
+        let k = keys();
+        let env = k.seal(b"{\"v\":1}", 1700000000000).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&env).unwrap();
+        let npub = v["npub"].as_str().unwrap();
+        for (nonce, ct, what) in [
+            ("00".repeat(10), v["ct"].as_str().unwrap().to_string(), "a 10-byte nonce"),
+            ("00".repeat(16), v["ct"].as_str().unwrap().to_string(), "a 16-byte nonce"),
+            ("".to_string(), v["ct"].as_str().unwrap().to_string(), "an empty nonce"),
+            (v["nonce"].as_str().unwrap().to_string(), "aabb".to_string(), "a 2-byte ciphertext"),
+            (v["nonce"].as_str().unwrap().to_string(), "".to_string(), "an empty ciphertext"),
+            ("zz".to_string(), v["ct"].as_str().unwrap().to_string(), "a non-hex nonce"),
+        ] {
+            let bad = serde_json::json!({ "v": 1, "alg": "A256GCM", "npub": npub, "nonce": nonce, "ct": ct }).to_string();
+            let r = std::panic::catch_unwind(|| k.open(&bad));
+            assert!(matches!(r, Ok(Err(_))), "{what}: must be Err, not a panic or a plaintext");
+        }
+        // the real envelope still opens
+        assert_eq!(k.open(&env).unwrap(), b"{\"v\":1}");
     }
 
     #[test]
