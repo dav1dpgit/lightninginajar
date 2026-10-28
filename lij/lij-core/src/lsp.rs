@@ -16,6 +16,33 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{LijError, LijResult};
 
+/// v357 (S64 Tue 2026-10-27, DP's iOS field find — the Offline room's "almost done…" for ever on a dead link):
+/// OFFLINE START, the engine's one truth. The page arms it before the read of this phone's saved channel state
+/// (the Offline room; the words-only gate) and the engine then makes NO network call of its own: the registry is
+/// not read (the stored record stands), the esplora stub stays, the backup client is silent. Until now the cell
+/// lived in lij-wasm alone, where the esplora swap and the backup client read it — the registry read in
+/// `LijWallet::auto_select_lsp` never saw it and ran on every restore, offline room included. lij-wasm re-exports
+/// this cell, so its `set_offline_start` and every existing read are this one bool.
+pub static OFFLINE_START: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// v357: the registry read's time limit. A read that has not answered by then is given up and the stored record
+/// stands, exactly as for any other registry failure. Before this the read was a bare `fetch` with no limit: a boot
+/// on a poor link (bars, no data) sat on this one call until the browser gave up — minutes on iOS, or never.
+pub const REGISTRY_READ_TIMEOUT_SECS: u64 = 8;
+
+/// v357: whether the boot ladder reads the registry at all — the one rule, testable natively. Some(reason) = skip.
+/// Offline start skips it outright; never-cloudflare skips a Cloudflare-reached registry when the wallet already
+/// has somewhere to go (v349, Step A — a fresh wallet still reads it once).
+pub fn registry_read_skipped(offline_start: bool, route_pref: &str, registry_is_cloudflare: bool, has_somewhere: bool) -> Option<&'static str> {
+    if offline_start {
+        return Some("offline start — the registry is not read; the stored record is used");
+    }
+    if route_pref == ROUTE_PREF_NEVER_CLOUDFLARE && registry_is_cloudflare && has_somewhere {
+        return Some("never-cloudflare — the registry is reached through Cloudflare and this wallet has its provider; not read (the stored record is used)");
+    }
+    None
+}
+
 /// A registered Lightning Service Provider.
 /// Fetched from your Cloudflare Worker LSP registry.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -197,20 +224,27 @@ pub async fn fetch_lsp_registry(worker_url: &str) -> LijResult<Vec<LspInfo>> {
         let window = web_sys::window()
             .ok_or_else(|| LijError::Lsp("No window".into()))?;
 
-        let resp_value = JsFuture::from(window.fetch_with_request(&request))
+        // v357: the whole read (the answer AND its body) races REGISTRY_READ_TIMEOUT_SECS, the pattern of the
+        // independent sources' WasmEsploraHttp (v226). On the limit the fetch future is dropped and the caller
+        // keeps the stored record; a `fetch` has no limit of its own and a poor link held every restore here.
+        use futures::future::{select, Either};
+        let read = async {
+            let resp_value = JsFuture::from(window.fetch_with_request(&request))
+                .await
+                .map_err(|e| LijError::Lsp(format!("Fetch error: {:?}", e)))?;
+            let resp: Response = resp_value.into();
+            let text = JsFuture::from(
+                resp.text().map_err(|e| LijError::Lsp(format!("Text error: {:?}", e)))?
+            )
             .await
-            .map_err(|e| LijError::Lsp(format!("Fetch error: {:?}", e)))?;
-
-        let resp: Response = resp_value.into();
-
-        let text = JsFuture::from(
-            resp.text().map_err(|e| LijError::Lsp(format!("Text error: {:?}", e)))?
-        )
-        .await
-        .map_err(|e| LijError::Lsp(format!("Text await error: {:?}", e)))?;
-
-        let body = text.as_string()
-            .ok_or_else(|| LijError::Lsp("Response not a string".into()))?;
+            .map_err(|e| LijError::Lsp(format!("Text await error: {:?}", e)))?;
+            text.as_string().ok_or_else(|| LijError::Lsp("Response not a string".into()))
+        };
+        let timeout = wasm_timer::Delay::new(std::time::Duration::from_secs(REGISTRY_READ_TIMEOUT_SECS));
+        let body = match select(Box::pin(read), Box::pin(timeout)).await {
+            Either::Left((r, _)) => r?,
+            Either::Right((_, _)) => return Err(LijError::Lsp(format!("registry read: no answer within {REGISTRY_READ_TIMEOUT_SECS} s"))),
+        };
 
         let parsed: serde_json::Value = serde_json::from_str(&body)
             .map_err(|e| LijError::Lsp(format!("JSON parse error: {e}")))?;
@@ -459,6 +493,20 @@ mod tests {
     }
     fn r(reach: &str, host: &str) -> LspRoute {
         LspRoute { reach: reach.into(), endpoint: format!("https://{host}-lsp.example"), wss_url: Some(format!("wss://{host}-ws.example")), filter_url: Some(format!("https://{host}-filters.example")) }
+    }
+
+    #[test]
+    fn v357_offline_start_reads_no_registry_and_the_v349_skip_stands() {
+        // offline start: skipped whatever the preference, the door or the wallet's state
+        assert!(registry_read_skipped(true, ROUTE_PREF_DIRECT_FIRST, false, false).unwrap().starts_with("offline start"));
+        assert!(registry_read_skipped(true, ROUTE_PREF_NEVER_CLOUDFLARE, true, true).unwrap().starts_with("offline start"));
+        // online: the v349 rule exactly as before
+        assert!(registry_read_skipped(false, ROUTE_PREF_NEVER_CLOUDFLARE, true, true).unwrap().starts_with("never-cloudflare"));
+        assert_eq!(registry_read_skipped(false, ROUTE_PREF_NEVER_CLOUDFLARE, true, false), None);   // a fresh wallet reads it once
+        assert_eq!(registry_read_skipped(false, ROUTE_PREF_NEVER_CLOUDFLARE, false, true), None);   // the direct door is read
+        assert_eq!(registry_read_skipped(false, ROUTE_PREF_DIRECT_FIRST, true, true), None);
+        // the time limit is a real number, short enough for a boot
+        assert!(REGISTRY_READ_TIMEOUT_SECS >= 3 && REGISTRY_READ_TIMEOUT_SECS <= 15);
     }
 
     #[test]

@@ -433,12 +433,16 @@ impl KvBackupClient {
     pub async fn push(&self, blob: &StateBlob, signer: &dyn BackupSigner) -> LijResult<()> {
         let pubkey = signer.portable_pubkey_hex()?;
         let nonce = self.get_challenge(&pubkey).await?;
-        let digest = backup_digest(BACKUP_ACTION_PUSH, &nonce, &pubkey)?;
+        // v358 (S64, Kimi round 2 K6a): the push's proof binds the copy it authorises — its fingerprint and its number —
+        // under the lij-backup-v2 digest; the body says so (auth_v 2). Worker 0.18.0 verifies v2 and still takes v1
+        // from older engines for one release; a v1 proof never authorised a particular copy.
+        let digest = backup_digest_v2(BACKUP_ACTION_PUSH, &nonce, &pubkey, &backup_fingerprint(blob), blob.version)?;
         let signature = signer.sign_backup(&digest)?;
         let envelope = serde_json::json!({
             "pubkey_hex": pubkey,
             "nonce": nonce,
             "signature": signature,
+            "auth_v": 2,
             "blob": blob,
         });
         let url = format!("{}/backup", self.config.worker_url);
@@ -665,6 +669,26 @@ const BACKUP_ACTION_PUSH: &str = "backup-push";
 /// v250: the wallet forgets its own cloud copy (the worker's /backup/forget).
 const BACKUP_ACTION_FORGET: &str = "backup-forget";
 const BACKUP_ACTION_READ: &str = "backup-read";
+
+/// v358 (K6a): the push digest that binds the copy — sha256("lij-backup-v2" || action || nonce || pubkey || fingerprint
+/// (32 bytes, sha256 of the sealed bytes) || version (8 bytes big-endian)). The worker computes the fingerprint from the
+/// bytes it received and reads the number from the copy, so a signature authorises THIS copy at THIS number and no other.
+const BACKUP_DOMAIN_V2: &[u8] = b"lij-backup-v2";
+pub(crate) fn backup_digest_v2(action: &str, nonce_hex: &str, pubkey_hex: &str, fingerprint_hex: &str, version: u64) -> LijResult<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+    let nonce = hex::decode(nonce_hex).map_err(|e| LijError::Backup(format!("nonce hex decode: {e}")))?;
+    let pubkey = hex::decode(pubkey_hex).map_err(|e| LijError::Backup(format!("pubkey hex decode: {e}")))?;
+    let fp = hex::decode(fingerprint_hex).map_err(|e| LijError::Backup(format!("fingerprint hex decode: {e}")))?;
+    if fp.len() != 32 { return Err(LijError::Backup("fingerprint: not 32 bytes".into())); }
+    let mut h = Sha256::new();
+    h.update(BACKUP_DOMAIN_V2);
+    h.update(action.as_bytes());
+    h.update(&nonce);
+    h.update(&pubkey);
+    h.update(&fp);
+    h.update(version.to_be_bytes());
+    Ok(h.finalize().into())
+}
 
 fn backup_digest(action: &str, nonce_hex: &str, pubkey_hex: &str) -> LijResult<[u8; 32]> {
     use sha2::{Digest, Sha256};
@@ -917,6 +941,32 @@ mod v319_own_upload_tests {
         assert_eq!(m.fingerprint, None, "a malformed fingerprint reads as none (never a match)");
         let m = parse_backup_meta(&format!(r#"{{"found":true,"version":1,"saved_at_ms":5,"fingerprint":"{}"}}"#, "AB".repeat(32))).unwrap().unwrap();
         assert_eq!(m.fingerprint, Some("ab".repeat(32)), "read lowercase, so it compares with the phone's");
+    }
+}
+
+#[cfg(test)]
+mod v358_backup_digest_v2_tests {
+    use super::*;
+
+    // The worker's test-round6 pins the same vector: nonce 00×32, pubkey 02 03×32, fingerprint 11×32, version 7.
+    #[test]
+    fn v358_the_push_digest_binds_the_copy_and_its_number() {
+        let nonce = "00".repeat(32);
+        let pk = format!("02{}", "03".repeat(32));
+        let fp = "11".repeat(32);
+        let d = backup_digest_v2("backup-push", &nonce, &pk, &fp, 7).unwrap();
+        let mut h = sha2::Sha256::new();
+        use sha2::Digest;
+        h.update(b"lij-backup-v2"); h.update(b"backup-push"); h.update([0u8; 32]);
+        let mut pkb = vec![0x02u8]; pkb.extend(std::iter::repeat(0x03u8).take(32)); h.update(&pkb);
+        h.update([0x11u8; 32]); h.update(7u64.to_be_bytes());
+        let want: [u8; 32] = h.finalize().into();
+        assert_eq!(d, want);
+        assert_eq!(hex::encode(d), "53d153264315f77bb76b94af0ac8c3ace02cb3aae47fbaa5c9fa680e703da2fd", "the pinned vector (plain Python; the worker's test carries the same)");
+        assert_ne!(d, backup_digest_v2("backup-push", &nonce, &pk, &fp, 8).unwrap(), "another number is another digest");
+        assert_ne!(d, backup_digest_v2("backup-push", &nonce, &pk, &"22".repeat(32), 7).unwrap(), "another copy is another digest");
+        assert_ne!(d, backup_digest("backup-push", &nonce, &pk).unwrap(), "v2 is not v1");
+        assert!(backup_digest_v2("backup-push", &nonce, &pk, "abcd", 7).is_err(), "a fingerprint is 32 bytes");
     }
 }
 

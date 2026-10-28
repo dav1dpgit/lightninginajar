@@ -723,9 +723,11 @@ impl LijWallet {
         self.node.set_route_pref(config.route_pref.as_deref().unwrap_or(crate::lsp::ROUTE_PREF_DIRECT_FIRST));
         let registry_is_cloudflare = config.worker_reach.as_deref().map(|r| r != "direct").unwrap_or(true);
         let has_somewhere = self.node.load_chosen_lsp().is_some() || self.node.get_channels().map(|c| !c.is_empty()).unwrap_or(false);
-        let skip_registry = self.node.route_pref() == crate::lsp::ROUTE_PREF_NEVER_CLOUDFLARE && registry_is_cloudflare && has_somewhere;
-        let lsps = if skip_registry {
-            log::info!("LSP select: never-cloudflare — the registry is reached through Cloudflare and this wallet has its provider; not read (the stored record is used)");
+        // v357 (S64): offline start reads nothing — the Offline room's restore made this one network call with no
+        // limit and never came back on a dead link (DP's iOS find, 2026-10-27). The rule is one function (tested).
+        let offline = crate::lsp::OFFLINE_START.load(std::sync::atomic::Ordering::Relaxed);
+        let lsps = if let Some(why) = crate::lsp::registry_read_skipped(offline, self.node.route_pref(), registry_is_cloudflare, has_somewhere) {
+            log::info!("LSP select: {why}");
             vec![]
         } else {
             fetch_lsp_registry(&config.worker_url).await

@@ -14,6 +14,8 @@
      About section: what a kit looks like inside and sealed, how it is sealed and how this page opens it).
      v988 (S61, DP 2026-10-19): the providers built in (every door, direct and Cloudflare; the live directory first) — the
      page works with the directory's host down, and any LIJOX provider serves it at <address>/recover.
+     v989 (S64, Phase C): the directory has two doors — the registry the UM890 serves itself at registry.lightninginajar.xyz
+     (no Cloudflare) first, the Cloudflare worker next; the page asks them in that order and names the one that answered.
      One file, no install: your 12 words become your kit key and your identity here, in the
      browser; the page asks every LIJOX provider and the relays for your sealed escape kit,
      opens it, and lets you broadcast THE CLOSE and, after the delay, THE COLLECT. Nothing
@@ -138,7 +140,8 @@ details .mono[style*="pre-wrap"], .card details > .mono { background:var(--bg); 
   <div class="sugg" id="sugg" hidden><div class="sugg-h" id="sugg-h"></div><div class="sugg-c" id="sugg-c"></div></div>
   <p class="note">Your words are used once, here in your browser, to make two things — the key that opens your kit and your public name — and are then erased from this page. What the page keeps cannot spend your coins.</p>
   <details><summary>Where the page looks</summary>
-    <label for="dir">LIJOX directory</label><input id="dir" value="https://lij-worker.dp-a95.workers.dev/lsps">
+    <label for="dir">LIJOX directory · one door per line, asked in order</label><textarea id="dir" rows="2">https://registry.lightninginajar.xyz/lsps
+https://lij-worker.dp-a95.workers.dev/lsps</textarea>
     <label for="relays">Relays · one per line</label><textarea id="relays" rows="4">wss://relay.damus.io
 wss://nos.lol
 wss://relay.primal.net
@@ -218,7 +221,7 @@ https://mempool.emzy.de/api</textarea>
 // ── constants of the standard ──────────────────────────────────────────────────────────────────
 const HKDF_SALT = 'lijox-black-start', HKDF_INFO = 'escape-kit-v1', AAD_PREFIX = 'lijox-kit-v1:';
 const NOSTR_KIND = 30078, NOSTR_D = 'lijox-kit-v1';
-const RECOVER_BUILD = 'v988';   // bumped by hand whenever this file changes; the releases row for that page build carries this file's SHA-256
+const RECOVER_BUILD = 'v989';   // bumped by hand whenever this file changes; the releases row for that page build carries this file's SHA-256
 // v988 (S61, DP 2026-10-19): the providers this page knows WITHOUT the directory — the LIJOX registry as it stood when this
 // build was cut, each provider with every door it names (routes: direct and Cloudflare). Used when the directory cannot be
 // read (a saved copy, the directory's host down) and to add a provider the live list no longer carries. Any LIJOX provider
@@ -495,7 +498,17 @@ $('find').onclick = async () => {
     const key = KEY;
     // the directory
     let dir = [];
-    try { const r = await fetchJson($('dir').value.trim()); dir = ((r.json && r.json.lsps) || []).filter((l) => l && /^(https:\/\/|http:\/\/127\.0\.0\.1)/.test(l.endpoint || '')); log('directory: ' + dir.length + ' providers'); } catch (e) { log('directory unreachable: ' + e.message + ' \u2014 using the list built into this page (as of ' + RECOVER_DIRECTORY_AS_OF + ')', 'bad'); }
+    // v989 (Phase C): the field lists the directory's doors, one per line — the registry's direct door first, the Cloudflare
+    // worker next; they are asked in order and the first that answers with a list is the directory. Only when no door
+    // answers does the built-in list stand alone (v988's rule).
+    { const doors = $('dir').value.split(/\n+/).map((u) => u.trim()).filter((u) => /^(https:\/\/|http:\/\/127\.0\.0\.1)/.test(u));
+      let got = null, last = 'no door listed';
+      for (const u of doors) {
+        try { const r = await fetchJson(u); const list = r.json && r.json.lsps; if (!Array.isArray(list)) throw new Error('HTTP ' + r.status + ', no list'); got = { u, list }; break; }
+        catch (e) { last = e.message; log('directory door ' + u.replace(/^https?:\/\//, '') + ': ' + e.message + (doors.indexOf(u) < doors.length - 1 ? ' \u2014 trying the next door' : ''), 'dim'); }
+      }
+      if (got) { dir = got.list.filter((l) => l && /^(https:\/\/|http:\/\/127\.0\.0\.1)/.test(l.endpoint || '')); log('directory: ' + dir.length + ' providers \u00b7 via ' + got.u.replace(/^https?:\/\//, '').replace(/\/lsps$/, '')); }
+      else log('directory unreachable: ' + (doors.length ? 'no door answered (' + last + ')' : last) + ' \u2014 using the list built into this page (as of ' + RECOVER_DIRECTORY_AS_OF + ')', 'bad'); }
     { const before = dir.length; dir = mergeDirectory(dir, RECOVER_DIRECTORY); if (dir.length > before) log('built-in list: ' + (dir.length - before) + ' provider(s) added that the directory did not carry (as of ' + RECOVER_DIRECTORY_AS_OF + ')', 'dim'); }   // v988
     log('doors to ask: ' + dir.map((l) => (l.name || l.endpoint) + ' \u00d7 ' + doorsOf(l).length).join(', '), 'dim');
     const relays = $('relays').value.split(/\n+/).map((s) => s.trim()).filter((s) => /^wss:\/\//.test(s));

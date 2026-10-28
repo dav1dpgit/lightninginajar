@@ -160,6 +160,46 @@ pub(crate) fn build_message_digest(
     Ok(h.finalize().into())
 }
 
+// ─── v358 (S64, Kimi K3.1 Pro round 2 — F13, DP's "then 3" of 2026-10-27): SIGNED WRITES SIGN THEIR EFFECT ──────────
+//
+// Until v357 the channel record's proof bound the channel_id alone, the push subscription's proof bound nothing of the
+// subscription, and the Lightning-address registration's record covered each entry's hash alone — so a party on the
+// path (the tunnel or relay operator, or a broken TLS) could replace the record, the subscription, or an entry's secret,
+// life or index under a signature the wallet really made. Each proof now binds every field that decides its effect:
+//   post-channel      "<channel_id>:<sha256 hex over 'funding_txid\nfunding_vout\nchannel_value_sat\ncommit_type\n
+//                      channel_keys_id_hex\nclose_height|\nclosing_txid|'>"  (hex lowercased; commit_type verbatim; an
+//                      absent optional is the empty string — the canonical record's own fields in its own order)
+//   push-subscribe    "sub:<sha256 hex over 'endpoint\np256dh\nauth'>"       (verbatim — the keys are base64url, case
+//                      is content)
+//   lnurl-register    "<name>:<count>:<sha256 hex over '<hash>:<secret>:<expires>:<index|>\n' lines, hash and secret
+//                      lowercased, sorted bytewise>"                            (was: the hashes alone, joined)
+// The adapter (0.119.0) builds the same strings from the body it received; it accepts the OLD forms too for one release
+// (the engine ride follows the adapter ride), then 0.120.0 refuses them. Each rule is pinned below by vectors the
+// adapter's tests share.
+
+/// v358: the record a channel-record proof binds — the channel id, then a digest over every other field of the
+/// canonical record. Built from the CANONICAL record (lowercased hex).
+pub fn channel_record_id(canonical: &ChannelRecord) -> String {
+    let line = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        canonical.funding_txid.to_ascii_lowercase(), canonical.funding_vout, canonical.channel_value_sat, canonical.commit_type,
+        canonical.channel_keys_id_hex.to_ascii_lowercase(),
+        canonical.close_height.map(|h| h.to_string()).unwrap_or_default(),
+        canonical.closing_txid.as_deref().map(|t| t.to_ascii_lowercase()).unwrap_or_default());
+    let mut h = Sha256::new(); h.update(line.as_bytes());
+    format!("{}:{}", canonical.channel_id.to_ascii_lowercase(), hex::encode(h.finalize()))
+}
+
+/// v358: the record a push-subscribe proof binds — the subscription's endpoint and its two keys, verbatim.
+pub fn push_subscription_record_id(subscription: &serde_json::Value) -> LijResult<String> {
+    let endpoint = subscription.get("endpoint").and_then(|v| v.as_str()).ok_or_else(|| LijError::Lsp("subscription: no endpoint".into()))?;
+    let keys = subscription.get("keys").ok_or_else(|| LijError::Lsp("subscription: no keys".into()))?;
+    let p256dh = keys.get("p256dh").and_then(|v| v.as_str()).ok_or_else(|| LijError::Lsp("subscription: no keys.p256dh".into()))?;
+    let auth = keys.get("auth").and_then(|v| v.as_str()).ok_or_else(|| LijError::Lsp("subscription: no keys.auth".into()))?;
+    let mut h = Sha256::new();
+    h.update(endpoint.as_bytes()); h.update(b"\n"); h.update(p256dh.as_bytes()); h.update(b"\n"); h.update(auth.as_bytes());
+    Ok(format!("sub:{}", hex::encode(h.finalize())))
+}
+
 /// Return the wallet's node identity pubkey as 66-hex-char compressed string.
 fn node_pubkey_hex(keys_manager: &Arc<KeysManager>) -> String {
     let pk = keys_manager
@@ -326,11 +366,12 @@ pub async fn upload_channel_record(
     // 2. Canonicalize + build digest + sign
     let canonical = record.canonicalize();
     let pubkey_hex = node_pubkey_hex(keys_manager);
+    let record_id = channel_record_id(&canonical);   // v358: the whole record, not the channel id alone
     let digest = build_message_digest(
         ACTION_POST_CHANNEL,
         nonce,
         &pubkey_hex,
-        Some(&canonical.channel_id),
+        Some(&record_id),
     )?;
     let signature = sign_digest(keys_manager, &digest);
 
@@ -416,9 +457,10 @@ pub async fn register_push_subscription(
         )));
     }
 
-    // 2. Build digest (push-subscribe, no record_id) + sign with node key
+    // 2. Build digest (push-subscribe over the subscription's record — v358; it bound nothing of it before) + sign
     let pubkey_hex = node_pubkey_hex(keys_manager);
-    let digest = build_message_digest(ACTION_PUSH_SUBSCRIBE, nonce, &pubkey_hex, None)?;
+    let record_id = push_subscription_record_id(&subscription)?;
+    let digest = build_message_digest(ACTION_PUSH_SUBSCRIBE, nonce, &pubkey_hex, Some(&record_id))?;
     let signature = sign_digest(keys_manager, &digest);
 
     // 3. POST
@@ -464,13 +506,24 @@ pub fn lnurlp_register_record_id(name: &str, hashes_json: &str) -> LijResult<Str
         serde_json::from_str(hashes_json).map_err(|e| LijError::Lsp(format!("hashes JSON: {e}")))?
     };
     let arr = v.as_array().ok_or_else(|| LijError::Lsp("hashes must be a JSON array".into()))?;
-    let mut hs: Vec<String> = arr.iter()
-        .filter_map(|e| e.get("hash").and_then(|h| h.as_str()).map(|h| h.to_ascii_lowercase()))
+    // v358 (F13): the line of an entry is every field that decides its effect — the hash, the secret, the life and the
+    // index — not the hash alone (an on-path party could keep the hash and swap the rest). Numbers as digits; an absent
+    // index is empty. An entry with no hash string is skipped, as before (the adapter skips it too).
+    let field = |e: &serde_json::Value, k: &str| -> String {
+        match e.get(k) {
+            Some(serde_json::Value::String(x)) => x.to_ascii_lowercase(),
+            Some(serde_json::Value::Number(n)) => n.to_string(),
+            _ => String::new(),
+        }
+    };
+    let mut lines: Vec<String> = arr.iter()
+        .filter(|e| e.get("hash").and_then(|h| h.as_str()).is_some())
+        .map(|e| format!("{}:{}:{}:{}\n", field(e, "hash"), field(e, "secret"), field(e, "expires"), field(e, "index")))
         .collect();
-    hs.sort();
+    lines.sort();
     let mut h = Sha256::new();
-    for x in &hs { h.update(x.as_bytes()); }
-    Ok(format!("{}:{}:{}", name.to_ascii_lowercase(), hs.len(), hex::encode(h.finalize())))
+    for l in &lines { h.update(l.as_bytes()); }
+    Ok(format!("{}:{}:{}", name.to_ascii_lowercase(), lines.len(), hex::encode(h.finalize())))
 }
 
 // ─── v353 (S63, pathfinding r9 §3a): the signed routing report ────────────────────────────────────────────────────────
@@ -544,7 +597,10 @@ pub async fn route_report_auth(
 //   push-deliver       "deliver:<hash>:<claimant>:<sha256(bolt11 lowercased)>"
 //   push-claim-status  "claim-status:<hash>:<claimant>"
 //   lnurl-note         "note:<hash>:<client>"                       — the payer's note read (F14, the second half)
-pub const PROOF_ACTIONS: &[&str] = &["heartbeat", "lsps2-pending", "client-prefs", "push-claim", "push-deliver", "push-claim-status", "lnurl-note"];
+//   tapedrop           "tapedrop:<tape_id>:<sha256 hex of the tape's JSON text as sent>"   — v358 (F24): a tape is
+//                      evidence filed under a wallet's key; until now any connected peer could file one under any
+//                      connected pubkey (the adapter checked only that the pubkey was a live peer)
+pub const PROOF_ACTIONS: &[&str] = &["heartbeat", "lsps2-pending", "client-prefs", "push-claim", "push-deliver", "push-claim-status", "lnurl-note", "tapedrop"];
 
 /// Fetch the LSP's challenge and sign `action` over `record_id` with the node key. Returns `{node_pubkey, nonce, signature}`
 /// as JSON. The action must be on PROOF_ACTIONS; the record_id is the page's (≤ 512 bytes, no control characters).
@@ -617,28 +673,66 @@ pub async fn lnurlp_auth(
 mod tests {
     use super::*;
 
-    // v352 (S63): the record a signed registration binds — the adapter (0.112.0) builds the same string from the body it
-    // received; these pin the rule: name lowercased, the count, sha256 over the hash fields lowercased + sorted + joined.
+    // v352 (S63): the record a signed registration binds — the adapter builds the same string from the body it
+    // received. v358 (F13): the line of an entry is hash:secret:expires:index (was the hash alone); an empty probe is
+    // unchanged (count 0, the sha256 of nothing). lnurlp-auth.test.js in the adapter repo pins the same vectors.
     #[test]
     fn lnurlp_register_record_id_rule() {
         let empty = lnurlp_register_record_id("Alice", "[]").unwrap();
         // sha256 of the empty string
         assert_eq!(empty, "alice:0:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
         assert_eq!(lnurlp_register_record_id("alice", "").unwrap(), empty, "no JSON at all is an empty probe");
-        let two = r#"[{"hash":"BB","secret":"x","index":2},{"hash":"aa","secret":"y"}]"#;
+        let two = r#"[{"hash":"BB","secret":"X1","expires":1900000000,"index":2},{"hash":"aa","secret":"y2","expires":1900000001}]"#;
         let id = lnurlp_register_record_id("alice", two).unwrap();
-        let mut h = Sha256::new(); h.update(b"aa"); h.update(b"bb");
-        assert_eq!(id, format!("alice:2:{}", hex::encode(h.finalize())), "lowercased, sorted, joined; secrets and indexes never enter");
-        let swapped = r#"[{"hash":"aa"},{"hash":"bb"}]"#;
-        assert_eq!(lnurlp_register_record_id("ALICE", swapped).unwrap(), id, "order and case do not change the record");
+        let mut h = Sha256::new(); h.update(b"aa:y2:1900000001:\n"); h.update(b"bb:x1:1900000000:2\n");
+        assert_eq!(id, format!("alice:2:{}", hex::encode(h.finalize())), "lowercased, sorted lines; secret, life and index are inside");
+        assert_eq!(id, "alice:2:91302ea322aa9542ace3171ab33a089b3f03e09d9aa879bbcf5d6c22e14c97db", "the pinned vector (plain Python; lnurlp-auth.test.js carries the same)");
+        let swapped = r#"[{"hash":"aa","secret":"Y2","expires":"1900000001"},{"hash":"bb","secret":"x1","expires":1900000000,"index":2}]"#;
+        assert_eq!(lnurlp_register_record_id("ALICE", swapped).unwrap(), id, "order, case and number-vs-string do not change the record");
+        let secret_swapped = r#"[{"hash":"BB","secret":"other","expires":1900000000,"index":2},{"hash":"aa","secret":"y2","expires":1900000001}]"#;
+        assert_ne!(lnurlp_register_record_id("alice", secret_swapped).unwrap(), id, "a changed secret is another record (F13)");
         assert!(lnurlp_register_record_id("alice", "{}").is_err(), "not an array");
+    }
+
+    // v358 (F13): the channel record's proof binds the whole canonical record; the push subscription's binds the
+    // subscription. The adapter's twins: channelRecordId / pushSubscriptionRecordId (registry.js), pinned by its tests.
+    #[test]
+    fn v358_channel_record_and_push_subscription_record_ids() {
+        let rec = ChannelRecord {
+            channel_id: "AA".repeat(32), funding_txid: "BB".repeat(32), funding_vout: 1, channel_value_sat: 100_000,
+            commit_type: "STATIC_REMOTE_KEY".into(), channel_keys_id_hex: "CC".repeat(32), close_height: None, closing_txid: None,
+        };
+        let id = channel_record_id(&rec.canonicalize());
+        let mut h = Sha256::new();
+        h.update(format!("{}\n1\n100000\nSTATIC_REMOTE_KEY\n{}\n\n", "bb".repeat(32), "cc".repeat(32)).as_bytes());
+        assert_eq!(id, format!("{}:{}", "aa".repeat(32), hex::encode(h.finalize())));
+        assert_eq!(id, format!("{}:4a74956222fdcba3515c4a5b879a1aea98cafb495c137a79da8a7497c9f84f3a", "aa".repeat(32)), "the pinned vector (plain Python; registry.test.js carries the same)");
+        let mut closed = rec.clone(); closed.close_height = Some(900_000); closed.closing_txid = Some("DD".repeat(32));
+        let id2 = channel_record_id(&closed.canonicalize());
+        assert_ne!(id2, id, "a close is another record");
+        let mut h2 = Sha256::new();
+        h2.update(format!("{}\n1\n100000\nSTATIC_REMOTE_KEY\n{}\n900000\n{}", "bb".repeat(32), "cc".repeat(32), "dd".repeat(32)).as_bytes());
+        assert_eq!(id2, format!("{}:{}", "aa".repeat(32), hex::encode(h2.finalize())));
+        assert_eq!(id2, format!("{}:93a344540fe8537ef6acf8098d847d3d55edb0f7f191fccb18bde39d77f977c8", "aa".repeat(32)), "the closed record's pinned vector");
+        let mut other = rec.clone(); other.channel_value_sat = 100_001;
+        assert_ne!(channel_record_id(&other.canonicalize()), id, "one sat is another record");
+
+        let sub: serde_json::Value = serde_json::from_str(r#"{"endpoint":"https://push.example/x/Y-z","expirationTime":null,"keys":{"p256dh":"BAbC","auth":"dEf"}}"#).unwrap();
+        let sid = push_subscription_record_id(&sub).unwrap();
+        let mut h3 = Sha256::new(); h3.update(b"https://push.example/x/Y-z\nBAbC\ndEf");
+        assert_eq!(sid, format!("sub:{}", hex::encode(h3.finalize())), "endpoint and the two keys, verbatim; expirationTime never enters");
+        assert_eq!(sid, "sub:7a379304389f77ee1a2be6e1d5dea3fd18652df06bea29531e26ca895e78bbdc", "the pinned vector");
+        let sub2: serde_json::Value = serde_json::from_str(r#"{"endpoint":"https://push.example/x/Y-z","keys":{"p256dh":"BAbC","auth":"dEF"}}"#).unwrap();
+        assert_ne!(push_subscription_record_id(&sub2).unwrap(), sid, "case is content in a key");
+        let bad: serde_json::Value = serde_json::from_str(r#"{"endpoint":"https://push.example/x"}"#).unwrap();
+        assert!(push_subscription_record_id(&bad).is_err(), "no keys: no record");
     }
 
     // v355 (S63): the proof list is the whole set of things the node key vouches for through lsp_proof; the digest a
     // listed action signs is the 0.112.0 digest with the action's bytes — the adapter's lnurlpAuthCheck twin.
     #[test]
     fn lsp_proof_actions_and_digest() {
-        assert_eq!(PROOF_ACTIONS, &["heartbeat", "lsps2-pending", "client-prefs", "push-claim", "push-deliver", "push-claim-status", "lnurl-note"]);
+        assert_eq!(PROOF_ACTIONS, &["heartbeat", "lsps2-pending", "client-prefs", "push-claim", "push-deliver", "push-claim-status", "lnurl-note", "tapedrop"]);   // v358: tapedrop (F24)
         assert!(!PROOF_ACTIONS.contains(&"post-channel"), "the channel record keeps its own path");
         assert!(!PROOF_ACTIONS.contains(&"lnurl-register"), "the register keeps lnurlp_auth (the engine computes its record)");
         let nonce = "11".repeat(32);
@@ -675,7 +769,7 @@ mod tests {
         let reg = build_message_digest(ACTION_LNURL_REGISTER, &nonce, &pk, Some("alice:0:x")).unwrap();
         let rel = build_message_digest(ACTION_LNURL_RELEASE, &nonce, &pk, Some("alice")).unwrap();
         let reg_other = build_message_digest(ACTION_LNURL_REGISTER, &nonce, &pk, Some("alice:1:y")).unwrap();
-        let push = build_message_digest(ACTION_PUSH_SUBSCRIBE, &nonce, &pk, None).unwrap();
+        let push = build_message_digest(ACTION_PUSH_SUBSCRIBE, &nonce, &pk, Some("sub:x")).unwrap();
         assert!(reg != rel && reg != reg_other && reg != push && rel != push, "a proof for one action or record is no proof for another");
     }
 

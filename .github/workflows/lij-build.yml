@@ -154,7 +154,10 @@ jobs:
           append_row () {   # $1 = repo dir
             f="$1/docs/releases.md"
             [ -f "$f" ] || { echo "no $f — skipping"; return 0; }
-            if grep -q "phase11-v${PAGE} | phase11-v${ENG} |" "$f"; then echo "row for page v${PAGE} / engine v${ENG} already present in $f"; return 0; fi
+            # S64: a row is the page + the engine + the /recover page it shipped with. A /recover build alone (v989 on
+            # 2026-10-27, page v1072 unchanged) left no row under the old check, so the canary and the page's own
+            # "Keep your own copy" check would have read v988's hash for the v989 bytes.
+            if grep "phase11-v${PAGE} | phase11-v${ENG} |" "$f" | grep -q "recover/index.html (build ${RB}) sha256 \`${R}\`"; then echo "row for page v${PAGE} / engine v${ENG} / recover ${RB} already present in $f"; return 0; fi
             printf '%s\n' "$ROW" >> "$f"
             (cd "$1" && git add docs/releases.md && git -c user.name=lij-ci -c user.email=ci@lij.invalid commit -qm "releases: page v${PAGE} / engine v${ENG} (${GITHUB_SHA::8})")
           }
