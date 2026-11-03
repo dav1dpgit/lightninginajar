@@ -72,6 +72,7 @@ details .mono[style*="pre-wrap"], .card details > .mono { background:var(--bg); 
 .rprog[hidden] { display:none }
 .chh { display:flex; justify-content:space-between; align-items:center; gap:10px; margin:0 0 4px } .chh b { font-size:16px }
 .st-line { margin:6px 0 0; font-size:13.5px } .st-line:empty { display:none }
+.hleg { margin:14px 0 0; padding:12px 0 0; border-top:1px dashed var(--ink3) } .hleg .chh b { font-size:15px }   /* v360 (engine): a payment in flight inside its channel's card */
 /* the keep-your-copy card: one line, opens */
 .keep { padding:4px 14px 10px }
 .keep > details { margin:0 }
@@ -221,7 +222,7 @@ https://mempool.emzy.de/api</textarea>
 // ── constants of the standard ──────────────────────────────────────────────────────────────────
 const HKDF_SALT = 'lijox-black-start', HKDF_INFO = 'escape-kit-v1', AAD_PREFIX = 'lijox-kit-v1:';
 const NOSTR_KIND = 30078, NOSTR_D = 'lijox-kit-v1';
-const RECOVER_BUILD = 'v989';   // bumped by hand whenever this file changes; the releases row for that page build carries this file's SHA-256
+const RECOVER_BUILD = 'v1080';   // bumped by hand whenever this file changes; the releases row for that page build carries this file's SHA-256 — v1080 (S66, engine v360): the payments in flight, R1 the return / claim and R2 the collect, inside each channel's card
 // v988 (S61, DP 2026-10-19): the providers this page knows WITHOUT the directory — the LIJOX registry as it stood when this
 // build was cut, each provider with every door it names (routes: direct and Cloudflare). Used when the directory cannot be
 // read (a saved copy, the directory's host down) and to add a provider the live list no longer carries. Any LIJOX provider
@@ -427,11 +428,11 @@ cells.forEach((c, i) => {
 $('wclear').onclick = () => { wClear(); cells[0].focus(); };
 // THE FIVE STEPS — what has happened, not a wizard: Words until the keys exist; Provider until a kit is shown; Kit until a
 // close is accepted; Close until every close confirms; Collect until every collect (and silent-payment sweep) is accepted.
-const S = { keys: false, kit: false, nch: 0, nsp: 0, closesSent: new Set(), closesConf: new Set(), collectsSent: new Set(), spSent: new Set() };
+const S = { keys: false, kit: false, nch: 0, nsp: 0, nlegs: 0, closesSent: new Set(), closesConf: new Set(), collectsSent: new Set(), spSent: new Set(), returnsSent: new Set(), legCollectsSent: new Set() };   // v360: nlegs / returnsSent / legCollectsSent — the payments in flight
 function stepNow() {
   if (S.kit) {
     if (!S.nch && !S.nsp) return 5;
-    if (S.nch) { if (!S.closesSent.size) return 2; if (S.closesConf.size < S.nch) return 3; if (S.collectsSent.size < S.nch) return 4; }
+    if (S.nch) { if (!S.closesSent.size) return 2; if (S.closesConf.size < S.nch) return 3; if (S.collectsSent.size < S.nch || S.legCollectsSent.size < S.nlegs) return 4; }   // v360: a payment in flight is collected too before the kit is done
     return (S.nsp && S.spSent.size < S.nsp) ? 4 : 5;
   }
   return S.keys ? 1 : 0;
@@ -611,8 +612,9 @@ function render(kit) {
   const sps = (kit.silent_payments || []);   // v863 (engine v291): one pre-signed sweep per silent-payment coin
   const trs = (kit.taproot_coins || []);   // v968 (engine v318): one pre-signed sweep per taproot coin — by choice
   const mxs = (kit.mix_exits || []).filter((g) => Array.isArray(g) && g.length);   // v987 (engine v323): each unfinished Mix pool's signed exits
-  unwatchAll(); S.kit = true; S.nch = chans.length; S.nsp = sps.length; S.closesSent.clear(); S.closesConf.clear(); S.collectsSent.clear(); S.spSent.clear(); paintSteps();   // v903: the steps
-  head.innerHTML = '<h2 style="margin-top:0">Your kit</h2>' + row('made', esc(new Date(Number(kit.made_at) || 0).toLocaleString())) + row('channels', chans.length) + row('silent-payment coins', sps.length) + (trs.length ? row('taproot coins', trs.length) : '') + (mxs.length ? row('Mix pools not finished', mxs.length) : '') + row('funds land at', esc(kit.sweep_destination_address || '—'), true)
+  const nlegs = chans.reduce((n, c) => n + (Array.isArray(c.htlcs) ? c.htlcs.length : 0), 0);   // v360 (engine v360): the payments in flight — one leg each inside its channel's card
+  unwatchAll(); S.kit = true; S.nch = chans.length; S.nsp = sps.length; S.nlegs = nlegs; S.closesSent.clear(); S.closesConf.clear(); S.collectsSent.clear(); S.spSent.clear(); S.returnsSent.clear(); S.legCollectsSent.clear(); paintSteps();   // v903: the steps
+  head.innerHTML = '<h2 style="margin-top:0">Your kit</h2>' + row('made', esc(new Date(Number(kit.made_at) || 0).toLocaleString())) + row('channels', chans.length) + (nlegs ? row('payments in flight', nlegs) : '') + row('silent-payment coins', sps.length) + (trs.length ? row('taproot coins', trs.length) : '') + (mxs.length ? row('Mix pools not finished', mxs.length) : '') + row('funds land at', esc(kit.sweep_destination_address || '—'), true)
     + '<p class="dim">The close pays the balances as they were when this kit was made. Funds reach the address above — any wallet on your 12 words shows them (BIP84; a third-party wallet may need its address gap limit raised to 500).</p>'
     + (chans.length ? '<div class="rwarn">Used this wallet after ' + esc(new Date(Number(kit.made_at) || 0).toLocaleString()) + '? Then this kit is out of date — safe only while your provider stays gone.</div>' : '');   // v903 (Design v2)
   box.appendChild(head);
@@ -626,12 +628,37 @@ function render(kit) {
       + '<button class="primary wide" data-close="' + i + '">1 · Broadcast the close</button><p class="dim st-line" id="cst' + i + '"></p>'
       + '<div class="rprog" id="cprog' + i + '" hidden><i></i></div><p class="dim st-line" id="cwatch' + i + '"></p>'
       + '<div class="btn2"><button data-sweep="' + i + '" data-fee="normal"' + (c.sweep_hex_normal ? '' : ' disabled') + '>2 · Broadcast the collect (normal fee)</button><button data-sweep="' + i + '" data-fee="high"' + (c.sweep_hex_high ? '' : ' disabled') + '>2 · high fee</button></div><p class="dim st-line" id="sst' + i + '"></p>'
+      // v360 (S66, engine v360 — the in-flight payment collect, docs/design/black-start/in-flight-collect-v0.1.md): each
+      // payment in flight on this channel — a Push Key's lock, a held payment, a send or receive caught mid-flight — has
+      // its own two steps after the close: R1 the return (a payment going out; valid only from its expiry block, and only
+      // once the close is confirmed) or the claim (a payment coming in whose secret the wallet knew; valid once the close
+      // is confirmed), then R2 the collect of its output, collect_after_blocks after the return confirms, normal or high.
+      + (Array.isArray(c.htlcs) ? c.htlcs : []).map((h, j) => { const key = i + '-' + j; const isClaim = h.kind === 'claim'; const word = isClaim ? 'claim' : 'return';
+        return '<div class="hleg" id="hleg' + key + '"><div class="chh"><b>' + (isClaim ? 'Payment coming to you' : 'Payment going back to you') + ' · ' + esc((Number(h.amount_sats) || 0).toLocaleString()) + ' sats</b><span class="rpill" id="hpill' + key + '">Waiting</span></div>'
+          + (isClaim ? '' : row('valid from block', esc((Number(h.valid_from_block) || 0).toLocaleString())))
+          + row('wait after the ' + word, esc(h.collect_after_blocks) + ' blocks') + row('lands at', esc(h.collect_address || '—'), true)
+          + '<button class="wide" data-hret="' + key + '" disabled>R1 · Broadcast the ' + word + (isClaim ? '' : ' · valid from block ' + esc((Number(h.valid_from_block) || 0).toLocaleString())) + '</button><p class="dim st-line" id="hst' + key + '"></p>'
+          + '<p class="dim st-line" id="hwatch' + key + '"></p>'
+          + '<div class="btn2"><button data-hcol="' + key + '" data-fee="normal"' + (h.collect_hex_normal ? '' : ' disabled') + '>R2 · Broadcast the collect (normal fee)</button><button data-hcol="' + key + '" data-fee="high"' + (h.collect_hex_high ? '' : ' disabled') + '>R2 · high fee</button></div><p class="dim st-line" id="hcst' + key + '"></p>'
+          + '<details><summary>Raw transactions of this payment (broadcast anywhere)</summary><label>the ' + word + '</label><div class="mono">' + esc(h.hex || '') + '</div>' + (h.collect_hex_normal ? '<label>the collect · normal</label><div class="mono">' + esc(h.collect_hex_normal) + '</div>' : '') + (h.collect_hex_high ? '<label>the collect · high</label><div class="mono">' + esc(h.collect_hex_high) + '</div>' : '') + '</details></div>'; }).join('')
       + '<details><summary>Raw transactions (broadcast anywhere)</summary><label>the close</label><div class="mono">' + esc(c.commitment_hex) + '</div>' + (c.htlc_tx_hexes && c.htlc_tx_hexes.length ? '<label>HTLC transactions</label><div class="mono">' + c.htlc_tx_hexes.map(esc).join('<br><br>') + '</div>' : '') + (c.sweep_hex_normal ? '<label>the collect · normal</label><div class="mono">' + esc(c.sweep_hex_normal) + '</div>' : '') + (c.sweep_hex_high ? '<label>the collect · high</label><div class="mono">' + esc(c.sweep_hex_high) + '</div>' : '') + '</details>';
     box.appendChild(d);
   });
   box.querySelectorAll('[data-close]').forEach((b) => { b.onclick = async () => { const c = chans[Number(b.dataset.close)]; if (!confirm('Broadcast the close for channel ' + (Number(b.dataset.close) + 1) + '? This cannot be undone.')) return; b.disabled = true; const r = await broadcast(c.commitment_hex); const st = $('cst' + b.dataset.close); st.textContent = r.map((x) => (x.ok ? 'accepted' : 'refused') + ' by ' + x.s.replace(/^https:\/\//, '') + (x.ok ? '' : ' (' + x.t + ')')).join(' · '); b.disabled = !r.some((x) => x.ok); if (r.some((x) => x.ok)) { const ci = Number(b.dataset.close); S.closesSent.add(ci); chPill(ci, 'Close sent', 'a'); paintSteps(); pollNow(ci); } }; });
   box.querySelectorAll('[data-sweep]').forEach((b) => { b.onclick = async () => { const c = chans[Number(b.dataset.sweep)]; const hx = b.dataset.fee === 'high' ? c.sweep_hex_high : c.sweep_hex_normal; b.disabled = true; const r = await broadcast(hx); $('sst' + b.dataset.sweep).textContent = r.map((x) => (x.ok ? 'accepted' : 'refused') + ' by ' + x.s.replace(/^https:\/\//, '') + (x.ok ? '' : ' (' + x.t + ')')).join(' · ') + (r.some((x) => x.ok) ? '' : ' — too early? the collect is valid only ' + c.to_self_delay + ' blocks after the close confirms'); if (r.some((x) => x.ok)) { const si = Number(b.dataset.sweep); S.collectsSent.add(si); chPill(si, 'Collect sent', 'ok'); paintSteps(); } b.disabled = false; }; });
   chans.forEach((c, i) => watch(i, c));
+  // v360: the payments in flight — R1 goes only on a tap after a confirm box; R2 likewise; each leg has its own watcher
+  const legOf = (key) => { const [i, j] = key.split('-').map(Number); return { i, c: chans[i], h: ((chans[i] || {}).htlcs || [])[j], key }; };
+  const said = (r) => r.map((x) => (x.ok ? 'accepted' : 'refused') + ' by ' + x.s.replace(/^https:\/\//, '') + (x.ok ? '' : ' (' + x.t + ')')).join(' · ');
+  box.querySelectorAll('[data-hret]').forEach((b) => { b.onclick = async () => { const L = legOf(b.dataset.hret); if (!L.h) return; const word = L.h.kind === 'claim' ? 'claim' : 'return';
+    if (!confirm('Broadcast the ' + word + ' of the ' + (Number(L.h.amount_sats) || 0).toLocaleString() + '-sat payment in flight on channel ' + (L.i + 1) + '? This cannot be undone.')) return;
+    b.disabled = true; const r = await broadcast(L.h.hex); const st = $('hst' + L.key); if (st) st.textContent = said(r) + (r.some((x) => x.ok) ? '' : (L.h.kind === 'claim' ? ' — too early? the claim is valid only once the close is confirmed' : ' — too early? the return is valid only from block ' + (Number(L.h.valid_from_block) || 0).toLocaleString() + ', once the close is confirmed'));
+    if (r.some((x) => x.ok)) { S.returnsSent.add(L.key); legPill(L.key, (L.h.kind === 'claim' ? 'Claim' : 'Return') + ' sent', 'a'); paintSteps(); pollLeg(L.key); } else b.disabled = false; }; });
+  box.querySelectorAll('[data-hcol]').forEach((b) => { b.onclick = async () => { const L = legOf(b.dataset.hcol); if (!L.h) return; const hx = b.dataset.fee === 'high' ? L.h.collect_hex_high : L.h.collect_hex_normal; if (!hx) return;
+    if (!confirm('Broadcast the collect of the ' + (Number(L.h.amount_sats) || 0).toLocaleString() + '-sat payment in flight on channel ' + (L.i + 1) + ' to ' + (L.h.collect_address || 'your address') + '?')) return;
+    b.disabled = true; const r = await broadcast(hx); const st = $('hcst' + L.key); if (st) st.textContent = said(r) + (r.some((x) => x.ok) ? '' : ' — too early? the collect is valid only ' + L.h.collect_after_blocks + ' blocks after the ' + (L.h.kind === 'claim' ? 'claim' : 'return') + ' confirms');
+    if (r.some((x) => x.ok)) { S.legCollectsSent.add(L.key); legPill(L.key, 'Collect sent', 'ok'); paintSteps(); } b.disabled = false; }; });
+  chans.forEach((c, i) => (Array.isArray(c.htlcs) ? c.htlcs : []).forEach((h, j) => watchLeg(i + '-' + j, c, h)));
   chans.forEach((c, i) => { closedElsewhere(i, c); if (c._from_copy) { const st = $('cst' + i); if (st && !st.textContent) st.textContent = 'From another copy\u2019s kit (made ' + new Date(c._from_copy.made_at).toLocaleString() + ') \u2014 its newest state.'; } });   // v966
   // v863 — the silent-payment coins: each sweep moves one coin, alone, to one of the wallet's own BIP84 addresses;
   // "Sweep all" goes one at a time, 20 seconds apart (DP: stagger, never jam the queue).
@@ -733,6 +760,44 @@ function watchSp(i, txid) {   // v903: one watcher per coin, for the sweep last 
   const tick = async () => { try { const st = await txStatus(txid); const el = $('spwatch' + i); if (el) { if (st && st.seen) el.textContent = st.confirmed ? ('sweep confirmed · ' + st.confs + ' confirmation' + (st.confs === 1 ? '' : 's') + ' — the coin is on your BIP84 address') : 'sweep seen on the network, not yet confirmed'; else el.textContent = 'sweep not seen yet'; } } catch (e) {} if (watchingSp[i] === me) me.t = setTimeout(tick, 30000); };
   me.tick = tick; watchingSp[i] = me; tick();
 }
+function legPill(key, t, k) { const el = $('hpill' + key); if (el) { el.textContent = t; el.className = 'rpill' + (k ? ' ' + k : ''); } }   // v360
+async function tipHeight() { for (const s of servers()) { try { const h = Number(await (await withTimeout(fetch(s + '/blocks/tip/height', { cache: 'no-store' }), 9000)).text()); if (h > 0) return h; } catch (e) {} } return 0; }   // v360
+const watchingLeg = {};
+// v360: one watcher per payment in flight. Reads the close's status, the chain's block number and the return's (or
+// claim's) status; R1 is offered only when the close is confirmed and (for a return) the chain has reached its block —
+// before that the line counts the chain up to it; R2 is offered once the return has its wait in confirmations.
+function watchLeg(key, c, h) {
+  if (watchingLeg[key]) return;
+  const me = { tick: null, t: null };
+  const fmt = (n) => (Number(n) || 0).toLocaleString();
+  const isClaim = h.kind === 'claim'; const word = isClaim ? 'claim' : 'return'; const need = Number(h.valid_from_block) || 0; const wait = Number(h.collect_after_blocks) || 0;
+  const tick = async () => { try {
+    const el = $('hwatch' + key); const rb = document.querySelector('[data-hret="' + key + '"]'); const nb = document.querySelector('[data-hcol="' + key + '"][data-fee="normal"]');
+    if (!el) return;
+    const ret = h.txid ? await txStatus(h.txid) : null;
+    if (ret && ret.seen) {
+      S.returnsSent.add(key); if (rb) { rb.disabled = true; rb.classList.remove('primary'); }
+      if (ret.confirmed) { const left = Math.max(0, wait - ret.confs); if (nb) nb.classList.toggle('primary', ret.confs >= wait && !S.legCollectsSent.has(key));
+        el.textContent = word + ' confirmed · ' + ret.confs + ' of ' + wait + ' blocks' + (ret.confs >= wait ? ' — the collect can go now' : ' — then the collect, in ' + left + ' block' + (left === 1 ? '' : 's') + ', about ' + aboutH(left));
+        if (!S.legCollectsSent.has(key)) legPill(key, ret.confs >= wait ? 'Collect ready' : (isClaim ? 'Claimed' : 'Returned'), 'ok'); }
+      else { el.textContent = word + ' seen on the network, not yet confirmed'; if (!S.legCollectsSent.has(key)) legPill(key, (isClaim ? 'Claim' : 'Return') + ' seen', 'a'); }
+      paintSteps(); return;
+    }
+    const close = c.commitment_txid ? await txStatus(c.commitment_txid) : null;
+    const closeOk = !!(close && close.seen && close.confirmed);
+    const tip = closeOk && !isClaim ? await tipHeight() : 0;
+    const ready = closeOk && (isClaim || (tip > 0 && tip >= need));
+    if (rb && !S.returnsSent.has(key)) { rb.disabled = !ready; rb.classList.toggle('primary', ready); }
+    if (!closeOk) el.textContent = 'waiting for the close to confirm — then the ' + word + (isClaim ? '' : ' from block ' + fmt(need));
+    else if (isClaim) el.textContent = 'the claim can go now';
+    else if (tip <= 0) el.textContent = 'valid from block ' + fmt(need) + ' — the chain\u2019s block number could not be read';
+    else if (tip < need) el.textContent = 'waiting for block ' + fmt(need) + ' — the chain is at ' + fmt(tip) + ' (' + fmt(need - tip) + ' block' + (need - tip === 1 ? '' : 's') + ' to go, about ' + aboutH(need - tip) + ')';
+    else el.textContent = 'block ' + fmt(need) + ' reached — the return can go now';
+    if (!S.returnsSent.has(key)) legPill(key, ready ? (isClaim ? 'Claim ready' : 'Return ready') : 'Waiting', ready ? 'ok' : '');
+  } catch (e) {} if (watchingLeg[key] === me) me.t = setTimeout(tick, 60000); };
+  me.tick = tick; watchingLeg[key] = me; tick();
+}
+function pollLeg(key) { const w = watchingLeg[key]; if (!w) return; if (w.t) clearTimeout(w.t); w.tick(); }
 const watching = {};
 function watch(i, c) {
   if (watching[i]) return;
@@ -746,7 +811,7 @@ function watch(i, c) {
         paintSteps(); } else if (st) el.textContent = 'close not seen on the network yet'; } } catch (e) {} if (watching[i] === me) me.t = setTimeout(tick, 60000); };
   me.tick = tick; watching[i] = me; tick();
 }
-function unwatchAll() { for (const k of Object.keys(watching)) { clearTimeout(watching[k].t); delete watching[k]; } for (const k of Object.keys(watchingSp)) { clearTimeout(watchingSp[k].t); delete watchingSp[k]; } }   // v903
+function unwatchAll() { for (const k of Object.keys(watching)) { clearTimeout(watching[k].t); delete watching[k]; } for (const k of Object.keys(watchingSp)) { clearTimeout(watchingSp[k].t); delete watchingSp[k]; } for (const k of Object.keys(watchingLeg)) { clearTimeout(watchingLeg[k].t); delete watchingLeg[k]; } }   // v903; v360 the legs
 function pollNow(i) { const w = watching[i]; if (!w) return; if (w.t) clearTimeout(w.t); w.tick(); }
 window.__renderKit = render;   // v863: the gate paints a kit object (render holds no key; it only draws)
 })();

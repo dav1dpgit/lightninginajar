@@ -25,8 +25,9 @@ words, broadcast it — and never against a living LSP.
 - `seed` = BIP39 seed of the 12 words, empty passphrase (as the wallet has always done).
 - `root` = the BIP32 master private key = left 32 bytes of HMAC-SHA512(key = "Bitcoin seed", seed).
 - **Kit key** `K` = HKDF-SHA256(ikm = root, salt = "lijox-black-start", info = "escape-kit-v1", 32 bytes).
-  Used for AES-256-GCM only. Distinct from the cloud copy's key (m/525h family): a kit holder can
-  never open a cloud copy, and vice versa.
+  Used for AES-256-GCM only. Distinct from the cloud copy's key — HKDF-SHA256(ikm = root, salt = "lij-persist-v1",
+  info = "ChannelMonitor"), the engine's persist key; m/525h only FILES and SIGNS the cloud copy (wording corrected
+  2026-10-28, S65 — it had said "the m/525h family"): a kit holder can never open a cloud copy, and vice versa.
 - **Identity** = the NIP-06 key: BIP32 path m/44'/1237'/0'/0/0 on secp256k1. `pubkey` = the 33-byte
   compressed public key; `npub` = its x coordinate, 32 bytes hex (the Nostr public key). The npub
   names the user at every holder and every relay. Nothing about it is secret; the kit is ciphertext.

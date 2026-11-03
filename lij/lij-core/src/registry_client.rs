@@ -600,7 +600,10 @@ pub async fn route_report_auth(
 //   tapedrop           "tapedrop:<tape_id>:<sha256 hex of the tape's JSON text as sent>"   — v358 (F24): a tape is
 //                      evidence filed under a wallet's key; until now any connected peer could file one under any
 //                      connected pubkey (the adapter checked only that the pubkey was a live peer)
-pub const PROOF_ACTIONS: &[&str] = &["heartbeat", "lsps2-pending", "client-prefs", "push-claim", "push-deliver", "push-claim-status", "lnurl-note", "tapedrop"];
+//   lnurl-display      "display:<name>:<sha256 hex of the display text, UTF-8>"   — v359 (S65, DP's Register name): the
+//                      shop name a Register mode shows, filed at the provider under the name's owning key only; the
+//                      provider puts it into the pay terms' text/plain so every sending wallet shows it
+pub const PROOF_ACTIONS: &[&str] = &["heartbeat", "lsps2-pending", "client-prefs", "push-claim", "push-deliver", "push-claim-status", "lnurl-note", "tapedrop", "lnurl-display"];
 
 /// Fetch the LSP's challenge and sign `action` over `record_id` with the node key. Returns `{node_pubkey, nonce, signature}`
 /// as JSON. The action must be on PROOF_ACTIONS; the record_id is the page's (≤ 512 bytes, no control characters).
@@ -732,7 +735,7 @@ mod tests {
     // listed action signs is the 0.112.0 digest with the action's bytes — the adapter's lnurlpAuthCheck twin.
     #[test]
     fn lsp_proof_actions_and_digest() {
-        assert_eq!(PROOF_ACTIONS, &["heartbeat", "lsps2-pending", "client-prefs", "push-claim", "push-deliver", "push-claim-status", "lnurl-note", "tapedrop"]);   // v358: tapedrop (F24)
+        assert_eq!(PROOF_ACTIONS, &["heartbeat", "lsps2-pending", "client-prefs", "push-claim", "push-deliver", "push-claim-status", "lnurl-note", "tapedrop", "lnurl-display"]);   // v358: tapedrop (F24); v359: lnurl-display (the Register name)
         assert!(!PROOF_ACTIONS.contains(&"post-channel"), "the channel record keeps its own path");
         assert!(!PROOF_ACTIONS.contains(&"lnurl-register"), "the register keeps lnurlp_auth (the engine computes its record)");
         let nonce = "11".repeat(32);

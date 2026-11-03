@@ -492,7 +492,7 @@ impl LijWallet {
             StateBlob,
             std::sync::Arc<crate::key::RootKey>,
             Vec<BackupSink>,
-            std::sync::Arc<std::sync::atomic::AtomicBool>,
+            std::sync::Arc<crate::storage::DirtyFlag>,
         )>,
     > {
         if !self.node.take_backup_dirty() {

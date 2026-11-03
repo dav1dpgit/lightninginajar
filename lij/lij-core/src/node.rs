@@ -562,7 +562,7 @@ pub struct LijNode {
     /// slow backup tick snapshots + pushes the encrypted state to enabled sinks
     /// and clears it. Cleared at snapshot time, so any change during the push
     /// re-dirties it; re-set on push failure to retry next tick.
-    backup_dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    backup_dirty: std::sync::Arc<crate::storage::DirtyFlag>,   // v359: mirrored in storage (lij:backup_pending)
     /// S21 item 2: flipped by the monitor persister on every monitor write so
     /// the tick persists the manager promptly (never trails a commitment).
     manager_dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -870,7 +870,7 @@ impl LijNode {
             walk_last_tick: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             funding_walk_force: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             accepting_channels: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            backup_dirty: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            backup_dirty: std::sync::Arc::new(crate::storage::DirtyFlag::new(false)),
             manager_dirty: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             last_cm_hash: std::sync::Mutex::new(None),
             persist_seq: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -960,7 +960,7 @@ impl LijNode {
         );
         // Shared with the node struct below so monitor persists (the
         // per-commitment, security-critical writes) flag the cloud backup dirty.
-        let backup_dirty = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let backup_dirty = std::sync::Arc::new(crate::storage::DirtyFlag::with_storage(storage.clone()));   // v359: starts as the mirror says
         // S21 item 2: manager-dirty + stamp counter, shared with the persister.
         let manager_dirty = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let persist_seq = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -6659,13 +6659,17 @@ impl LijNode {
                     .collect()
             })
             .unwrap_or_default();
-        let mut channels = Vec::new();
+        // v360 (S66, DP 21:28 "Go" — Black start, the in-flight payment collect): the channel entries are gathered
+        // first and finished after the coin legs, because each payment in flight gets collects to fresh m/84
+        // addresses AFTER the taproot coins' — no existing leg's address moves.
+        let mut channel_rows: Vec<(serde_json::Value, Vec<lightning::chain::channelmonitor::LijHtlcLeg>, Vec<bitcoin::Transaction>)> = Vec::new();
         for channel_id in chain_monitor.list_monitors() {   // 0.2: keyed by channel id
             let monitor = match chain_monitor.get_monitor(channel_id) {
                 Ok(m) => m,
                 Err(()) => continue, // monitor evicted between list and get
             };
             let (txs, to_local, to_self_delay) = monitor.lij_export_escape(&logger);
+            let legs = monitor.lij_htlc_legs(&txs, &logger);   // v360: the payments in flight, each with its descriptor
             let claimable_sats: u64 = monitor
                 .get_claimable_balances()
                 .iter()
@@ -6711,7 +6715,7 @@ impl LijNode {
             // this entry against another copy's without the channel's factor
             let commitment_number = txs.get(0)
                 .and_then(|tx| crate::kit_merge::decode_commitment_number(tx, monitor.lij_commitment_obscure_factor()));
-            channels.push(serde_json::json!({
+            channel_rows.push((serde_json::json!({
                 "channel_id": channel_id.to_string(),
                 "commitment_number": commitment_number,
                 "open": open_txos.contains(&funding_txo),
@@ -6728,7 +6732,7 @@ impl LijNode {
                 "sweep_hex_normal": sweep_normal.as_ref().map(|s| s.1.clone()),
                 "sweep_txid_high": sweep_high.as_ref().map(|s| s.0.clone()),
                 "sweep_hex_high": sweep_high.as_ref().map(|s| s.1.clone()),
-            }));
+            }), legs, txs));
         }
         // v291 (S50, DP "Go on Black start v291"): the silent-payment leg — one pre-signed sweep per unspent
         // silent-payment coin, each to its own fresh m/84 receive address just past the kit's destination index,
@@ -6757,6 +6761,31 @@ impl LijNode {
                 Err(e) => (Vec::new(), format!("coin ledger unreadable: {e}")),
             }
         };
+        // v360 (S66, DP 21:28 "Go" — Black start, the in-flight payment collect; docs/design/black-start/
+        // in-flight-collect-v0.1.md): each payment in flight on a channel's latest commitment — a Push Key's lock, a
+        // Lightning-pays-on-chain payment, any send or receive caught mid-flight — gets a leg in the entry under
+        // `htlcs`: the signed return (a payment going out; valid from its expiry block) or claim (a payment coming in
+        // whose secret the wallet knows; valid at once), its block, its wait after confirming (to_self_delay) and two
+        // pre-signed collects of its output to a fresh m/84 address each — by the same signer call as the close's
+        // collect, because the HTLC transaction's output carries the to_local script (BOLT 3). `htlc_tx_hexes` stays
+        // as it was for older /recover copies. The addresses come after the taproot coins'.
+        let first_inflight_index = dest_index.saturating_add(1).saturating_add(silent_payments.len() as u32).saturating_add(taproot_coins.len() as u32);
+        let mut next_inflight_index = first_inflight_index;
+        let channels: Vec<serde_json::Value> = channel_rows.into_iter().map(|(mut entry, legs, txs)| {
+            let mut htlcs: Vec<serde_json::Value> = Vec::with_capacity(legs.len());
+            for leg in &legs {
+                let tx = match txs.get(leg.tx_index) { Some(t) => t, None => continue };
+                match crate::inflight::kit_destination(&self.root_key, self.network, next_inflight_index) {
+                    Ok(dest) => {
+                        htlcs.push(crate::inflight::leg_json(&*self.keys_manager, leg, tx, &dest, next_inflight_index, &secp));
+                        next_inflight_index = next_inflight_index.saturating_add(1);
+                    }
+                    Err(e) => log::warn!("[BlackStart] in-flight leg skipped — destination: {e}"),
+                }
+            }
+            if let Some(o) = entry.as_object_mut() { o.insert("htlcs".into(), serde_json::Value::Array(htlcs)); }
+            entry
+        }).collect();
         // v318 (DP 23:10): each taproot coin says whether it is a Mix coin (its mark), so /recover can say so
         let taproot_coins_marked: Vec<serde_json::Value> = {
             let t2_store = crate::tier2_wallet::encrypted(&*self.storage, self.root_key.encryption_key());
@@ -7203,7 +7232,7 @@ impl LijNode {
 
     /// Clonable handle to the dirty flag, so a push running outside the wallet
     /// lock can re-mark dirty on failure to retry on the next tick.
-    pub fn backup_dirty_handle(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    pub fn backup_dirty_handle(&self) -> std::sync::Arc<crate::storage::DirtyFlag> {
         self.backup_dirty.clone()
     }
 

@@ -61,6 +61,13 @@ export class LijWalletHandle {
      */
     backup_now(): Promise<any>;
     /**
+     * v359 (S65, DP's item 8 — the erase screen with the cloud copy Off): has the wallet's state changed since the
+     * last backup took the flag? Reads the mirrored flag (storage::DirtyFlag; survives a reload). With the cloud copy
+     * On the push takes it within a tick, so this answers "false" almost always; with the cloud copy Off only
+     * backup_take (the device save) takes it — "true" then means the last backup file may be behind this phone.
+     */
+    backup_pending(): boolean;
+    /**
      * v268 (S48, DP): the words screen's question, asked BEFORE anything is written — see
      * LijWallet::backup_probe. Resolves to {"found":true,"channels":n,"version":v} or
      * {"found":false}; REJECTS with the reason when the service gave no answer (no
@@ -72,6 +79,11 @@ export class LijWalletHandle {
      * is taken as the phone's (the next copy is one above it) and one upload runs now.
      */
     backup_replace_cloud(): Promise<any>;
+    /**
+     * v359: "Save backup to device" took the state — the page calls this right after export_backup_blob succeeded and
+     * ONLY with the cloud copy Off (with it On the cloud push owns the flag). Answers what the flag was.
+     */
+    backup_take(): boolean;
     /**
      * v275 (Black Start): the sealed, signed push — see node::black_start_bundle_json. Read-only.
      */
@@ -1376,8 +1388,10 @@ export interface InitOutput {
     readonly lijwallethandle_backup_adopt_own: (a: number) => bigint;
     readonly lijwallethandle_backup_conflict: (a: number) => bigint;
     readonly lijwallethandle_backup_now: (a: number) => any;
+    readonly lijwallethandle_backup_pending: (a: number) => [number, number, number];
     readonly lijwallethandle_backup_probe: (a: number, b: number, c: number, d: number) => any;
     readonly lijwallethandle_backup_replace_cloud: (a: number) => any;
+    readonly lijwallethandle_backup_take: (a: number) => [number, number, number];
     readonly lijwallethandle_black_start_bundle_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_black_start_bundle_merged_json: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly lijwallethandle_black_start_fingerprint_json: (a: number) => [number, number, number, number];
@@ -1585,8 +1599,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_218: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_219: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_220: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_221: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

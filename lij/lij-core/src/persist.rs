@@ -169,7 +169,7 @@ pub struct LijChannelMonitorPersister {
     /// Shared with LijNode: flipped true on every monitor write — the
     /// per-commitment, security-critical persists — so the cloud backup tick
     /// captures the new state. This is the canonical "must not lose this" hook.
-    backup_dirty: Arc<AtomicBool>,
+    backup_dirty: Arc<crate::storage::DirtyFlag>,   // v359: the mirrored flag
     /// S21 item 2: sibling of backup_dirty — the node's tick persists the
     /// ChannelManager promptly whenever a monitor advanced, so the manager
     /// on disk never trails a commitment by more than one tick.
@@ -184,7 +184,7 @@ impl LijChannelMonitorPersister {
     pub fn new(
         storage: Arc<dyn LijStorage>,
         key: [u8; 32],
-        backup_dirty: Arc<AtomicBool>,
+        backup_dirty: Arc<crate::storage::DirtyFlag>,
         manager_dirty: Arc<AtomicBool>,
         persist_seq: Arc<AtomicU64>,
     ) -> Self {
@@ -339,7 +339,7 @@ mod persister_tests {
         let persister = LijChannelMonitorPersister::new(
             storage.clone(),
             key,
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(crate::storage::DirtyFlag::new(false)),
             Arc::new(AtomicBool::new(false)),
             Arc::new(std::sync::atomic::AtomicU64::new(0)),
         );

@@ -1053,6 +1053,29 @@ impl Readable for IrrevocablyResolvedHTLC {
 	}
 }
 
+/// LiJ v360 (S66 2026-11-02, Black start — the in-flight payment collect): one payment in flight
+/// on the latest holder commitment, as the kit records it — which of the exported transactions
+/// is its HTLC transaction, what it is, and the descriptor the collect is pre-signed from.
+/// See [`ChannelMonitor::lij_htlc_legs`].
+#[cfg(any(test, feature = "_test_utils", feature = "unsafe_revoked_tx_signing"))]
+#[derive(Clone, Debug)]
+pub struct LijHtlcLeg {
+	/// Index into the transactions `lij_export_escape` returned (0 is the commitment itself).
+	pub tx_index: usize,
+	/// `true`: a payment going OUT — its transaction is the HTLC-timeout ("the return"), valid
+	/// from `cltv_expiry`. `false`: a payment coming IN whose preimage this wallet knows — its
+	/// transaction is the HTLC-success ("the claim"), valid at once.
+	pub offered: bool,
+	/// The HTLC's amount, in satoshis (its transaction's output carries this less the fee).
+	pub amount_sat: u64,
+	/// The block number from which a return is valid; carried for a claim too, unused there.
+	pub cltv_expiry: u32,
+	/// The payment's hash, so the kit can name the row.
+	pub payment_hash: PaymentHash,
+	/// A `DelayedPaymentOutput` at (the HTLC transaction's txid, 0).
+	pub descriptor: SpendableOutputDescriptor,
+}
+
 /// A ChannelMonitor handles chain events (blocks connected and disconnected) and generates
 /// on-chain transactions to ensure no loss of funds occurs.
 ///
@@ -2381,6 +2404,25 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		let txs = inner.unsafe_get_latest_holder_commitment_txn(&logger);
 		let to_local = inner.lij_to_local_descriptor(&txs);
 		(txs, to_local, inner.on_holder_tx_csv)
+	}
+
+	/// LiJ v360 (S66 2026-11-02, Black start — the in-flight payment collect; read-only): for each
+	/// fully signed HTLC transaction `lij_export_escape` returned (its `txs[1..]`), which HTLC it
+	/// belongs to and a hand-assembled [`SpendableOutputDescriptor::DelayedPaymentOutput`] for its
+	/// single output — the same shape `lij_to_local_descriptor` builds for `to_local`, because
+	/// BOLT 3 gives the HTLC-timeout and HTLC-success outputs that very script
+	/// (`chan_utils::build_htlc_output` → `get_revokeable_redeemscript(..).to_p2wsh()`), and the
+	/// signed transaction's txid is fixed before broadcast. The wallet pre-signs a collect of it
+	/// for the kit exactly as it pre-signs the `to_local` collect. Matched by the HTLC
+	/// transaction's input (the commitment txid and the HTLC's output index), never by position;
+	/// a transaction whose output script is not the expected one is skipped with a warning — never
+	/// a wrong collect. Nothing is queued, signed or changed here.
+	#[cfg(any(test, feature = "_test_utils", feature = "unsafe_revoked_tx_signing"))]
+	pub fn lij_htlc_legs<L: Deref>(&self, txs: &[Transaction], logger: &L) -> Vec<LijHtlcLeg>
+	where L::Target: Logger {
+		let inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
+		inner.lij_htlc_legs(txs, &logger)
 	}
 
 	/// LiJ v276 (Black Start, read-only): the txid of the latest holder commitment — what the
@@ -5326,6 +5368,52 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 		None
+	}
+
+	/// LiJ v360 (the in-flight payment collect): see `ChannelMonitor::lij_htlc_legs`.
+	fn lij_htlc_legs<L: Deref>(&self, txs: &[Transaction], logger: &WithContext<L>) -> Vec<LijHtlcLeg>
+	where L::Target: Logger {
+		let holder_tx = &self.funding.current_holder_commitment_tx;
+		let trusted = holder_tx.trust();
+		let keys = trusted.keys();
+		let commitment_txid = trusted.txid();
+		let redeem_script = chan_utils::get_revokeable_redeemscript(
+			&keys.revocation_key, self.on_holder_tx_csv, &keys.broadcaster_delayed_payment_key,
+		);
+		let expected_spk = redeem_script.to_p2wsh();
+		let mut legs = Vec::new();
+		for (tx_index, tx) in txs.iter().enumerate().skip(1) {
+			let input = match tx.input.first() { Some(i) => i, None => continue };
+			if input.previous_output.txid != commitment_txid { continue; }
+			let htlc = match holder_tx.nondust_htlcs().iter()
+				.find(|h| h.transaction_output_index == Some(input.previous_output.vout)) {
+				Some(h) => h,
+				None => continue,
+			};
+			let output = match tx.output.first() { Some(o) => o, None => continue };
+			if tx.output.len() != 1 || output.script_pubkey != expected_spk {
+				log_warn!(logger, "LiJ in-flight collect: HTLC transaction {} has an unexpected output — leg skipped", tx.compute_txid());
+				continue;
+			}
+			legs.push(LijHtlcLeg {
+				tx_index,
+				offered: htlc.offered,
+				amount_sat: htlc.amount_msat / 1000,
+				cltv_expiry: htlc.cltv_expiry,
+				payment_hash: htlc.payment_hash,
+				descriptor: SpendableOutputDescriptor::DelayedPaymentOutput(DelayedPaymentOutputDescriptor {
+					outpoint: OutPoint { txid: tx.compute_txid(), index: 0 },
+					per_commitment_point: holder_tx.per_commitment_point(),
+					to_self_delay: self.on_holder_tx_csv,
+					output: output.clone(),
+					revocation_pubkey: keys.revocation_key.clone(),
+					channel_keys_id: self.channel_keys_id,
+					channel_value_satoshis: self.funding.channel_parameters.channel_value_satoshis,
+					channel_transaction_parameters: Some(self.funding.channel_parameters.clone()),
+				}),
+			});
+		}
+		legs
 	}
 
 	fn unsafe_get_latest_holder_commitment_txn<L: Deref>(

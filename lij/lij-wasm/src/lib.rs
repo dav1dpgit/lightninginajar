@@ -96,7 +96,8 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v358".to_string()  // v358 (S64 Tue 2026-10-27, Kimi K3.1 Pro round 2 — F13 / F24 / K6a, DP's "then 3"): SIGNED WRITES SIGN THEIR EFFECT. (F13) the channel record's proof binds the whole canonical record (registry_client::channel_record_id — "<channel_id>:<sha256 over the other fields>", was the channel id alone); the push subscription's proof binds the subscription (push_subscription_record_id — "sub:<sha256 over endpoint, p256dh, auth>", bound nothing before); the Lightning-address registration's record covers each entry whole (hash:secret:expires:index per line, was the hash alone). (F24) "tapedrop" joins PROOF_ACTIONS — a tape is filed under a wallet's key only with that key's proof over "tapedrop:<tape_id>:<sha256 of the tape text>" (the page sends tape_json + the proof from v1074). (K6a) the cloud-copy push signs lij-backup-v2: the digest carries the copy's fingerprint and its number (storage::backup_digest_v2; the body says auth_v 2). Twins: adapter 0.119.0 (accepts the old forms for one release — it rides BEFORE this engine), worker 0.18.0 (v1 and v2). Vectors pinned on every side.
+    "phase11-v360".to_string()  // v360 (S66 Mon 2026-11-02, DP 21:28 "Go" — Black start, THE IN-FLIGHT PAYMENT COLLECT; Phase 0 of Lightning pays on-chain and the Push Key fix; docs/design/black-start/in-flight-collect-v0.1.md): every payment in flight on a channel's latest commitment (a Push Key's lock, a held payment, any send or receive caught mid-flight) gets a leg in the kit's channel entry under `htlcs` — the signed return (going out; valid from its expiry block) or claim (coming in, secret known; valid at once), its block, its wait after confirming (to_self_delay), and two pre-signed collects of its output to fresh m/84 addresses after the taproot coins' — by the same signer call as the close's collect, because BOLT 3 gives the HTLC transaction's output the to_local script (the LiJ patch's lij_htlc_legs beside lij_export_escape; lij-core's inflight.rs). `htlc_tx_hexes` stays for older /recover copies. No state format change; the fingerprint is unchanged (a commitment txid already moves with every HTLC). // v359 (S65 Wed 2026-10-28, DP's UX list — items 8/10 and the Register name): (1) THE BACKUP-DIRTY FLAG REMEMBERS ACROSS A RELOAD — storage::DirtyFlag mirrors the flag in storage (lij:backup_pending, written on the rising edge, deleted when taken; loaded at boot) with AtomicBool's method names, so every writer is unchanged; backup_pending() reads it, backup_take() takes it (the device save with the cloud copy Off) — the erase screen can say whether the last backup file is behind this phone. (2) "lnurl-display" joins PROOF_ACTIONS — a Register mode shop name travels to the provider under the node key's proof over "display:<name>:<sha256 hex of the UTF-8 text>" (adapter 0.119.1 puts it into the pay terms' text/plain; every sending wallet then shows the shop's own name). No state format change.
+    // "phase11-v358".to_string()  // v358 (S64 Tue 2026-10-27, Kimi K3.1 Pro round 2 — F13 / F24 / K6a, DP's "then 3"): SIGNED WRITES SIGN THEIR EFFECT. (F13) the channel record's proof binds the whole canonical record (registry_client::channel_record_id — "<channel_id>:<sha256 over the other fields>", was the channel id alone); the push subscription's proof binds the subscription (push_subscription_record_id — "sub:<sha256 over endpoint, p256dh, auth>", bound nothing before); the Lightning-address registration's record covers each entry whole (hash:secret:expires:index per line, was the hash alone). (F24) "tapedrop" joins PROOF_ACTIONS — a tape is filed under a wallet's key only with that key's proof over "tapedrop:<tape_id>:<sha256 of the tape text>" (the page sends tape_json + the proof from v1074). (K6a) the cloud-copy push signs lij-backup-v2: the digest carries the copy's fingerprint and its number (storage::backup_digest_v2; the body says auth_v 2). Twins: adapter 0.119.0 (accepts the old forms for one release — it rides BEFORE this engine), worker 0.18.0 (v1 and v2). Vectors pinned on every side.
     // "phase11-v357".to_string()  // v357 (S64 Tue 2026-10-27, DP's iOS field find — the Offline room on a dead link sat at "reading the saved channel state · 90 %" / "almost done…" for ever, airplane mode included): the read of this phone's saved state had FINISHED ("ready" reported); what never came back was the ONE network call after it — LijWallet::auto_select_lsp's registry read, a bare `fetch` with no time limit that the Offline room's offline_start never silenced (the flag lived in lij-wasm, where only the esplora swap and the backup client read it). (1) OFFLINE_START moves to lij_core::lsp (lij-wasm re-exports the one cell) and the boot ladder reads nothing under it — the stored record stands (lsp::registry_read_skipped, tested). (2) The registry read races REGISTRY_READ_TIMEOUT_SECS (8 s; the WasmEsploraHttp pattern) on every path, so an ONLINE boot on a poor link no longer hangs on it either — "LSP registry fetch failed … using stored choice/default" and loyalty carries on. No page change.
     // "phase11-v356".to_string()  // v356 (S63 Mon 2026-10-26, Kimi K3.1 Pro's round 2 F9 — DP's (b) at 19:13): a fixed-amount JIT invoice's payment_secret is registered by HASH as well as by scid (lsps2_register_invoice_secret_with_scid, the promise's jit_scid beside it) so the adapter's B-19 (the early-arrival sibling rescue — specimen 3d832527) binds a shard of THIS payment that rides the wallet's existing real channel to THIS promise, and only when the registered secret equals the promise's (adapter 0.117.0); until now the hash store held plain invoices only and B-19 could only misfire. Best-effort: a miss never fails the invoice.
     // "phase11-v355".to_string()  // v355 (S63 Mon 2026-10-26, Kimi K3.1 Pro's round 2 — DP's rulings of 17:00/17:17): lsp_proof(endpoint, action, record_id) — the 0.112.0 proof for any action on lij_core's fixed list (heartbeat, lsps2-pending, client-prefs, push-claim, push-deliver, push-claim-status, lnurl-note): the page assembles the record from the body it sends, the engine signs the LSP's single-use challenge over it with the node key, the adapter (0.116.0) rebuilds the record and refuses anything else. F10: the awake proof (touchWalletActive only on a verified heartbeat / pending poll); F4/F6: a Push claim, delivery and claim-status read signed by the claimant's node key — a stranger with the hash can no longer squat the claim. lij-core test lsp_proof_actions_and_digest.
@@ -432,7 +433,7 @@ fn mix_storage(inner: &Arc<std::sync::Mutex<LijWallet>>) -> Result<Arc<dyn lij_c
 }
 
 /// Step 8: the root key, the sealed store and the backup's dirty flag.
-fn mix_handles(inner: &Arc<std::sync::Mutex<LijWallet>>) -> Result<(Arc<lij_core::key::RootKey>, Arc<dyn lij_core::storage::LijStorage>, Arc<std::sync::atomic::AtomicBool>), JsValue> {
+fn mix_handles(inner: &Arc<std::sync::Mutex<LijWallet>>) -> Result<(Arc<lij_core::key::RootKey>, Arc<dyn lij_core::storage::LijStorage>, Arc<lij_core::storage::DirtyFlag>), JsValue> {
     let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
     let (root_key, _independent, _network) = wallet.onchain_handles();
     let storage = t2_storage(&root_key);
@@ -484,7 +485,7 @@ fn mix_now() -> u64 {
 /// backup marked dirty when a record was written or wiped. Phase 1b (step 11b): the pool channel's side of the step —
 /// the exit the machine named is handed to LDK as the channel's funding (fund_channel; a refusal stops the attempt),
 /// and a stop before this phone's coin signature drops the half-open channel (§6.2.4).
-fn mix_step<E: std::fmt::Display>(attempt_id: &str, storage: &dyn lij_core::storage::LijStorage, dirty: &std::sync::atomic::AtomicBool, inner: &Arc<std::sync::Mutex<LijWallet>>,
+fn mix_step<E: std::fmt::Display>(attempt_id: &str, storage: &dyn lij_core::storage::LijStorage, dirty: &lij_core::storage::DirtyFlag, inner: &Arc<std::sync::Mutex<LijWallet>>,
     f: impl FnOnce(&mut lij_core::tatara::phone::Phone, u64) -> Result<lij_core::tatara::phone::Out, E>) -> Result<String, JsValue> {
     let now = mix_now();
     MIX_PHONES.with(|m| {
@@ -1194,6 +1195,24 @@ impl LijWalletHandle {
             log::info!("[v250] cloud backup forgotten at {ok} sink(s), existed={existed}");
             Ok(JsValue::from_str(&format!("{{\"ok\":true,\"forgotten\":{ok},\"existed\":{existed}}}")))
         })
+    }
+
+    /// v359 (S65, DP's item 8 — the erase screen with the cloud copy Off): has the wallet's state changed since the
+    /// last backup took the flag? Reads the mirrored flag (storage::DirtyFlag; survives a reload). With the cloud copy
+    /// On the push takes it within a tick, so this answers "false" almost always; with the cloud copy Off only
+    /// backup_take (the device save) takes it — "true" then means the last backup file may be behind this phone.
+    #[wasm_bindgen]
+    pub fn backup_pending(&self) -> Result<bool, JsValue> {
+        let wallet = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+        Ok(wallet.node().backup_dirty_handle().load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// v359: "Save backup to device" took the state — the page calls this right after export_backup_blob succeeded and
+    /// ONLY with the cloud copy Off (with it On the cloud push owns the flag). Answers what the flag was.
+    #[wasm_bindgen]
+    pub fn backup_take(&self) -> Result<bool, JsValue> {
+        let wallet = self.inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+        Ok(wallet.node().take_backup_dirty())
     }
 
     #[wasm_bindgen]

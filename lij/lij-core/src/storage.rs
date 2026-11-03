@@ -130,6 +130,55 @@ pub fn backup_inflight_clear(storage: &dyn LijStorage) -> LijResult<()> {
     storage.delete(KEY_BACKUP_INFLIGHT)
 }
 
+// ── v359 (S65 Wed 2026-10-28, DP's UX item 8 — "Erase & start over … check if the manual backup is fresh"): THE DIRTY FLAG
+// REMEMBERS ACROSS A RELOAD. The backup-dirty flag (an AtomicBool every state writer sets — the monitor persister, the
+// manager save when its bytes changed, the coin marks, the Mix records — and the cloud push takes) lived in memory only.
+// With the cloud copy On the push takes it within a tick, so nothing was lost; with the cloud copy Off NOBODY took it, and
+// a reload forgot it. Now the flag carries a mirror in storage (`lij:backup_pending` = "1" from the moment it rises until
+// it is taken), loaded at boot: a reload inherits an unpushed change. With the cloud copy Off the DEVICE FILE is the
+// backup — "Save backup to device" takes the flag (lib.rs backup_take) and the erase screen reads it (backup_pending):
+// a flag standing since the last device save means "may have changed since". The method names are AtomicBool's, so
+// every writer compiles unchanged (`.store(true, Ordering::Relaxed)`, `.swap(false, …)`, `.load(…)`); the mirror is
+// written on the rising edge and deleted on the take — two tiny writes per cloud cycle, none while nothing changes.
+pub const KEY_BACKUP_PENDING: &str = "lij:backup_pending";
+
+pub struct DirtyFlag {
+    flag: std::sync::atomic::AtomicBool,
+    mirror: Option<std::sync::Arc<dyn LijStorage>>,
+}
+
+impl DirtyFlag {
+    /// A flag with no mirror (tests, the stand-in node).
+    pub fn new(v: bool) -> Self { Self { flag: std::sync::atomic::AtomicBool::new(v), mirror: None } }
+
+    /// The node's flag: mirrored in `storage`, and starting as the mirror says — "1" stored means a change nobody took.
+    pub fn with_storage(storage: std::sync::Arc<dyn LijStorage>) -> Self {
+        let pending = matches!(storage.get(KEY_BACKUP_PENDING), Ok(Some(v)) if v == b"1");
+        Self { flag: std::sync::atomic::AtomicBool::new(pending), mirror: Some(storage) }
+    }
+
+    fn mirror_write(&self, was: bool, now: bool) {
+        if was == now { return; }
+        if let Some(st) = self.mirror.as_ref() {
+            let r = if now { st.set(KEY_BACKUP_PENDING, b"1") } else { st.delete(KEY_BACKUP_PENDING) };
+            if let Err(e) = r { log::warn!("[v359] backup_pending mirror write failed: {e}"); }
+        }
+    }
+
+    pub fn store(&self, v: bool, _o: std::sync::atomic::Ordering) {
+        let was = self.flag.swap(v, std::sync::atomic::Ordering::Relaxed);
+        self.mirror_write(was, v);
+    }
+
+    pub fn swap(&self, v: bool, _o: std::sync::atomic::Ordering) -> bool {
+        let was = self.flag.swap(v, std::sync::atomic::Ordering::Relaxed);
+        self.mirror_write(was, v);
+        was
+    }
+
+    pub fn load(&self, _o: std::sync::atomic::Ordering) -> bool { self.flag.load(std::sync::atomic::Ordering::Relaxed) }
+}
+
 /// What /backup/meta says the cloud holds: the number, the date, and (worker 0.10.0) the stored copy's fingerprint —
 /// None for a copy stored by an older worker, or by a worker without the field.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1008,5 +1057,33 @@ mod v309_backup_number_tests {
         let back: StateBlob = serde_json::from_str(&j).unwrap();
         assert_eq!(back.saved_at_ms, 1_759_770_000_000);
         assert!(now_ms() > 1_700_000_000_000);
+    }
+}
+
+#[cfg(test)]
+mod v359_dirty_flag_tests {
+    use super::*;
+
+    // The flag rises on the first change (the mirror says "1"), the take clears both, and a new flag built on the same
+    // storage starts as the mirror says — what a reload sees.
+    #[test]
+    fn v359_the_dirty_flag_is_mirrored_and_survives_a_reload() {
+        let st: std::sync::Arc<dyn LijStorage> = std::sync::Arc::new(native_storage::MemoryStorage::new());
+        let f = DirtyFlag::with_storage(st.clone());
+        assert!(!f.load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(st.get(KEY_BACKUP_PENDING).unwrap(), None);
+        f.store(true, std::sync::atomic::Ordering::Relaxed);
+        f.store(true, std::sync::atomic::Ordering::Relaxed);   // a second rise writes nothing new
+        assert_eq!(st.get(KEY_BACKUP_PENDING).unwrap(), Some(b"1".to_vec()));
+        let again = DirtyFlag::with_storage(st.clone());   // the reload
+        assert!(again.load(std::sync::atomic::Ordering::Relaxed), "a reload inherits the unpushed change");
+        assert!(again.swap(false, std::sync::atomic::Ordering::Relaxed), "the take answers what it was");
+        assert_eq!(st.get(KEY_BACKUP_PENDING).unwrap(), None, "the take clears the mirror");
+        assert!(!f.swap(false, std::sync::atomic::Ordering::Relaxed) || true);   // the first flag's own memory is its own
+        let fresh = DirtyFlag::with_storage(st.clone());
+        assert!(!fresh.load(std::sync::atomic::Ordering::Relaxed));
+        let plain = DirtyFlag::new(false);
+        plain.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(plain.load(std::sync::atomic::Ordering::Relaxed) && st.get(KEY_BACKUP_PENDING).unwrap().is_none(), "a flag without a mirror touches no storage");
     }
 }

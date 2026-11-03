@@ -62,4 +62,5 @@ pub mod musig;   // v315 (S57, DP 21:53 "Go on 1 & 2" — joinstr-fit-r5 step 2)
 pub mod tatara;   // S58 (DP 2026-10-12 19:11 "Go on Step 3"): LIJOX's Tatara — the pool core's checks (S4, S5, S6, S10); not yet used by the wallet
 pub mod progress;   // v346 (S59 Thu, DP 17:13): the restore's progress — the Offline room's and the boot's read of the saved channel state, step by step, for the page to show
 pub mod cancelled_open;   // v277 (S48, DP): the cancelled-open sweep's honest proof (history + quorum + a two-hour floor)
+pub mod inflight;   // v360 (S66, DP 21:28 "Go"): Black start — the in-flight payment collect (the kit's `htlcs` leg); docs/design/black-start/in-flight-collect-v0.1.md
 

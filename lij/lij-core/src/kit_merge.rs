@@ -352,6 +352,34 @@ mod tests {
         assert_eq!((a["carried"].as_bool(), a["carried_since"].as_u64(), a["carried_from_seq"].as_u64()), (Some(true), Some(50), Some(100)));
     }
 
+    /// v360 (S66, the in-flight payment collect): a channel entry's `htlcs` leg rides with the entry — this copy's own
+    /// and a held kit's carried one — and the plain-cap trim never touches it (it drops carried coins only).
+    #[test]
+    fn v360_the_in_flight_legs_ride_with_their_channel_entry_and_are_never_trimmed() {
+        let leg = json!({ "kind": "return", "txid": tx('7'), "hex": "02000000", "amount_sats": 100000, "valid_from_block": 975123, "collect_after_blocks": 144, "collect_hex_normal": "0200", "collect_hex_high": "0201" });
+        let fa = format!("{}:0", tx('a'));
+        let mut own_entry = ch("OWN", &fa, Some(7), &tx('1'), Some(0));
+        own_entry.as_object_mut().unwrap().insert("htlcs".into(), json!([leg.clone()]));
+        let own = json!({ "channels": [own_entry], "silent_payments": [] });
+        let fb = format!("{}:0", tx('b'));
+        let mut held_entry = ch("HELD", &fb, Some(3), &tx('2'), Some(0));
+        held_entry.as_object_mut().unwrap().insert("htlcs".into(), json!([leg.clone(), leg.clone()]));
+        let held = vec![HeldKit { seq: 100, plain: json!({ "channels": [held_entry], "silent_payments": [] }) }];
+        let mut chain = HashMap::new();
+        chain.insert(fa.clone(), Fact::Unspent);
+        chain.insert(fb.clone(), Fact::Unspent);
+        let (mut kit, _rep) = merge(&own, &held, &chain, &num, 50);
+        let own_out = kit["channels"].as_array().unwrap().iter().find(|e| s(e, "channel_id") == "OWN").unwrap();
+        assert_eq!(own_out["htlcs"].as_array().unwrap().len(), 1);
+        assert_eq!(own_out["htlcs"][0]["valid_from_block"], 975123);
+        let held_out = kit["channels"].as_array().unwrap().iter().find(|e| s(e, "channel_id") == "HELD").unwrap();
+        assert_eq!(held_out["htlcs"].as_array().unwrap().len(), 2, "a carried entry keeps its legs");
+        let trimmed = trim_to_fit(&mut kit, 10);   // an impossible cap: nothing but carried coins may go, and there are none
+        assert_eq!(trimmed, 0);
+        assert_eq!(kit["channels"].as_array().unwrap().len(), 2);
+        assert_eq!(kit["channels"].as_array().unwrap().iter().map(|e| e["htlcs"].as_array().map(|a| a.len()).unwrap_or(0)).sum::<usize>(), 3);
+    }
+
     #[test]
     fn v313_this_copy_older_keeps_the_held_entry_and_says_so() {
         let f = format!("{}:0", tx('a'));

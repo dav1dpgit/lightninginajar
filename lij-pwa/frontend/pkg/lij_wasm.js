@@ -129,6 +129,20 @@ export class LijWalletHandle {
         return ret;
     }
     /**
+     * v359 (S65, DP's item 8 — the erase screen with the cloud copy Off): has the wallet's state changed since the
+     * last backup took the flag? Reads the mirrored flag (storage::DirtyFlag; survives a reload). With the cloud copy
+     * On the push takes it within a tick, so this answers "false" almost always; with the cloud copy Off only
+     * backup_take (the device save) takes it — "true" then means the last backup file may be behind this phone.
+     * @returns {boolean}
+     */
+    backup_pending() {
+        const ret = wasm.lijwallethandle_backup_pending(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
+    }
+    /**
      * v268 (S48, DP): the words screen's question, asked BEFORE anything is written — see
      * LijWallet::backup_probe. Resolves to {"found":true,"channels":n,"version":v} or
      * {"found":false}; REJECTS with the reason when the service gave no answer (no
@@ -153,6 +167,18 @@ export class LijWalletHandle {
     backup_replace_cloud() {
         const ret = wasm.lijwallethandle_backup_replace_cloud(this.__wbg_ptr);
         return ret;
+    }
+    /**
+     * v359: "Save backup to device" took the state — the page calls this right after export_backup_blob succeeded and
+     * ONLY with the cloud copy Off (with it On the cloud push owns the flag). Answers what the flag was.
+     * @returns {boolean}
+     */
+    backup_take() {
+        const ret = wasm.lijwallethandle_backup_take(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
     }
     /**
      * v275 (Black Start): the sealed, signed push — see node::black_start_bundle_json. Read-only.
@@ -4876,12 +4902,12 @@ function __wbg_get_imports() {
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("ErrorEvent")], shim_idx: 9, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_218);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_220);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 9, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_219);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_221);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
@@ -4928,12 +4954,12 @@ function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_218(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_218(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_220(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_220(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_219(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_219(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_221(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_221(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed(arg0, arg1, arg2) {
