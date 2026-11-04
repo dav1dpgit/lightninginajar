@@ -59,6 +59,8 @@ const KEY_LNURLP_NEXT_INDEX: &str = "lij_lnurlp_next_index";
 const KEY_PUSH_OUT: &str = "lij_push_out";
 const KEY_PUSH_NEXT_INDEX: &str = "lij_push_next_index";
 const KEY_PUSH_IN: &str = "lij_push_in";
+const KEY_ONCHAIN_PAY: &str = "lij_onchain_pay";               // v361: the on-chain pays (Lightning pays on-chain), keyed by H
+const KEY_ONCHAIN_PAY_NEXT_INDEX: &str = "lij_onchain_pay_next_index";
 /// v229 (DP: "decades"): how long a registered static-address hash stays
 /// valid in the wallet's own engine — 30 years. The same number is handed
 /// to the LSP as `expires`, so the two sides can never disagree again.
@@ -731,7 +733,7 @@ pub enum MppDecision {
 /// saved cooperative-close transaction come along too. Older copies without it still load (the key is simply absent).
 /// v323 (S58, Mix step 7 — spec v0.10 §9 rule 2): the Mix's attempt records ride every backup taken while one is
 /// unsettled (sealed, the same ciphertext); the key is deleted once none is left, so a later backup carries no trace.
-pub const BUNDLE_SINGLE_KEYS: [&str; 13] = [
+pub const BUNDLE_SINGLE_KEYS: [&str; 15] = [
     crate::tier2_wallet::VIEW_KEY,
     crate::tier2_wallet::PENDING_KEY,
     crate::tier2_wallet::MARKS_KEY,   // v281 (S50, coin control): freezes and notes ride the blob too
@@ -742,6 +744,8 @@ pub const BUNDLE_SINGLE_KEYS: [&str; 13] = [
     KEY_PUSH_OUT,            // v280: the pushes made, accepted, and the next index ride too
     KEY_PUSH_NEXT_INDEX,
     KEY_PUSH_IN,
+    KEY_ONCHAIN_PAY,         // v361: the on-chain pays and their next index ride too (a restore mid-payment keeps its release key's index)
+    KEY_ONCHAIN_PAY_NEXT_INDEX,
     crate::nwc::NWC_KEY,     // v286 (S50, NWC): the connections (service secrets, encrypted at rest) and limits ride too
     crate::closed_channel_log::KEY_CLOSED_CHANNELS,   // v311: the closed-channel log and its coop hold
     crate::tatara::records::RECORDS_KEY,              // v323: the Mix's unsettled attempt records
@@ -2150,6 +2154,7 @@ impl LijNode {
                         );
                     }
                     self.push_latch(&hex::encode(payment_hash.0), true);   // v280: a push whose key was brought
+                    self.onchain_pay_latch(&hex::encode(payment_hash.0), true);   // v361: A or B of an on-chain pay settled
                 }
                 lightning::events::Event::PaymentPathFailed {
                     payment_id,
@@ -2226,6 +2231,7 @@ impl LijNode {
                     }
                     drop(map);
                     if let Some(h) = payment_hash { self.push_latch(&hex::encode(h.0), false); }   // v280: a push nobody opened, or voided — back with the sender
+                    if let Some(h) = payment_hash { self.onchain_pay_latch(&hex::encode(h.0), false); }   // v361: A or B of an on-chain pay came back
                 }
                 // Outbound channel we initiated (open_channel_to_lsp). LDK has
                 // negotiated and now needs the funding transaction. We build +
@@ -4641,6 +4647,371 @@ impl LijNode {
         serde_json::to_string(&v).unwrap_or_else(|_| "[]".into())
     }
 
+    // ── v361 (S66, DP 23:12 "Go on Phase 1" — LIGHTNING PAYS ON-CHAIN, the wallet's records; design v0.6) ──
+    // The pure half (script, release, checks) is `onchain_pay.rs`. Here: the records (keyed by H, in the state blob),
+    // the index that derives each payment's secret and release key, the quote's checks, the provider's lock report
+    // checked against H/W/L/T, the block-filter walk's hand-over events read into the states, the release built and
+    // signed (the wasm layer broadcasts it), the status the page paints, the leg the Black start kit carries.
+    fn onchain_pay_load(&self) -> std::collections::HashMap<String, crate::onchain_pay::OnchainPayRecord> {
+        match self.storage.get(KEY_ONCHAIN_PAY) {
+            Ok(Some(b)) => std::str::from_utf8(&b).ok().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default(),
+            _ => Default::default(),
+        }
+    }
+    fn onchain_pay_save(&self, m: &std::collections::HashMap<String, crate::onchain_pay::OnchainPayRecord>) {
+        match serde_json::to_string(m) {
+            Ok(j) => { if let Err(e) = self.storage.set(KEY_ONCHAIN_PAY, j.as_bytes()) { log::error!("onchain-pay persist failed: {e}"); } }
+            Err(e) => log::error!("onchain-pay serialize failed: {e}"),
+        }
+    }
+    fn onchain_pay_next_index(&self) -> u32 {
+        match self.storage.get(KEY_ONCHAIN_PAY_NEXT_INDEX) {
+            Ok(Some(b)) => std::str::from_utf8(&b).ok().and_then(|t| t.trim().parse::<u32>().ok()).unwrap_or(0),
+            _ => 0,
+        }
+    }
+    fn onchain_pay_w(&self, index: u32) -> LijResult<[u8; 33]> {
+        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let k = self.root_key.onchain_pay_release_key(index)?;
+        Ok(bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &k).serialize())
+    }
+    fn onchain_pay_key33(hex_s: &str, what: &str) -> LijResult<[u8; 33]> {
+        let b = hex::decode(hex_s.trim()).map_err(|_| LijError::Invoice(format!("{what} is not hex")))?;
+        if b.len() != 33 || !(b[0] == 2 || b[0] == 3) { return Err(LijError::Invoice(format!("{what} must be a 33-byte compressed key"))); }
+        Ok(b.try_into().unwrap())
+    }
+    fn onchain_pay_hash32(hex_s: &str) -> LijResult<[u8; 32]> {
+        let b = hex::decode(hex_s.trim()).map_err(|_| LijError::Invoice("hash is not hex".into()))?;
+        if b.len() != 32 { return Err(LijError::Invoice("hash must be 32 bytes".into())); }
+        Ok(b.try_into().unwrap())
+    }
+    fn onchain_pay_recipient_spk(&self, address: &str) -> LijResult<bitcoin::ScriptBuf> {
+        let a = address.trim().parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()
+            .map_err(|e| LijError::Invoice(format!("the recipient's address does not parse: {e}")))?;
+        let a = a.require_network(self.network).map_err(|_| LijError::Invoice("the recipient's address is for another network".into()))?;
+        Ok(a.script_pubkey())
+    }
+
+    /// Step 1: the next index → H (the secret's hash) and W (the release key), so the page can ask the provider for
+    /// a quote. Nothing is recorded yet; the index moves on (a quote refused leaves a gap, which is harmless).
+    /// JSON: {index, hash, release_pubkey}.
+    pub fn onchain_pay_prepare(&self, recipient_address: &str) -> LijResult<String> {
+        self.onchain_pay_recipient_spk(recipient_address)?;   // refused here rather than after two payments
+        let index = self.onchain_pay_next_index();
+        let secret = self.root_key.onchain_pay_secret(index);
+        let hash = hex::encode(crate::onchain_pay::hash_of(&secret));
+        let w = self.onchain_pay_w(index)?;
+        if let Err(e) = self.storage.set(KEY_ONCHAIN_PAY_NEXT_INDEX, index.saturating_add(1).to_string().as_bytes()) {
+            log::error!("onchain-pay next-index persist failed: {e}");
+        }
+        Ok(serde_json::json!({ "index": index, "hash": hash, "release_pubkey": hex::encode(w) }).to_string())
+    }
+
+    /// Step 2: the provider's quote, checked, becomes the record (state `quoted`). The checks (v0.6 §3 step 2): B's
+    /// bolt11 carries H and exactly amount + release fee + reserve; A's carries its own hash and exactly the provider's
+    /// fee + the lock's miner fee; both are the provider's; L is a key; the windows are the agreed ones (refund_blocks
+    /// at least 100, stop_release_blocks at least 6, B's expiry at least refund_blocks + 40). `quote_json` is the
+    /// provider's answer as it came; the rest is what the page asked for.
+    pub fn onchain_pay_record_quote(
+        &self, index: u32, quote_json: &str, recipient_address: &str, amount_sats: u64, release_fee_sats: u64, reserve_sats: u64,
+        provider_pubkey_hex: &str, endpoint: &str, reserve_index: u32,
+    ) -> LijResult<String> {
+        use std::str::FromStr;
+        let q: serde_json::Value = serde_json::from_str(quote_json).map_err(|_| LijError::Invoice("the quote is not JSON".into()))?;
+        let g = |k: &str| q.get(k).cloned().unwrap_or(serde_json::Value::Null);
+        let gu = |k: &str| g(k).as_u64();
+        self.onchain_pay_recipient_spk(recipient_address)?;
+        if amount_sats == 0 { return Err(LijError::Invoice("an on-chain pay needs an amount".into())); }
+        let secret = self.root_key.onchain_pay_secret(index);
+        let hash = hex::encode(crate::onchain_pay::hash_of(&secret));
+        if g("payment_hash").as_str().map(|s| s.to_ascii_lowercase()) != Some(hash.clone()) { return Err(LijError::Invoice("the quote is for another hash".into())); }
+        let w = self.onchain_pay_w(index)?;
+        let provider = provider_pubkey_hex.trim().to_ascii_lowercase();
+        let provider_key = Self::onchain_pay_key33(&provider, "the provider's key")?;
+        let l_hex = g("L").as_str().unwrap_or("").to_ascii_lowercase();
+        Self::onchain_pay_key33(&l_hex, "the provider's take-back key L")?;
+        let lock_sats = amount_sats.saturating_add(release_fee_sats).saturating_add(reserve_sats);
+        let provider_fee_sats = gu("provider_fee_sats").ok_or_else(|| LijError::Invoice("the quote has no provider_fee_sats".into()))?;
+        let lock_fee_sats = gu("lock_fee_sats").ok_or_else(|| LijError::Invoice("the quote has no lock_fee_sats".into()))?;
+        if gu("lock_sats") != Some(lock_sats) { return Err(LijError::Invoice("the quote's lock is not amount + release fee + reserve".into())); }
+        let refund_blocks = gu("refund_blocks").unwrap_or(0) as u32;
+        let stop_release_blocks = gu("stop_release_blocks").unwrap_or(0) as u32;
+        let b_expiry_blocks = gu("b_expiry_blocks").unwrap_or(0) as u32;
+        if refund_blocks < 100 || refund_blocks > 1_000 { return Err(LijError::Invoice(format!("the provider's take-back window ({refund_blocks} blocks) is outside 100..1000"))); }
+        if stop_release_blocks < 6 || stop_release_blocks >= refund_blocks { return Err(LijError::Invoice("the provider's stop-release margin is not sane".into())); }
+        if b_expiry_blocks < refund_blocks.saturating_add(40) { return Err(LijError::Invoice("payment B would expire before the take-back block".into())); }
+        let a = g("a"); let b = g("b");
+        let a_bolt11 = a.get("bolt11").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        let b_bolt11 = b.get("bolt11").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        let a_inv = lightning_invoice::Bolt11Invoice::from_str(&a_bolt11).map_err(|e| LijError::Invoice(format!("payment A's invoice does not parse: {e}")))?;
+        let b_inv = lightning_invoice::Bolt11Invoice::from_str(&b_bolt11).map_err(|e| LijError::Invoice(format!("payment B's invoice does not parse: {e}")))?;
+        if hex::encode(b_inv.payment_hash().to_byte_array()) != hash { return Err(LijError::Invoice("payment B is not under this wallet's hash".into())); }
+        if b_inv.amount_milli_satoshis() != Some(lock_sats * 1000) { return Err(LijError::Invoice("payment B's amount is not the lock's".into())); }
+        if a_inv.amount_milli_satoshis() != Some((provider_fee_sats + lock_fee_sats) * 1000) { return Err(LijError::Invoice("payment A's amount is not fee + lock fee".into())); }
+        let a_hash = hex::encode(a_inv.payment_hash().to_byte_array());
+        if a_hash == hash { return Err(LijError::Invoice("payment A must have its own hash".into())); }
+        for (inv, name) in [(&a_inv, "A"), (&b_inv, "B")] {
+            let payee = inv.payee_pub_key().cloned().unwrap_or_else(|| inv.recover_payee_pub_key());
+            if payee.serialize() != provider_key { return Err(LijError::Invoice(format!("payment {name} is not the provider's"))); }
+            if inv.network() != self.network.into() { return Err(LijError::Invoice(format!("payment {name} is for another network"))); }
+        }
+        if (b_inv.min_final_cltv_expiry_delta() as u32) < b_expiry_blocks.saturating_sub(2) { return Err(LijError::Invoice("payment B's expiry is shorter than the quote says".into())); }
+        if provider_fee_sats > amount_sats / 10 + 10_000 { return Err(LijError::Invoice("the provider's fee is out of all proportion".into())); }
+        let mut recs = self.onchain_pay_load();
+        if recs.get(&hash).map(|r| r.is_open()).unwrap_or(false) { return Err(LijError::Invoice("a payment with this hash is already open".into())); }
+        let now = current_time_secs();
+        let rec = crate::onchain_pay::OnchainPayRecord {
+            index, hash: hash.clone(), state: "quoted".into(), provider: provider.clone(), endpoint: endpoint.trim().to_string(),
+            recipient: recipient_address.trim().to_string(), amount_sats, release_fee_sats, reserve_sats, lock_sats, provider_fee_sats, lock_fee_sats,
+            a_hash, a_bolt11, b_bolt11, l_pubkey: l_hex, w_pubkey: hex::encode(w), refund_blocks, stop_release_blocks, reserve_index,
+            created: now, updated: now, t: None, lock_block: None, handover_address: None, lock_txid: None, lock_vout: None,
+            lock_seen_txid: None, lock_seen_height: None, release_txid: None, release_hex: None, release_rate_sat_vb: None, release_height: None,
+            a_payment_id: None, b_payment_id: None, ended: None, end_reason: None, paid_block: None, walk_from: None,
+        };
+        recs.insert(hash.clone(), rec.clone());
+        self.onchain_pay_save(&recs);
+        log::info!("[onchain-pay] quoted index={} hash={} {} sats to {} (lock {}, A {}) via {}…", index, &hash[..16], amount_sats, &rec.recipient, lock_sats, provider_fee_sats + lock_fee_sats, &provider[..16]);
+        Ok(serde_json::to_string(&rec).unwrap_or_default())
+    }
+
+    /// The page's marks: `paying` (both payments dispatched; their ids), `failed` (a send failed before anything was
+    /// held — ended), `returned` (the provider ended it before the lock — ended). LDK's own word (settled, failed back)
+    /// comes through the latch; the chain's word through the walk's events.
+    pub fn onchain_pay_mark(&self, hash_hex: &str, state: &str, a_payment_id: Option<&str>, b_payment_id: Option<&str>, reason: Option<&str>) -> LijResult<()> {
+        let h = hash_hex.trim().to_ascii_lowercase();
+        let mut recs = self.onchain_pay_load();
+        let rec = recs.get_mut(&h).ok_or_else(|| LijError::Invoice("no such on-chain pay".into()))?;
+        let now = current_time_secs();
+        match state {
+            "paying" => {
+                if rec.state != "quoted" && rec.state != "paying" { return Err(LijError::Invoice(format!("cannot mark paying from '{}'", rec.state))); }
+                rec.state = "paying".into();
+                if let Some(p) = a_payment_id { rec.a_payment_id = Some(p.to_string()); }
+                if let Some(p) = b_payment_id { rec.b_payment_id = Some(p.to_string()); }
+                if rec.paid_block.is_none() { rec.paid_block = self.ldk_best_block_height(); }
+            }
+            "failed" | "returned" => {
+                if !rec.is_open() { return Err(LijError::Invoice(format!("already ended ({})", rec.state))); }
+                if rec.state == "lock_seen" || rec.state == "released" { return Err(LijError::Invoice("the lock is on the chain — it ends by release or take-back, not by a mark".into())); }
+                rec.state = state.into(); rec.ended = Some(now); rec.end_reason = reason.map(|s| s.to_string());
+            }
+            _ => return Err(LijError::Invoice(format!("onchain_pay_mark does not set '{state}'"))),
+        }
+        rec.updated = now;
+        self.onchain_pay_save(&recs);
+        Ok(())
+    }
+
+    /// The provider's word that the lock went (v0.6 §3 step 6), checked before it is believed: the address it names
+    /// must be the one H, W, L and T make, and T must sit inside the agreed bounds. `report_json` is the record as the
+    /// provider's status route gives it ({T, handover_address, lock_txids, lock_vout, lock_block, state}). On success the
+    /// record turns `locked` and its hand-over script joins the block-filter walk; the walk is asked to re-read from
+    /// the lock's block in case it already passed it.
+    pub fn onchain_pay_lock_report(&self, hash_hex: &str, report_json: &str) -> LijResult<String> {
+        let h = hash_hex.trim().to_ascii_lowercase();
+        let r: serde_json::Value = serde_json::from_str(report_json).map_err(|_| LijError::Invoice("the report is not JSON".into()))?;
+        let mut recs = self.onchain_pay_load();
+        let rec = recs.get_mut(&h).ok_or_else(|| LijError::Invoice("no such on-chain pay".into()))?;
+        if !(rec.state == "paying" || rec.state == "quoted" || rec.state == "locked") { return Ok(serde_json::to_string(rec).unwrap_or_default()); }
+        let t = r.get("T").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let lock_block = r.get("lock_block").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let address = r.get("handover_address").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        let txids: Vec<String> = r.get("lock_txids").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_ascii_lowercase())).collect()).unwrap_or_default();
+        let vout = r.get("lock_vout").and_then(|v| v.as_u64()).map(|v| v as u32);
+        if t == 0 || lock_block == 0 || address.is_empty() || txids.is_empty() { return Err(LijError::Invoice("the lock report is incomplete".into())); }
+        let hb = Self::onchain_pay_hash32(&rec.hash)?;
+        let w = Self::onchain_pay_key33(&rec.w_pubkey, "W")?;
+        let l = Self::onchain_pay_key33(&rec.l_pubkey, "L")?;
+        // T's bounds are anchored on the lock's block (LDK's own height at paying time can lag the chain; the bounds are
+        // sanity, not safety — the wallet's safety is the address check below and its own tip at release time):
+        // T within [lock_block + refund_blocks − 4, lock_block + B's expiry − 40], B's expiry as quoted (≥ refund + 40)
+        let b_expiry = rec.refund_blocks.saturating_add(40).max(200);
+        crate::onchain_pay::check_lock_report(&hb, &w, &l, t, lock_block, rec.refund_blocks, lock_block, b_expiry, &address, self.network)?;
+        let was = rec.state.clone();
+        rec.t = Some(t); rec.lock_block = Some(lock_block); rec.handover_address = Some(address.clone()); rec.lock_txid = txids.last().cloned(); rec.lock_vout = vout;
+        if was != "locked" { rec.state = "locked".into(); rec.walk_from = Some(lock_block); }
+        rec.updated = current_time_secs();
+        let out = serde_json::to_string(rec).unwrap_or_default();
+        self.onchain_pay_save(&recs);
+        let last = txids.last().cloned().unwrap_or_default();
+        log::info!("[onchain-pay] {} locked at {} by {}…:{:?}, T = {} (block {})", &h[..16], address, &last[..16.min(last.len())], vout, t, lock_block);
+        Ok(out)
+    }
+
+    /// One past the highest change index any on-chain pay reserved (so two payments never share a reserve address).
+    pub fn onchain_pay_reserve_floor(&self) -> u32 {
+        self.onchain_pay_load().values().map(|r| r.reserve_index.saturating_add(1)).max().unwrap_or(0)
+    }
+    /// The hand-over scripts of the open records that have a lock (for the block-filter walk: tier2::CHAIN_HANDOVER).
+    pub fn onchain_pay_extras(&self) -> Vec<(u32, bitcoin::ScriptBuf)> {
+        let recs = self.onchain_pay_load();
+        let mut out = Vec::new();
+        for rec in recs.values().filter(|r| r.is_open() && r.t.is_some()) {
+            let (Ok(hb), Ok(w), Ok(l)) = (Self::onchain_pay_hash32(&rec.hash), Self::onchain_pay_key33(&rec.w_pubkey, "W"), Self::onchain_pay_key33(&rec.l_pubkey, "L")) else { continue };
+            let script = crate::onchain_pay::handover_script(&hb, &w, &l, rec.t.unwrap_or(0));
+            out.push((rec.index, bitcoin::ScriptBuf::new_p2wsh(&bitcoin::WScriptHash::hash(script.as_bytes()))));
+        }
+        out
+    }
+    /// The lowest block the walk must re-read so a lock it may already have passed is seen (once per lock report).
+    pub fn onchain_pay_rewalk_from(&self) -> Option<u32> {
+        self.onchain_pay_load().values().filter(|r| r.is_open()).filter_map(|r| r.walk_from).min()
+    }
+    pub fn onchain_pay_rewalk_done(&self) {
+        let mut recs = self.onchain_pay_load();
+        let mut changed = false;
+        for r in recs.values_mut() { if r.walk_from.is_some() { r.walk_from = None; changed = true; } }
+        if changed { self.onchain_pay_save(&recs); }
+    }
+
+    /// The walk's events (Tier2View.handover) read into the states: a hand-over output seen in a block with the lock's
+    /// amount → `lock_seen` (this wallet's own eyes on the lock: the outpoint the release spends); spent with the secret
+    /// → `done`; spent without it → `taken_back` (the provider's take-back at T; B comes back by the latch). `tip` is
+    /// the walk's top. Returns how many records changed.
+    pub fn onchain_pay_note_events(&self, events: &[crate::tier2_wallet::HandoverEvent], tip: u32) -> usize {
+        let mut recs = self.onchain_pay_load();
+        let mut changed = 0usize;
+        let now = current_time_secs();
+        for rec in recs.values_mut().filter(|r| r.is_open() && r.t.is_some()) {
+            for ev in events.iter().filter(|e| e.index == rec.index) {
+                if ev.value_sats != rec.lock_sats { log::warn!("[onchain-pay] {}: a hand-over output of {} sats (the lock is {}) — ignored", &rec.hash[..16], ev.value_sats, rec.lock_sats); continue; }
+                if rec.state == "locked" || (rec.state == "lock_seen" && rec.lock_seen_txid.as_deref() != Some(ev.txid.as_str())) {
+                    rec.state = "lock_seen".into(); rec.lock_seen_txid = Some(ev.txid.clone()); rec.lock_vout = Some(ev.vout); rec.lock_seen_height = Some(ev.height); rec.updated = now; rec.walk_from = None; changed += 1;
+                    log::info!("[onchain-pay] {}: the lock {}…:{} is in block {} ({} sats) — the release may go until block {}", &rec.hash[..16], &ev.txid[..16], ev.vout, ev.height, ev.value_sats, rec.stop_release_block().unwrap_or(0));
+                }
+                if let Some(spent) = ev.spent_txid.as_ref() {
+                    let secret_hex = hex::encode(self.root_key.onchain_pay_secret(rec.index));
+                    if ev.spent_secret_hex.as_deref() == Some(secret_hex.as_str()) {
+                        if rec.state != "done" { rec.state = "done".into(); rec.release_txid = Some(spent.clone()); rec.release_height = ev.spent_height; rec.ended = Some(now); rec.end_reason = Some("the recipient was paid".into()); rec.updated = now; changed += 1;
+                            log::info!("[onchain-pay] {}: the release {}… is in block {} — done", &rec.hash[..16], &spent[..16], ev.spent_height.unwrap_or(0)); }
+                    } else if rec.state != "taken_back" {
+                        rec.state = "taken_back".into(); rec.ended = Some(now); rec.end_reason = Some(format!("the provider took its coins back ({}…); payment B returns", &spent[..16])); rec.updated = now; changed += 1;
+                        log::warn!("[onchain-pay] {}: the hand-over output was spent by {}… without the secret — taken back", &rec.hash[..16], &spent[..16]);
+                    }
+                }
+            }
+            // a lock reported but never seen by the stop block: nothing to release; the take-back ends it at T
+            if rec.state == "locked" && rec.stop_release_block().map(|s| tip > s).unwrap_or(false) {
+                log::warn!("[onchain-pay] {}: the lock was never seen on the chain by block {} — waiting for the take-back", &rec.hash[..16], tip);
+            }
+        }
+        if changed > 0 { self.onchain_pay_save(&recs); }
+        changed
+    }
+
+    /// THE RELEASE (v0.6 §3 step 7): from the lock the walk saw to the recipient, the unused reserve back to the
+    /// change chain at the record's index, signed by W, the secret in the witness. Only while the lock is seen
+    /// (`lock_seen`, or `released` for a faster replacement) and the tip is below the stop block. `rate_sat_vb` 0 =
+    /// the quoted release fee over the release's size. Returns {hash, txid, hex, rate_sat_vb, fee_sats, reserve_returned_sats};
+    /// the wasm layer broadcasts and marks `released` (onchain_pay_mark_released) — nothing is marked here.
+    pub fn onchain_pay_release(&self, hash_hex: &str, rate_sat_vb: u64, tip: u32) -> LijResult<String> {
+        use std::str::FromStr;
+        let h = hash_hex.trim().to_ascii_lowercase();
+        let recs = self.onchain_pay_load();
+        let rec = recs.get(&h).ok_or_else(|| LijError::Invoice("no such on-chain pay".into()))?;
+        if !(rec.state == "lock_seen" || rec.state == "released") { return Err(LijError::Invoice(format!("the lock is not on the chain yet ({})", rec.state))); }
+        let stop = rec.stop_release_block().unwrap_or(0);
+        if tip >= stop { return Err(LijError::Invoice(format!("too late to release: block {tip} is at or past the stop block {stop} — the provider takes its coins back at {}; payment B returns", rec.t.unwrap_or(0)))); }
+        let hb = Self::onchain_pay_hash32(&rec.hash)?;
+        let w = Self::onchain_pay_key33(&rec.w_pubkey, "W")?;
+        let l = Self::onchain_pay_key33(&rec.l_pubkey, "L")?;
+        let script = crate::onchain_pay::handover_script(&hb, &w, &l, rec.t.unwrap_or(0));
+        let w_key = self.root_key.onchain_pay_release_key(rec.index)?;
+        if self.onchain_pay_w(rec.index)? != w { return Err(LijError::Node("the record's W is not this index's release key".into())); }
+        let secret = self.root_key.onchain_pay_secret(rec.index);
+        if hex::encode(crate::onchain_pay::hash_of(&secret)) != rec.hash { return Err(LijError::Node("the record's index does not derive its hash".into())); }
+        let txid = rec.lock_seen_txid.clone().ok_or_else(|| LijError::Invoice("the lock has no txid".into()))?;
+        let vout = rec.lock_vout.ok_or_else(|| LijError::Invoice("the lock has no vout".into()))?;
+        let lock = bitcoin::OutPoint::new(bitcoin::Txid::from_str(&txid).map_err(|_| LijError::Invoice("the lock's txid is malformed".into()))?, vout);
+        let recipient_spk = self.onchain_pay_recipient_spk(&rec.recipient)?;
+        let reserve_spk = crate::tier2::change_spk_at(&self.root_key, rec.reserve_index, self.network)?;
+        let vb = crate::onchain_pay::release_vbytes(script.len(), recipient_spk.len(), true);
+        let rate = if rate_sat_vb == 0 { (rec.release_fee_sats / vb.max(1)).max(1) } else { rate_sat_vb };
+        let tx = crate::onchain_pay::build_release(lock, rec.lock_sats, &script, &w_key, &secret, &recipient_spk, rec.amount_sats, &reserve_spk, rate)?;
+        let out_sum: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
+        let reserve_returned = tx.output.get(1).map(|o| o.value.to_sat()).unwrap_or(0);
+        Ok(serde_json::json!({
+            "hash": rec.hash, "txid": tx.compute_txid().to_string(), "hex": hex::encode(bitcoin::consensus::serialize(&tx)),
+            "rate_sat_vb": rate, "fee_sats": rec.lock_sats - out_sum, "reserve_returned_sats": reserve_returned, "stop_release_block": stop,
+        }).to_string())
+    }
+    /// The release went out (the wasm layer broadcast it): `released`, with the txid, the hex (the kit carries it) and the rate.
+    pub fn onchain_pay_mark_released(&self, hash_hex: &str, txid: &str, hex_s: &str, rate_sat_vb: u64) -> LijResult<()> {
+        let h = hash_hex.trim().to_ascii_lowercase();
+        let mut recs = self.onchain_pay_load();
+        let rec = recs.get_mut(&h).ok_or_else(|| LijError::Invoice("no such on-chain pay".into()))?;
+        if !(rec.state == "lock_seen" || rec.state == "released") { return Err(LijError::Invoice(format!("not releasable ({})", rec.state))); }
+        rec.state = "released".into(); rec.release_txid = Some(txid.to_ascii_lowercase()); rec.release_hex = Some(hex_s.to_ascii_lowercase()); rec.release_rate_sat_vb = Some(rate_sat_vb); rec.updated = current_time_secs();
+        self.onchain_pay_save(&recs);
+        log::info!("[onchain-pay] {}: RELEASED by {}… at {} sat/vB", &h[..16], &txid[..16.min(txid.len())], rate_sat_vb);
+        Ok(())
+    }
+
+    /// LDK's word on A and B: B settled (the provider collected it with the secret the release published) → `done`;
+    /// B failed back → `returned` before the lock, `taken_back` after; A failed back before the lock → `returned`.
+    fn onchain_pay_latch(&self, payment_hash_hex: &str, settled: bool) {
+        let mut recs = self.onchain_pay_load();
+        let now = current_time_secs();
+        let mut changed = false;
+        for rec in recs.values_mut().filter(|r| r.is_open()) {
+            let is_b = rec.hash == payment_hash_hex; let is_a = rec.a_hash == payment_hash_hex;
+            if !is_a && !is_b { continue; }
+            if is_b && settled {
+                if rec.state != "done" { rec.state = "done".into(); rec.ended = Some(now); rec.end_reason = Some("the recipient was paid; the provider collected payment B".into()); changed = true; }
+            } else if !settled {
+                let after_lock = rec.t.is_some();
+                if is_b || (is_a && !after_lock) {
+                    let next = if after_lock { "taken_back" } else { "returned" };
+                    if rec.state != next { rec.state = next.into(); rec.ended = Some(now); rec.end_reason = Some(if is_b { "payment B came back".into() } else { "payment A came back before the lock".into() }); changed = true; }
+                }
+            }
+            if changed { rec.updated = now; log::info!("[onchain-pay] {} → {} (LDK: {} {})", &rec.hash[..16], rec.state, if is_b { "B" } else { "A" }, if settled { "settled" } else { "failed back" }); }
+        }
+        if changed { self.onchain_pay_save(&recs); }
+    }
+
+    /// One record, as JSON (the wasm's pay step reads A's and B's invoices from here — never from the page).
+    pub fn onchain_pay_record_json(&self, hash_hex: &str) -> LijResult<String> {
+        let h = hash_hex.trim().to_ascii_lowercase();
+        let recs = self.onchain_pay_load();
+        let rec = recs.get(&h).ok_or_else(|| LijError::Invoice("no such on-chain pay".into()))?;
+        serde_json::to_string(rec).map_err(|e| LijError::Node(format!("record: {e}")))
+    }
+
+    /// Every on-chain pay, newest first, with LDK's current word folded in for the open ones.
+    pub fn onchain_pay_status_json(&self) -> String {
+        use lightning::ln::channelmanager::RecentPaymentDetails as RPD;
+        if let Some(cm) = self.channel_manager.as_ref() {
+            for p in cm.list_recent_payments() {
+                match p {
+                    RPD::Fulfilled { payment_hash: Some(h), .. } => self.onchain_pay_latch(&hex::encode(h.0), true),
+                    RPD::Abandoned { payment_hash, .. } => self.onchain_pay_latch(&hex::encode(payment_hash.0), false),
+                    _ => {}
+                }
+            }
+        }
+        let recs = self.onchain_pay_load();
+        let mut v: Vec<&crate::onchain_pay::OnchainPayRecord> = recs.values().collect();
+        v.sort_by(|a, b| (b.created, b.index).cmp(&(a.created, a.index)));   // newest first; the index breaks a same-second tie
+        serde_json::to_string(&v).unwrap_or_else(|_| "[]".into())
+    }
+
+    /// The Black start kit's leg (v0.6 §10): the open on-chain pays — what is locked where, the stop block, and the
+    /// signed release when one went out (so /recover can send it again). No new signing: a phone lost before the
+    /// release never releases; the provider takes its coins back at T and payment B returns to the Lightning balance
+    /// (its in-flight HTLC is already an `htlcs` leg of the channel's entry).
+    fn onchain_pay_kit_leg(&self) -> Vec<serde_json::Value> {
+        let recs = self.onchain_pay_load();
+        let mut v: Vec<&crate::onchain_pay::OnchainPayRecord> = recs.values().filter(|r| r.is_open()).collect();
+        v.sort_by(|a, b| (a.created, a.index).cmp(&(b.created, b.index)));
+        v.into_iter().map(|r| serde_json::json!({
+            "hash": r.hash, "state": r.state, "amount_sats": r.amount_sats, "recipient": r.recipient, "lock_sats": r.lock_sats,
+            "handover_address": r.handover_address, "lock_txid": r.lock_seen_txid.clone().or(r.lock_txid.clone()), "lock_vout": r.lock_vout,
+            "t": r.t, "stop_release_block": r.stop_release_block(), "release_txid": r.release_txid, "release_hex": r.release_hex,
+            "provider": r.provider, "created": r.created,
+        })).collect()
+    }
+
     pub fn create_invoice(
         &self,
         amount_sats: Option<u64>,
@@ -6495,6 +6866,10 @@ impl LijNode {
         tr.sort();
         let mut joined = format!("{}:{}|sp{}:{}", ids.len(), ids.join(","), sp.len(), sp.join(","));
         if !tr.is_empty() { joined.push_str(&format!("|tr{}:{}", tr.len(), tr.join(","))); }
+        // v361: the open on-chain pays (their state and release) likewise — a lock reported or a release sent makes a
+        // push due; appended only when there are any
+        let mut ocp: Vec<String> = self.onchain_pay_load().values().filter(|r| r.is_open()).map(|r| format!("{}:{}:{}", &r.hash[..16], r.state, r.release_txid.as_deref().unwrap_or(""))).collect();
+        if !ocp.is_empty() { ocp.sort(); joined.push_str(&format!("|ocp{}:{}", ocp.len(), ocp.join(","))); }
         let fp = sha256::Hash::hash(joined.as_bytes());
         Ok(format!("{{\"fp\":\"{}\",\"channels\":{},\"silent_payments\":{},\"taproot_coins\":{}}}", hex::encode(fp.to_byte_array()), ids.len(), sp.len(), tr.len()))
     }
@@ -6828,6 +7203,7 @@ impl LijNode {
             "taproot_coins": taproot_coins_marked,   // v318
             "taproot_coins_note": tr_note,
             "mix_exits": mix_exits,   // v323
+            "onchain_pay": self.onchain_pay_kit_leg(),   // v361
         });
         serde_json::to_string(&kit)
             .map_err(|e| LijError::Node(format!("escape export: serialize: {e}")))
@@ -8215,6 +8591,142 @@ mod tests {
         assert_eq!(again[0]["status"].as_str().unwrap(), "claimed", "and it stays claimed (persisted)");
         let inn = node.push_load_in();
         assert_eq!(inn.get(&hash_hex).unwrap().status, "claimed", "written to storage, so it rides the backup");
+    }
+
+    /// v361: LIGHTNING PAYS ON-CHAIN, the wallet's side end to end against a stand-in provider — the quote checked
+    /// (B under H with the lock's amount, A the provider's, L a key, the windows sane), the lock report checked against
+    /// the address H/W/L/T make, the walk's event turning the lock seen, the release built and signed from that
+    /// outpoint (the secret in its witness, the reserve back to the change chain), the spend with the secret ending it.
+    #[tokio::test]
+    async fn v361_an_onchain_pay_runs_quote_lock_release_done_on_the_wallets_side() {
+        use bitcoin::hashes::{sha256, Hash};
+        use bitcoin::secp256k1::{Secp256k1, SecretKey, PublicKey};
+        let (root_key, _m) = RootKey::generate(Network::Regtest).unwrap();
+        let storage: Arc<dyn LijStorage> = Arc::new(MemoryStorage::new());
+        let node = LijNode::new(root_key, test_config(), storage.clone()).await.unwrap();
+        let secp = Secp256k1::new();
+        let provider_key = SecretKey::from_slice(&sha256::Hash::hash(b"the provider").to_byte_array()).unwrap();
+        let provider = hex::encode(PublicKey::from_secret_key(&secp, &provider_key).serialize());
+        let l_key = SecretKey::from_slice(&sha256::Hash::hash(b"the take-back key").to_byte_array()).unwrap();
+        let l_hex = hex::encode(PublicKey::from_secret_key(&secp, &l_key).serialize());
+        let recipient_owned = bitcoin::Address::p2wpkh(&bitcoin::CompressedPublicKey(PublicKey::from_secret_key(&secp, &l_key)), Network::Regtest).to_string();   // a regtest P2WPKH
+        let recipient = recipient_owned.as_str();
+        let invoice = |hash_hex: &str, sats: u64, cltv: u16| -> String {
+            let h = sha256::Hash::from_slice(&hex::decode(hash_hex).unwrap()).unwrap();
+            let raw = InvoiceBuilder::new(Currency::Regtest).description("x".into()).duration_since_epoch(std::time::Duration::from_secs(current_time_secs()))
+                .payee_pub_key(PublicKey::from_secret_key(&secp, &provider_key)).payment_hash(h).payment_secret(lightning::types::payment::PaymentSecret([3u8; 32]))
+                .min_final_cltv_expiry_delta(cltv as u64).amount_milli_satoshis(sats * 1000).build_raw().unwrap();
+            let signed = raw.sign::<_, ()>(|m| Ok(secp.sign_ecdsa_recoverable(m, &provider_key))).unwrap();
+            Bolt11Invoice::from_signed(signed).unwrap().to_string()
+        };
+        // step 1: prepare
+        assert!(node.onchain_pay_prepare("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4").is_err(), "a mainnet address on regtest is refused before anything is paid");
+        let prep: serde_json::Value = serde_json::from_str(&node.onchain_pay_prepare(recipient).unwrap()).unwrap();
+        let index = prep["index"].as_u64().unwrap() as u32; let hash = prep["hash"].as_str().unwrap().to_string(); let w = prep["release_pubkey"].as_str().unwrap().to_string();
+        assert_eq!(index, 0); assert_eq!(hash.len(), 64); assert!(w.starts_with("02") || w.starts_with("03"));
+        let prep2: serde_json::Value = serde_json::from_str(&node.onchain_pay_prepare(recipient).unwrap()).unwrap();
+        assert_eq!(prep2["index"].as_u64().unwrap(), 1, "the index moves on");
+        assert_ne!(prep2["hash"].as_str().unwrap(), hash);
+        // step 2: the provider's quote — 100,000 sats, release fee 850, reserve 850 → lock 101,700; A = 1,000 + 765
+        let a_hash = hex::encode(sha256::Hash::hash(b"a preimage").to_byte_array());
+        let quote = |b_hash: &str, lock: u64, a_amt: u64, refund: u32, stop: u32, bexp: u32| serde_json::json!({
+            "ok": true, "payment_hash": hash, "provider_fee_sats": 1000, "lock_fee_sats": 765, "lock_rate_sat_vb": 5, "lock_sats": lock,
+            "a": { "bolt11": invoice(&a_hash, a_amt, 40), "amount_sats": a_amt, "hash": a_hash }, "b": { "bolt11": invoice(b_hash, lock, bexp as u16), "amount_sats": lock, "hash": b_hash },
+            "L": l_hex, "refund_blocks": refund, "stop_release_blocks": stop, "b_expiry_blocks": bexp, "min_conf": 1, "provider": provider,
+        }).to_string();
+        let good = quote(&hash, 101_700, 1_765, 144, 12, 200);
+        let rq = |q: &str| node.onchain_pay_record_quote(index, q, recipient, 100_000, 850, 850, &provider, "https://provider.example", 7);
+        assert!(rq(&quote(&prep2["hash"].as_str().unwrap().to_string(), 101_700, 1_765, 144, 12, 200)).is_err(), "B under another hash");
+        assert!(rq(&quote(&hash, 101_701, 1_765, 144, 12, 200)).is_err(), "the lock is not amount + fee + reserve");
+        assert!(rq(&quote(&hash, 101_700, 1_766, 144, 12, 200)).is_err(), "A is not fee + lock fee");
+        assert!(rq(&quote(&hash, 101_700, 1_765, 50, 12, 200)).is_err(), "a take-back window under 100 blocks");
+        assert!(rq(&quote(&hash, 101_700, 1_765, 144, 12, 150)).is_err(), "B would expire before T");
+        assert!(node.onchain_pay_record_quote(index, &good, recipient, 100_000, 850, 850, &("03".to_string() + &"cd".repeat(32)), "https://p", 7).is_err(), "the invoices are not that provider's");
+        let rec: serde_json::Value = serde_json::from_str(&rq(&good).unwrap()).unwrap();
+        assert_eq!(rec["state"], "quoted"); assert_eq!(rec["lock_sats"], 101_700); assert_eq!(rec["w_pubkey"].as_str().unwrap(), w); assert_eq!(rec["reserve_index"], 7);
+        assert!(rq(&good).is_err(), "the same hash while open: refused");
+        // step 3: paying
+        node.onchain_pay_mark(&hash, "paying", Some("aid"), Some("bid"), None).unwrap();
+        assert!(node.onchain_pay_extras().is_empty(), "no lock yet: nothing for the walk");
+        // step 4: the provider's lock report, checked against the address H/W/L/T make
+        let hb: [u8; 32] = hex::decode(&hash).unwrap().try_into().unwrap();
+        let wb: [u8; 33] = hex::decode(&w).unwrap().try_into().unwrap();
+        let lb: [u8; 33] = hex::decode(&l_hex).unwrap().try_into().unwrap();
+        let t = 1_000 + 144;
+        let script = crate::onchain_pay::handover_script(&hb, &wb, &lb, t);
+        let addr = crate::onchain_pay::handover_address(&script, Network::Regtest).to_string();
+        let lock_txid = "ab".repeat(32);
+        let report = |a: &str, t: u32| serde_json::json!({ "state": "locked", "T": t, "handover_address": a, "lock_txids": [lock_txid], "lock_vout": 1, "lock_block": 1_000 }).to_string();
+        assert!(node.onchain_pay_lock_report(&hash, &report(&format!("{}x", &addr[..addr.len() - 1]), t)).is_err(), "another address: refused");
+        assert!(node.onchain_pay_lock_report(&hash, &report(&addr, t + 30)).is_err(), "T outside the bounds (the address would differ anyway)");
+        let locked: serde_json::Value = serde_json::from_str(&node.onchain_pay_lock_report(&hash, &report(&addr, t)).unwrap()).unwrap();
+        assert_eq!(locked["state"], "locked"); assert_eq!(locked["t"], t); assert_eq!(locked["walk_from"], 1_000);
+        let extras = node.onchain_pay_extras();
+        assert_eq!(extras.len(), 1); assert_eq!(extras[0].0, index); assert_eq!(extras[0].1, bitcoin::ScriptBuf::new_p2wsh(&bitcoin::WScriptHash::hash(script.as_bytes())));
+        assert_eq!(node.onchain_pay_rewalk_from(), Some(1_000), "the walk is asked to re-read from the lock's block");
+        node.onchain_pay_rewalk_done(); assert_eq!(node.onchain_pay_rewalk_from(), None);
+        assert!(node.onchain_pay_release(&hash, 5, 1_001).is_err(), "no release before the wallet's own walk sees the lock");
+        // step 5: the walk sees the lock (an output of another amount is ignored)
+        let ev = |value: u64, spent: Option<(&str, Option<&str>)>| crate::tier2_wallet::HandoverEvent { index, txid: lock_txid.clone(), vout: 1, value_sats: value, height: 1_001,
+            spent_txid: spent.map(|(t, _)| t.to_string()), spent_height: spent.map(|_| 1_003), spent_secret_hex: spent.and_then(|(_, s)| s.map(|x| x.to_string())) };
+        assert_eq!(node.onchain_pay_note_events(&[ev(101_699, None)], 1_001), 0, "the wrong amount is not the lock");
+        assert_eq!(node.onchain_pay_note_events(&[ev(101_700, None)], 1_001), 1);
+        let st: Vec<serde_json::Value> = serde_json::from_str(&node.onchain_pay_status_json()).unwrap();
+        assert_eq!(st[0]["state"], "lock_seen"); assert_eq!(st[0]["lock_seen_height"], 1_001); assert_eq!(st[0]["lock_vout"], 1);
+        // step 6: the release — from that outpoint, to the recipient, the reserve back, signed by W, the secret inside
+        assert!(node.onchain_pay_release(&hash, 5, t - 12).is_err(), "at the stop block: too late");
+        let rel: serde_json::Value = serde_json::from_str(&node.onchain_pay_release(&hash, 5, 1_002).unwrap()).unwrap();
+        let tx: bitcoin::Transaction = bitcoin::consensus::deserialize(&hex::decode(rel["hex"].as_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(tx.input[0].previous_output, bitcoin::OutPoint::new(lock_txid.parse().unwrap(), 1));
+        assert_eq!(tx.output[0].value.to_sat(), 100_000);
+        assert_eq!(tx.output[0].script_pubkey, recipient.parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>().unwrap().assume_checked().script_pubkey());
+        assert_eq!(tx.output[1].script_pubkey, crate::tier2::change_spk_at(&node.root_key, 7, Network::Regtest).unwrap(), "the reserve returns to change index 7");
+        let items: Vec<&[u8]> = tx.input[0].witness.iter().collect();
+        assert_eq!(items.len(), 3); assert_eq!(items[2], script.as_bytes());
+        assert_eq!(hex::encode(sha256::Hash::hash(items[1]).to_byte_array()), hash, "the secret in the witness hashes to H");
+        assert_eq!(rel["fee_sats"].as_u64().unwrap() + 100_000 + rel["reserve_returned_sats"].as_u64().unwrap(), 101_700);
+        assert_eq!(tx.compute_txid().to_string(), rel["txid"].as_str().unwrap());
+        let rel0: serde_json::Value = serde_json::from_str(&node.onchain_pay_release(&hash, 0, 1_002).unwrap()).unwrap();
+        assert!(rel0["rate_sat_vb"].as_u64().unwrap() >= 4, "rate 0 = the quoted fee over the size: {}", rel0["rate_sat_vb"]);
+        node.onchain_pay_mark_released(&hash, rel["txid"].as_str().unwrap(), rel["hex"].as_str().unwrap(), 5).unwrap();
+        let st: Vec<serde_json::Value> = serde_json::from_str(&node.onchain_pay_status_json()).unwrap();
+        assert_eq!(st[0]["state"], "released"); assert_eq!(st[0]["release_txid"], rel["txid"]);
+        let kit: serde_json::Value = serde_json::from_str(&node.escape_export().unwrap()).unwrap();
+        assert_eq!(kit["onchain_pay"][0]["release_hex"], rel["hex"], "the kit carries the signed release");
+        assert_eq!(kit["onchain_pay"][0]["stop_release_block"], t - 12);
+        // step 7: the walk sees the spend with the secret → done
+        let secret_hex = hex::encode(items[1]);
+        assert_eq!(node.onchain_pay_note_events(&[ev(101_700, Some((rel["txid"].as_str().unwrap(), Some(&secret_hex))))], 1_003), 1);
+        let st: Vec<serde_json::Value> = serde_json::from_str(&node.onchain_pay_status_json()).unwrap();
+        assert_eq!(st[0]["state"], "done"); assert_eq!(st[0]["release_height"], 1_003);
+        assert!(node.onchain_pay_extras().is_empty(), "ended: out of the walk");
+        let kit: serde_json::Value = serde_json::from_str(&node.escape_export().unwrap()).unwrap();
+        assert_eq!(kit["onchain_pay"].as_array().unwrap().len(), 0, "ended: out of the kit");
+        assert!(node.onchain_pay_mark(&hash, "failed", None, None, Some("x")).is_err(), "an ended record takes no mark");
+        // a second payment, taken back: the spend without the secret
+        let prep3: serde_json::Value = serde_json::from_str(&node.onchain_pay_prepare(recipient).unwrap()).unwrap();
+        let i3 = prep3["index"].as_u64().unwrap() as u32; let h3 = prep3["hash"].as_str().unwrap().to_string(); let w3 = prep3["release_pubkey"].as_str().unwrap().to_string();
+        let a3 = hex::encode(sha256::Hash::hash(b"a preimage 3").to_byte_array());
+        let q3 = serde_json::json!({ "payment_hash": h3, "provider_fee_sats": 1000, "lock_fee_sats": 765, "lock_sats": 101_700, "a": { "bolt11": invoice(&a3, 1_765, 40) }, "b": { "bolt11": invoice(&h3, 101_700, 200) }, "L": l_hex, "refund_blocks": 144, "stop_release_blocks": 12, "b_expiry_blocks": 200 }).to_string();
+        node.onchain_pay_record_quote(i3, &q3, recipient, 100_000, 850, 850, &provider, "https://p", 8).unwrap();
+        node.onchain_pay_mark(&h3, "paying", None, None, None).unwrap();
+        let hb3: [u8; 32] = hex::decode(&h3).unwrap().try_into().unwrap(); let wb3: [u8; 33] = hex::decode(&w3).unwrap().try_into().unwrap();
+        let addr3 = crate::onchain_pay::handover_address(&crate::onchain_pay::handover_script(&hb3, &wb3, &lb, 2_144), Network::Regtest).to_string();
+        node.onchain_pay_lock_report(&h3, &serde_json::json!({ "T": 2_144, "handover_address": addr3, "lock_txids": ["cd".repeat(32)], "lock_vout": 0, "lock_block": 2_000 }).to_string()).unwrap();
+        let ev3 = crate::tier2_wallet::HandoverEvent { index: i3, txid: "cd".repeat(32), vout: 0, value_sats: 101_700, height: 2_001, spent_txid: Some("ef".repeat(32)), spent_height: Some(2_150), spent_secret_hex: None };
+        assert_eq!(node.onchain_pay_note_events(&[ev3], 2_150), 2, "seen, then taken back");
+        let st: Vec<serde_json::Value> = serde_json::from_str(&node.onchain_pay_status_json()).unwrap();
+        assert_eq!(st[0]["hash"], h3); assert_eq!(st[0]["state"], "taken_back");
+        // the latch: B failing back before any lock → returned
+        let prep4: serde_json::Value = serde_json::from_str(&node.onchain_pay_prepare(recipient).unwrap()).unwrap();
+        let i4 = prep4["index"].as_u64().unwrap() as u32; let h4 = prep4["hash"].as_str().unwrap().to_string();
+        let q4 = serde_json::json!({ "payment_hash": h4, "provider_fee_sats": 1000, "lock_fee_sats": 765, "lock_sats": 101_700, "a": { "bolt11": invoice(&a3, 1_765, 40) }, "b": { "bolt11": invoice(&h4, 101_700, 200) }, "L": l_hex, "refund_blocks": 144, "stop_release_blocks": 12, "b_expiry_blocks": 200 }).to_string();
+        node.onchain_pay_record_quote(i4, &q4, recipient, 100_000, 850, 850, &provider, "https://p", 9).unwrap();
+        node.onchain_pay_mark(&h4, "paying", None, None, None).unwrap();
+        node.onchain_pay_latch(&h4, false);
+        let st: Vec<serde_json::Value> = serde_json::from_str(&node.onchain_pay_status_json()).unwrap();
+        assert_eq!(st[0]["hash"], h4); assert_eq!(st[0]["state"], "returned");
+        assert!(storage.get(KEY_ONCHAIN_PAY).unwrap().is_some() && super::BUNDLE_SINGLE_KEYS.contains(&KEY_ONCHAIN_PAY) && super::BUNDLE_SINGLE_KEYS.contains(&KEY_ONCHAIN_PAY_NEXT_INDEX), "the records and the index ride the backup");
     }
 
     #[tokio::test]

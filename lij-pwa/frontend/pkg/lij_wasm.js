@@ -2711,6 +2711,184 @@ export class LijWalletHandle {
         }
     }
     /**
+     * The provider's status row for this payment ({T, handover_address, lock_txids, lock_vout, lock_block, …}), checked
+     * against the address H, W, L and T make before it is believed. Returns the record.
+     * @param {string} hash_hex
+     * @param {string} report_json
+     * @returns {string}
+     */
+    onchain_pay_lock_report(hash_hex, report_json) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(hash_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(report_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_onchain_pay_lock_report(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * The page's marks: `paying` (with the two payment ids), `failed`, `returned` (with a reason).
+     * @param {string} hash_hex
+     * @param {string} state
+     * @param {string | null} [a_payment_id]
+     * @param {string | null} [b_payment_id]
+     * @param {string | null} [reason]
+     */
+    onchain_pay_mark(hash_hex, state, a_payment_id, b_payment_id, reason) {
+        const ptr0 = passStringToWasm0(hash_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(state, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        var ptr2 = isLikeNone(a_payment_id) ? 0 : passStringToWasm0(a_payment_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len2 = WASM_VECTOR_LEN;
+        var ptr3 = isLikeNone(b_payment_id) ? 0 : passStringToWasm0(b_payment_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len3 = WASM_VECTOR_LEN;
+        var ptr4 = isLikeNone(reason) ? 0 : passStringToWasm0(reason, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len4 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_onchain_pay_mark(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Payment A or B of an on-chain pay (`which` = "a" | "b"): the record's own invoice (checked at record_quote; the
+     * page cannot substitute one), paid to the provider on the internal self-hop like a Push Key's lock, returning as
+     * soon as the HTLC is out — both are hold invoices (A settles when the lock goes, B when the release is in a block).
+     * The amount is capped at the record's; the timelock at B's quoted expiry + 6. The record turns `paying` with the
+     * payment id. JSON {ok, payment_id, hash} or {ok:false, error}.
+     * @param {string} hash_hex
+     * @param {string} which
+     * @param {string} route_endpoint
+     * @param {string} route_macaroon_hex
+     * @returns {Promise<any>}
+     */
+    onchain_pay_pay(hash_hex, which, route_endpoint, route_macaroon_hex) {
+        const ptr0 = passStringToWasm0(hash_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(which, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(route_endpoint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passStringToWasm0(route_macaroon_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_onchain_pay_pay(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
+        return ret;
+    }
+    /**
+     * Step 1: the next index → {index, hash, release_pubkey}; the page asks the provider for a quote with them.
+     * @param {string} recipient_address
+     * @returns {string}
+     */
+    onchain_pay_prepare(recipient_address) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(recipient_address, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_onchain_pay_prepare(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Step 2: the provider's quote (its JSON as it came), checked, becomes the record (`quoted`). The reserve's return
+     * address is the change chain's next unused index (past every reserve index already handed out). Returns the record.
+     * @param {number} index
+     * @param {string} quote_json
+     * @param {string} recipient_address
+     * @param {bigint} amount_sats
+     * @param {bigint} release_fee_sats
+     * @param {bigint} reserve_sats
+     * @param {string} provider_pubkey_hex
+     * @param {string} endpoint
+     * @returns {string}
+     */
+    onchain_pay_record_quote(index, quote_json, recipient_address, amount_sats, release_fee_sats, reserve_sats, provider_pubkey_hex, endpoint) {
+        let deferred6_0;
+        let deferred6_1;
+        try {
+            const ptr0 = passStringToWasm0(quote_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(recipient_address, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(provider_pubkey_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ptr3 = passStringToWasm0(endpoint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len3 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_onchain_pay_record_quote(this.__wbg_ptr, index, ptr0, len0, ptr1, len1, amount_sats, release_fee_sats, reserve_sats, ptr2, len2, ptr3, len3);
+            var ptr5 = ret[0];
+            var len5 = ret[1];
+            if (ret[3]) {
+                ptr5 = 0; len5 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred6_0 = ptr5;
+            deferred6_1 = len5;
+            return getStringFromWasm0(ptr5, len5);
+        } finally {
+            wasm.__wbindgen_free(deferred6_0, deferred6_1, 1);
+        }
+    }
+    /**
+     * THE RELEASE: built and signed by the engine from the lock its own walk saw (`lock_seen`), sent through the
+     * independent quorum, marked `released`. `rate_sat_vb` 0 = the quoted release fee over the size. The tip is the
+     * walk's own top (never the provider's word). Returns {hash, txid, hex, rate_sat_vb, fee_sats, reserve_returned_sats,
+     * stop_release_block, broadcast: "ok" | "<why>"}; the page hands `hex` to the provider's /release too.
+     * @param {string} hash_hex
+     * @param {bigint} rate_sat_vb
+     * @returns {Promise<any>}
+     */
+    onchain_pay_release(hash_hex, rate_sat_vb) {
+        const ptr0 = passStringToWasm0(hash_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_onchain_pay_release(this.__wbg_ptr, ptr0, len0, rate_sat_vb);
+        return ret;
+    }
+    /**
+     * Every on-chain pay, newest first (LDK's word on A and B folded in).
+     * @returns {string}
+     */
+    onchain_pay_status_json() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_onchain_pay_status_json(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * v282 (S50, coin control cut 3): the picker's quote. `req` is JSON {"dest", "fee_rate_sat_per_kw",
      * "inputs"?: [{"txid","vout"}], "amount_sats"?, "fill"?: bool} → CoinQuote JSON (chosen, chosen_sats,
      * max_sats, need_sats, covered, short_sats, fill [...], fill_covers, sendable_sats, frozen_sats,
@@ -4891,7 +5069,7 @@ function __wbg_get_imports() {
             console.warn(arg0, arg1, arg2, arg3);
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2570, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2586, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed);
             return ret;
         },
@@ -4902,16 +5080,16 @@ function __wbg_get_imports() {
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("ErrorEvent")], shim_idx: 9, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_220);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_227);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 9, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_221);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_228);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 2276, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 2292, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f);
             return ret;
         },
@@ -4954,12 +5132,12 @@ function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_220(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_220(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_227(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_227(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_221(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_221(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_228(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_228(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed(arg0, arg1, arg2) {

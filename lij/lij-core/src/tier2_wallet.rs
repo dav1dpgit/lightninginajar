@@ -692,6 +692,12 @@ pub struct Tier2View {
     /// rows read as plain sends and the Lightning book lost its "+moved to Lightning" rows.)
     #[serde(default)]
     pub funding_txids: std::collections::HashSet<String>,
+    /// v361 (S66, Lightning pays on-chain — design v0.6 §10): what the walk saw at the HAND-OVER addresses of this
+    /// wallet's on-chain pays — the lock's output (txid, vout, value, height) and, once spent, the spending txid and
+    /// height and the 32-byte secret if the spend's witness carried one (a release) — keyed by the record's index.
+    /// Never a coin: nothing here enters `utxos`, balances, picks or sweeps.
+    #[serde(default)]
+    pub handover: Vec<HandoverEvent>,
     /// v272: the same record for CLOSES — every closing txid the closed-channel log has ever
     /// held (plus a live channel's closing txid once its funding spend is sighted), noted at each
     /// sync, only ever added to, NOT cleared by a rebuild. The walk's close hints are computed
@@ -984,6 +990,7 @@ pub fn rebuild_from_birthday(view: &mut Tier2View, now_ms: u64) {
     view.down = None;
     view.pending_spends.clear();
     view.tr_hints.clear();   // v317
+    view.handover.clear();   // v361: the walk re-reads the hand-over events with the rest
     view.block_times.clear();
     view.cursor.scanned_to = 0;
     view.cursor.last_hash = None;
@@ -1026,6 +1033,23 @@ pub struct HeadCursor {
     pub heights: Vec<u32>,
 }
 
+/// v361: one hand-over output as the walk saw it (see `Tier2View::handover`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct HandoverEvent {
+    pub index: u32,
+    pub txid: String,
+    pub vout: u32,
+    pub value_sats: u64,
+    pub height: u32,
+    #[serde(default)]
+    pub spent_txid: Option<String>,
+    #[serde(default)]
+    pub spent_height: Option<u32>,
+    /// the second witness item of the spend when it was 32 bytes (the release publishes the secret there)
+    #[serde(default)]
+    pub spent_secret_hex: Option<String>,
+}
+
 /// Spendable (BIP84 receive+change) and legacy (m/525 force-close) balances,
 /// counting only unspent outputs.
 pub fn balances(view: &Tier2View) -> (u64, u64) {
@@ -1054,6 +1078,12 @@ pub fn apply_txs(view: &mut Tier2View, scripts: &WalletScripts, txs: &[Transacti
         for input in &tx.input {
             let pt = input.previous_output.txid.to_string();
             let pv = input.previous_output.vout;
+            // v361: a spend of a hand-over output — recorded as an event (with the secret, when the witness carries one)
+            for h in view.handover.iter_mut().filter(|h| h.spent_txid.is_none() && h.txid == pt && h.vout == pv) {
+                h.spent_txid = Some(txid.clone()); h.spent_height = Some(height);
+                let items: Vec<&[u8]> = input.witness.iter().collect();
+                if items.len() == 3 && items[1].len() == 32 { h.spent_secret_hex = Some(hex::encode(items[1])); }
+            }
             // v190 (S29): mark EVERY matching copy — under the (now
             // guarded) duplicate world, marking only the first left a
             // live twin behind after every spend.
@@ -1080,6 +1110,12 @@ pub fn apply_txs(view: &mut Tier2View, scripts: &WalletScripts, txs: &[Transacti
         // Outputs that pay our scripts.
         for (vout, out) in tx.output.iter().enumerate() {
             if let Some((chain, index)) = scripts.owner_of(&out.script_pubkey) {
+                if chain == crate::tier2::CHAIN_HANDOVER {   // v361: a hand-over output is an event, never a coin
+                    if !view.handover.iter().any(|h| h.txid == txid && h.vout == vout as u32) {
+                        view.handover.push(HandoverEvent { index, txid: txid.clone(), vout: vout as u32, value_sats: out.value.to_sat(), height, spent_txid: None, spent_height: None, spent_secret_hex: None });
+                    }
+                    continue;
+                }
                 let e = view.used_next.entry(chain).or_insert(0);   // v251: the used frontier, spent or not
                 if index + 1 > *e { *e = index + 1; }
                 // v190 (S29): re-introduction guard — an overlap rescan
@@ -1464,6 +1500,11 @@ pub fn rollback(view: &mut Tier2View, to_height: u32) {
     view.pending_spends.retain(|_, (_, h)| *h <= to_height);   // v257
     view.tr_hints.retain(|h| h.height <= to_height);   // v317
     view.history.retain(|h| h.height <= to_height);
+    // v361: the hand-over events roll back too — a lock seen above the height is forgotten, a spend above it unmarked
+    view.handover.retain(|h| h.height <= to_height);
+    for h in view.handover.iter_mut() {
+        if h.spent_height.map(|sh| sh > to_height).unwrap_or(false) { h.spent_txid = None; h.spent_height = None; h.spent_secret_hex = None; }
+    }
     view.cursor.scanned_to = to_height;
     view.cursor.last_hash = None;
     view.cursor.last_filter_header = None;
@@ -2409,6 +2450,56 @@ mod tests {
         assert!(view.cursor.last_hash.is_none());
         // History above the rollback height is gone; the receive remains.
         assert!(derive_history(&view).iter().all(|h| h.height <= 900_010));
+    }
+
+    /// v361: a hand-over output (an on-chain pay's lock) is an EVENT of the walk, never a coin — it does not enter the
+    /// balance, the utxos or the used frontier; its spend is recorded with the secret when the witness carries one;
+    /// a rollback below it forgets it, a rollback below its spend unmarks the spend; a rebuild clears it.
+    #[test]
+    fn v361_a_handover_output_is_an_event_never_a_coin_and_rolls_back_with_the_walk() {
+        let base = scripts();
+        let handover = ScriptBuf::new_p2wsh(&{ use bitcoin::hashes::Hash; bitcoin::WScriptHash::hash(b"the hand-over script") });
+        let s = base.with_extras(&[(4, handover.clone())]);
+        assert_eq!(s.owner_of(&handover), Some((crate::tier2::CHAIN_HANDOVER, 4)));
+        assert!(base.owner_of(&handover).is_none(), "the cached net is untouched");
+        let mut view = Tier2View::default();
+        let lock = tx_paying(handover.clone(), 101_700);
+        let lock_txid = lock.txid();
+        apply_txs(&mut view, &s, &[lock.clone()], 975_000);
+        assert_eq!(balances(&view), (0, 0), "not a coin");
+        assert!(view.utxos.is_empty() && view.used_next.get(&crate::tier2::CHAIN_HANDOVER).is_none());
+        assert_eq!(view.handover.len(), 1);
+        let h = &view.handover[0];
+        assert_eq!((h.index, h.txid.clone(), h.vout, h.value_sats, h.height), (4, lock_txid.to_string(), 0, 101_700, 975_000));
+        assert!(h.spent_txid.is_none());
+        apply_txs(&mut view, &s, &[lock.clone()], 975_000);
+        assert_eq!(view.handover.len(), 1, "seen twice (an overlap rescan): one event");
+        // the release spends it: witness [sig, secret, script]
+        let mut release = tx_spending(lock_txid, 0, our_receive_spk(&s), 1_000);
+        let secret = [9u8; 32];
+        let mut w = Witness::new(); w.push(vec![0x30, 0x44, 1]); w.push(secret.to_vec()); w.push(b"the hand-over script".to_vec());
+        release.input[0].witness = w;
+        apply_txs(&mut view, &s, &[release.clone()], 975_003);
+        let h = &view.handover[0];
+        assert_eq!(h.spent_txid.as_deref(), Some(release.txid().to_string().as_str()));
+        assert_eq!(h.spent_height, Some(975_003));
+        assert_eq!(h.spent_secret_hex.as_deref(), Some(hex::encode(secret).as_str()), "the secret from the witness");
+        assert_eq!(balances(&view).0, 1_000, "the reserve back to the wallet IS a coin");
+        // a rollback below the spend unmarks it; below the lock forgets it
+        rollback(&mut view, 975_002);
+        assert!(view.handover[0].spent_txid.is_none() && view.handover[0].spent_secret_hex.is_none());
+        rollback(&mut view, 974_999);
+        assert!(view.handover.is_empty());
+        // a take-back's witness: [sig, <empty>, script] — no secret
+        apply_txs(&mut view, &s, &[lock.clone()], 975_000);
+        let mut takeback = tx_spending(lock_txid, 0, ScriptBuf::new(), 100_000);
+        let mut w = Witness::new(); w.push(vec![0x30, 0x44, 1]); w.push(Vec::new()); w.push(b"the hand-over script".to_vec());
+        takeback.input[0].witness = w;
+        apply_txs(&mut view, &s, &[takeback.clone()], 975_150);
+        assert_eq!(view.handover[0].spent_txid.as_deref(), Some(takeback.txid().to_string().as_str()));
+        assert!(view.handover[0].spent_secret_hex.is_none(), "no secret: a take-back");
+        rebuild_from_birthday(&mut view, 1);
+        assert!(view.handover.is_empty(), "a rebuild clears the events (the walk re-reads them)");
     }
 
     #[test]

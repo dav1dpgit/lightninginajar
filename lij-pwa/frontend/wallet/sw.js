@@ -11,7 +11,7 @@
 // v873 (S51, DP): /pkg/ is served CACHE-FIRST on an exact-version hit (the pair is ?v= keyed) — the network only
 // for a version this cache does not hold; the install copies an exact-version engine file from an earlier
 // build's cache instead of re-fetching it. Everything else stays network-first as described above.
-const CACHE = 'lij-offline-v1081';  // v468 RITUAL: bump with EVERY page build — a changed sw.js re-runs install, refreshing the precached shell (the SW sat unchanged since v400, freezing iOS's offline-served index at v400-era)
+const CACHE = 'lij-offline-v1087';  // v468 RITUAL: bump with EVERY page build — a changed sw.js re-runs install, refreshing the precached shell (the SW sat unchanged since v400, freezing iOS's offline-served index at v400-era)
 // v687 (S45, DP): UPDATES DIAL. The mode lives in a settings cache that
 // survives CACHE bumps, so a freshly installed sw.js can read it in its own
 // install event. Under 'ask' the new build precaches, describes itself (page
@@ -35,7 +35,7 @@ const PENDING_KEY = '/__lij_pending_build';
 const REACH_KEY = '/__lij_reach';
 const COPY_KEY = '/__lij_files_copy';
 const FILES_COPY = 'https://lij-git.pages.dev';   // v1058: the Pages project is lij-git (v1057 named a host that does not exist)
-/* LIJ_EXPECTED_BEGIN */ const LIJ_EXPECTED = { '/wallet/': '9d47a006d63e2b756e700bac6dbe47e45de0533d86e591054c9dcdf9f6074cb2', '/wallet/index.html': '9d47a006d63e2b756e700bac6dbe47e45de0533d86e591054c9dcdf9f6074cb2', '/styles.css?v=328': '2d3af7a0cf38d26ae46ef9e74424ca059fbfd4c042f3ac308f85043a6e4fa993', '/wood-hinoki.jpg?v=1': 'a4fe645c952c1ea59c9a6f40b0a59b1420aa4252c065bc7118a0d22a1053bc63', '/pkg/lij_wasm.js?v=360': '08f31c363258ce6779bc23af47aac61ee170fc403faa38cf8b47fa39d2f7964a', '/pkg/lij_wasm_bg.wasm?v=360': '26194dede4e4e21d6573aa4c31724f78c5addc5210c4427e044677e6b53bf2c8', '/fonts/geist-sans-400.woff2': 'faed18848df4a6e1b5503b589bbbc055fbdab0e1780781edf5105457395e1e5d', '/fonts/geist-sans-500.woff2': '0b50074337a05ed834a1474d3d13fc6bd8480e2ce3075d02f1d38c017a8ac2a4', '/fonts/geist-mono-400.woff2': 'c88d20967768754cbdca230acd74ecb25de78d0dc47e31694aa8bd2c528fec26', '/fonts/geist-mono-500.woff2': '7b0d8cbf68357ade96d7d7d7721578ac6e8935aab14da68b89d31cc5816c323c', '/vendor/qrcode.min.js': 'c541ef06327885a8415bca8df6071e14189b4855336def4f36db54bde8484f36', '/vendor/qr-scanner.min.js': '0564e4cf84b94cac80213b4f779bd215bb0876a91c19df28baf97766f4fd5484', '/vendor/qr-scanner-worker.min.js': 'f4d8445f5a15c4e5f71a8c8c062c6443f09db370b8d3fe1fbdc7fe7889630d14', '/vendor/bc-ur.min.js': 'af24ecc278152f563077058574b8ef7556f071eb0b04e4c1e0b0f263620dcc14' }; /* LIJ_EXPECTED_END */
+/* LIJ_EXPECTED_BEGIN */ const LIJ_EXPECTED = { '/wallet/': '6cbf9c977f4ba7319e60fc06009033a603b3e1256d2cbd49701063ddcbf88bab', '/wallet/index.html': '6cbf9c977f4ba7319e60fc06009033a603b3e1256d2cbd49701063ddcbf88bab', '/styles.css?v=328': '2d3af7a0cf38d26ae46ef9e74424ca059fbfd4c042f3ac308f85043a6e4fa993', '/wood-hinoki.jpg?v=1': 'a4fe645c952c1ea59c9a6f40b0a59b1420aa4252c065bc7118a0d22a1053bc63', '/pkg/lij_wasm.js?v=361': '444d68a98dc51b07775b48c20a716892568686963828a503bc0e62ee25665119', '/pkg/lij_wasm_bg.wasm?v=361': '179c6f29b7f03f48e990dfd9352d8bcad7fbe6ac9cdd348a4768fc502d7c88b6', '/fonts/geist-sans-400.woff2': 'faed18848df4a6e1b5503b589bbbc055fbdab0e1780781edf5105457395e1e5d', '/fonts/geist-sans-500.woff2': '0b50074337a05ed834a1474d3d13fc6bd8480e2ce3075d02f1d38c017a8ac2a4', '/fonts/geist-mono-400.woff2': 'c88d20967768754cbdca230acd74ecb25de78d0dc47e31694aa8bd2c528fec26', '/fonts/geist-mono-500.woff2': '7b0d8cbf68357ade96d7d7d7721578ac6e8935aab14da68b89d31cc5816c323c', '/vendor/qrcode.min.js': 'c541ef06327885a8415bca8df6071e14189b4855336def4f36db54bde8484f36', '/vendor/qr-scanner.min.js': '0564e4cf84b94cac80213b4f779bd215bb0876a91c19df28baf97766f4fd5484', '/vendor/qr-scanner-worker.min.js': 'f4d8445f5a15c4e5f71a8c8c062c6443f09db370b8d3fe1fbdc7fe7889630d14', '/vendor/bc-ur.min.js': 'af24ecc278152f563077058574b8ef7556f071eb0b04e4c1e0b0f263620dcc14' }; /* LIJ_EXPECTED_END */
 async function readSetting(key) { try { const c = await caches.open(SETTINGS_CACHE); const r = await c.match(key); return r ? await r.json() : null; } catch (e) { return null; } }
 async function readReach() { const j = await readSetting(REACH_KEY); const v = j && j.pref; return (v === 'never-cloudflare' || v === 'cloudflare-first') ? v : 'direct-first'; }
 async function copyBase() { const j = await readSetting(COPY_KEY); return (j && typeof j.url === 'string' && /^https?:\/\//.test(j.url)) ? j.url.replace(/\/+$/, '') : FILES_COPY; }
@@ -55,8 +55,8 @@ const PRECACHE = [
   '/wallet/index.html',
   '/styles.css?v=328',
   '/wood-hinoki.jpg?v=1',   // v623: hinoki wood-motif plane image \u2014 a future buster flip updates the page token, the tile, and this line together (parity law)   // v579: styles buster flip — precache moves in lockstep (the parity lesson generalized)
-  '/pkg/lij_wasm.js?v=360',   // v567 (S37 ROOT-CAUSE): precache pinned at v214 since S34 while the page moved to v218 (S36 flips v215-218 never updated this list) — with the v472 exact-or-nothing /pkg law, OFFLINE ENGINE LOAD was impossible on every device. The sanity pass now asserts page-buster == precache version, permanently.
-  '/pkg/lij_wasm_bg.wasm?v=360',
+  '/pkg/lij_wasm.js?v=361',   // v567 (S37 ROOT-CAUSE): precache pinned at v214 since S34 while the page moved to v218 (S36 flips v215-218 never updated this list) — with the v472 exact-or-nothing /pkg law, OFFLINE ENGINE LOAD was impossible on every device. The sanity pass now asserts page-buster == precache version, permanently.
+  '/pkg/lij_wasm_bg.wasm?v=361',
   '/fonts/geist-sans-400.woff2',
   '/fonts/geist-sans-500.woff2',
   '/fonts/geist-mono-400.woff2',
@@ -231,6 +231,9 @@ self.addEventListener('push', (e) => {
     } else if (data.t === 'push_taken' || data.t === 'push_returned') {   // v1065 (adapter 0.113.0): the sender's wake
       title = data.t === 'push_taken' ? 'Your Push Key was taken' : 'Your Push Key came back';
       body = foreground ? (data.t === 'push_taken' ? 'Someone took your Push Key — your open wallet is finishing the send.' : 'Nobody took your Push Key — your open wallet is taking the sats back.') : lijPushKeyWords(data, Date.now());
+    } else if (data.t === 'onchain-pay') {   // v1082 (adapter 0.120.0): the provider's lock is confirmed — the wallet must release
+      title = 'Your on-chain payment is ready';
+      body = foreground ? 'Your open wallet is releasing your on-chain payment now.' : 'Open LiJ so your wallet can release your on-chain payment \u2014 it must be done today, or the amount comes back and the fee is kept.';
     } else if (data.t === 'wake') {
       if (foreground) {
         title = 'Payment arriving';

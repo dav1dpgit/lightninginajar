@@ -96,7 +96,7 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v360".to_string()  // v360 (S66 Mon 2026-11-02, DP 21:28 "Go" — Black start, THE IN-FLIGHT PAYMENT COLLECT; Phase 0 of Lightning pays on-chain and the Push Key fix; docs/design/black-start/in-flight-collect-v0.1.md): every payment in flight on a channel's latest commitment (a Push Key's lock, a held payment, any send or receive caught mid-flight) gets a leg in the kit's channel entry under `htlcs` — the signed return (going out; valid from its expiry block) or claim (coming in, secret known; valid at once), its block, its wait after confirming (to_self_delay), and two pre-signed collects of its output to fresh m/84 addresses after the taproot coins' — by the same signer call as the close's collect, because BOLT 3 gives the HTLC transaction's output the to_local script (the LiJ patch's lij_htlc_legs beside lij_export_escape; lij-core's inflight.rs). `htlc_tx_hexes` stays for older /recover copies. No state format change; the fingerprint is unchanged (a commitment txid already moves with every HTLC). // v359 (S65 Wed 2026-10-28, DP's UX list — items 8/10 and the Register name): (1) THE BACKUP-DIRTY FLAG REMEMBERS ACROSS A RELOAD — storage::DirtyFlag mirrors the flag in storage (lij:backup_pending, written on the rising edge, deleted when taken; loaded at boot) with AtomicBool's method names, so every writer is unchanged; backup_pending() reads it, backup_take() takes it (the device save with the cloud copy Off) — the erase screen can say whether the last backup file is behind this phone. (2) "lnurl-display" joins PROOF_ACTIONS — a Register mode shop name travels to the provider under the node key's proof over "display:<name>:<sha256 hex of the UTF-8 text>" (adapter 0.119.1 puts it into the pay terms' text/plain; every sending wallet then shows the shop's own name). No state format change.
+    "phase11-v361".to_string()  // v361 (S66 Mon 2026-11-02 → Tue 03, DP 23:12 "Go on Phase 1" — LIGHTNING PAYS ON-CHAIN, THE WALLET'S HALF; docs/design/onchain-pay/lightning-paying-onchain-v0.6.md): a wallet pays an on-chain address from its Lightning balance through its provider (adapter 0.120.0). The engine: onchain_pay.rs — the hand-over script OP_SIZE 32 EQUAL IF SHA256 H EQUALVERIFY W ELSE DROP T CLTV DROP L ENDIF CHECKSIG, byte for byte the adapter's (pinned against its vector), the release built and signed (SIGHASH_ALL, replaceable; the secret in the witness; the unused reserve back to the change chain), the lock report's check (the provider's address must be the one H, W, L and T make; T inside the agreed bounds); key.rs — the secret (HKDF, own salt) and the release key (m/525h/1h/<index>h), both derived by index, never stored; node.rs — the records in the state blob (lij_onchain_pay + its index ride the backup), prepare → record_quote (B under H with the lock's amount, A the provider's, L a key, the windows sane) → paying → locked (the report checked) → lock_seen (the wallet's OWN walk saw the lock) → released → done | returned | taken_back | failed, LDK's word on A and B latched, the kit's `onchain_pay` leg (the signed release rides it); tier2 — the hand-over scripts join the block-filter walk as CHAIN_HANDOVER extras whose outputs are EVENTS (Tier2View.handover: never a coin, never a balance), spends recorded with the secret when the witness carries one, rolled back and rebuilt with the walk; the walk re-reads from a reported lock's block once. PROOF_ACTIONS gains "onchain-pay". No state format change for older wallets (new keys only). // v360 (S66 Mon 2026-11-02, DP 21:28 "Go" — Black start, THE IN-FLIGHT PAYMENT COLLECT; Phase 0 of Lightning pays on-chain and the Push Key fix; docs/design/black-start/in-flight-collect-v0.1.md): every payment in flight on a channel's latest commitment (a Push Key's lock, a held payment, any send or receive caught mid-flight) gets a leg in the kit's channel entry under `htlcs` — the signed return (going out; valid from its expiry block) or claim (coming in, secret known; valid at once), its block, its wait after confirming (to_self_delay), and two pre-signed collects of its output to fresh m/84 addresses after the taproot coins' — by the same signer call as the close's collect, because BOLT 3 gives the HTLC transaction's output the to_local script (the LiJ patch's lij_htlc_legs beside lij_export_escape; lij-core's inflight.rs). `htlc_tx_hexes` stays for older /recover copies. No state format change; the fingerprint is unchanged (a commitment txid already moves with every HTLC). // v359 (S65 Wed 2026-10-28, DP's UX list — items 8/10 and the Register name): (1) THE BACKUP-DIRTY FLAG REMEMBERS ACROSS A RELOAD — storage::DirtyFlag mirrors the flag in storage (lij:backup_pending, written on the rising edge, deleted when taken; loaded at boot) with AtomicBool's method names, so every writer is unchanged; backup_pending() reads it, backup_take() takes it (the device save with the cloud copy Off) — the erase screen can say whether the last backup file is behind this phone. (2) "lnurl-display" joins PROOF_ACTIONS — a Register mode shop name travels to the provider under the node key's proof over "display:<name>:<sha256 hex of the UTF-8 text>" (adapter 0.119.1 puts it into the pay terms' text/plain; every sending wallet then shows the shop's own name). No state format change.
     // "phase11-v358".to_string()  // v358 (S64 Tue 2026-10-27, Kimi K3.1 Pro round 2 — F13 / F24 / K6a, DP's "then 3"): SIGNED WRITES SIGN THEIR EFFECT. (F13) the channel record's proof binds the whole canonical record (registry_client::channel_record_id — "<channel_id>:<sha256 over the other fields>", was the channel id alone); the push subscription's proof binds the subscription (push_subscription_record_id — "sub:<sha256 over endpoint, p256dh, auth>", bound nothing before); the Lightning-address registration's record covers each entry whole (hash:secret:expires:index per line, was the hash alone). (F24) "tapedrop" joins PROOF_ACTIONS — a tape is filed under a wallet's key only with that key's proof over "tapedrop:<tape_id>:<sha256 of the tape text>" (the page sends tape_json + the proof from v1074). (K6a) the cloud-copy push signs lij-backup-v2: the digest carries the copy's fingerprint and its number (storage::backup_digest_v2; the body says auth_v 2). Twins: adapter 0.119.0 (accepts the old forms for one release — it rides BEFORE this engine), worker 0.18.0 (v1 and v2). Vectors pinned on every side.
     // "phase11-v357".to_string()  // v357 (S64 Tue 2026-10-27, DP's iOS field find — the Offline room on a dead link sat at "reading the saved channel state · 90 %" / "almost done…" for ever, airplane mode included): the read of this phone's saved state had FINISHED ("ready" reported); what never came back was the ONE network call after it — LijWallet::auto_select_lsp's registry read, a bare `fetch` with no time limit that the Offline room's offline_start never silenced (the flag lived in lij-wasm, where only the esplora swap and the backup client read it). (1) OFFLINE_START moves to lij_core::lsp (lij-wasm re-exports the one cell) and the boot ladder reads nothing under it — the stored record stands (lsp::registry_read_skipped, tested). (2) The registry read races REGISTRY_READ_TIMEOUT_SECS (8 s; the WasmEsploraHttp pattern) on every path, so an ONLINE boot on a poor link no longer hangs on it either — "LSP registry fetch failed … using stored choice/default" and loyalty carries on. No page change.
     // "phase11-v356".to_string()  // v356 (S63 Mon 2026-10-26, Kimi K3.1 Pro's round 2 F9 — DP's (b) at 19:13): a fixed-amount JIT invoice's payment_secret is registered by HASH as well as by scid (lsps2_register_invoice_secret_with_scid, the promise's jit_scid beside it) so the adapter's B-19 (the early-arrival sibling rescue — specimen 3d832527) binds a shard of THIS payment that rides the wallet's existing real channel to THIS promise, and only when the registered secret equals the promise's (adapter 0.117.0); until now the hash store held plain invoices only and B-19 could only misfire. Best-effort: a miss never fails the invoice.
@@ -1323,7 +1323,7 @@ impl LijWalletHandle {
     pub fn tier2_onchain_sync(&self, birthday: f64, filter_base: Option<String>, sp_base: Option<String>) -> js_sys::Promise {
         let inner = self.inner.clone();
         future_to_promise(async move {
-            let (root_key, network, live_funding, live_closing) = {
+            let (root_key, network, live_funding, live_closing, handover_extras, handover_rewalk) = {
                 let wallet = inner
                     .lock()
                     .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
@@ -1336,7 +1336,11 @@ impl LijWalletHandle {
                     for ch in cs { if let Some(t) = ch.funding_txid { f.push(t); } if let Some(t) = ch.closing_txid { c.push(t); } }
                     (f, c)
                 }).unwrap_or_default();
-                (rk, net, lf, lc)
+                // v361: the hand-over scripts of the open on-chain pays join the net (events, never coins), and a lock
+                // just reported asks the walk to re-read from its block in case the walk already passed it
+                let extras = wallet.node().onchain_pay_extras();
+                let rewalk = wallet.node().onchain_pay_rewalk_from();
+                (rk, net, lf, lc, extras, rewalk)
             };
             // v296: the servers come from the page per call (was one constant, the project's server, for every wallet)
             let base_owned = lij_core::tier2_sync::filter_base_or_default(filter_base.as_deref());
@@ -1391,6 +1395,16 @@ impl LijWalletHandle {
             let pending = lij_core::tier2_wallet::load_pending(storage.as_ref());
             // v256: the fixed net — every branch watched from index 0 to net_width (2,500).
             let scripts = t2_scripts(&root_key, network, view.net_width).await?;
+            // v361: plus the hand-over scripts (a new set; the cached net is shared and untouched)
+            let scripts = if handover_extras.is_empty() { scripts } else { Arc::new(scripts.with_extras(&handover_extras)) };
+            if let Some(from) = handover_rewalk {
+                if view.cursor.scanned_to >= from && from > view.cursor.birthday {
+                    log::info!("[tier2] v361: re-reading blocks {}..{} for an on-chain pay's lock", from, view.cursor.scanned_to);
+                    lij_core::tier2_wallet::rollback(&mut view, from.saturating_sub(1));
+                    lij_core::tier2_wallet::save_view(storage.as_ref(), &view).map_err(|e| JsValue::from_str(&e.to_string()))?;
+                }
+                if let Ok(w) = inner.lock() { w.node().onchain_pay_rewalk_done(); }
+            }
 
             let tip = match lij_core::tier2_sync::fetch_tip(&http, base).await {
                 Ok(t) => t,
@@ -1602,6 +1616,13 @@ impl LijWalletHandle {
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
             }
 
+            // v361: what the walk saw at the hand-over addresses → the on-chain pays' states (lock seen / done / taken back)
+            if !handover_extras.is_empty() && !view.handover.is_empty() {
+                if let Ok(w) = inner.lock() {
+                    let n = w.node().onchain_pay_note_events(&view.handover, view.cursor.scanned_to);
+                    if n > 0 { log::info!("[tier2] v361: {n} on-chain pay record(s) moved by the walk"); }
+                }
+            }
             let marks = lij_core::tier2_wallet::load_marks(storage.as_ref()).unwrap_or_default();   // v281: freezes and notes onto the rows
             let mut sum = lij_core::tier2_wallet::summary(&view, &pending, tip.height, &marks);
             // v306: each received line's address, named from the wallet's own scripts (cached per width)
@@ -5070,6 +5091,139 @@ impl LijWalletHandle {
     pub fn push_in_json(&self) -> Result<String, JsValue> {
         let wallet = self.inner.try_lock().map_err(|_| JsValue::from_str("WALLET_BUSY"))?;
         Ok(wallet.node().push_in_json())
+    }
+
+    // ── v361 (S66, DP 23:12 "Go on Phase 1" — LIGHTNING PAYS ON-CHAIN, the wallet's half; design v0.6) ──────────
+    /// Step 1: the next index → {index, hash, release_pubkey}; the page asks the provider for a quote with them.
+    pub fn onchain_pay_prepare(&self, recipient_address: &str) -> Result<String, JsValue> {
+        let wallet = self.inner.try_lock().map_err(|_| JsValue::from_str("WALLET_BUSY"))?;
+        wallet.node().onchain_pay_prepare(recipient_address).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+    /// Step 2: the provider's quote (its JSON as it came), checked, becomes the record (`quoted`). The reserve's return
+    /// address is the change chain's next unused index (past every reserve index already handed out). Returns the record.
+    pub fn onchain_pay_record_quote(&self, index: u32, quote_json: &str, recipient_address: &str, amount_sats: u64, release_fee_sats: u64, reserve_sats: u64, provider_pubkey_hex: &str, endpoint: &str) -> Result<String, JsValue> {
+        let wallet = self.inner.try_lock().map_err(|_| JsValue::from_str("WALLET_BUSY"))?;
+        let (root_key, _i, _n) = wallet.onchain_handles();
+        let storage = t2_storage(&root_key);
+        let view = lij_core::tier2_wallet::load_view(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let pending = lij_core::tier2_wallet::load_pending(storage.as_ref());
+        let reserve_index = lij_core::tier2_wallet::next_index_for_chain(&view, &pending, lij_core::tier2::CHAIN_CHANGE).max(wallet.node().onchain_pay_reserve_floor());
+        wallet.node().onchain_pay_record_quote(index, quote_json, recipient_address, amount_sats, release_fee_sats, reserve_sats, provider_pubkey_hex, endpoint, reserve_index).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+    /// The page's marks: `paying` (with the two payment ids), `failed`, `returned` (with a reason).
+    pub fn onchain_pay_mark(&self, hash_hex: &str, state: &str, a_payment_id: Option<String>, b_payment_id: Option<String>, reason: Option<String>) -> Result<(), JsValue> {
+        let wallet = self.inner.try_lock().map_err(|_| JsValue::from_str("WALLET_BUSY"))?;
+        wallet.node().onchain_pay_mark(hash_hex, state, a_payment_id.as_deref(), b_payment_id.as_deref(), reason.as_deref()).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+    /// The provider's status row for this payment ({T, handover_address, lock_txids, lock_vout, lock_block, …}), checked
+    /// against the address H, W, L and T make before it is believed. Returns the record.
+    pub fn onchain_pay_lock_report(&self, hash_hex: &str, report_json: &str) -> Result<String, JsValue> {
+        let wallet = self.inner.try_lock().map_err(|_| JsValue::from_str("WALLET_BUSY"))?;
+        wallet.node().onchain_pay_lock_report(hash_hex, report_json).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+    /// Every on-chain pay, newest first (LDK's word on A and B folded in).
+    pub fn onchain_pay_status_json(&self) -> Result<String, JsValue> {
+        let wallet = self.inner.try_lock().map_err(|_| JsValue::from_str("WALLET_BUSY"))?;
+        Ok(wallet.node().onchain_pay_status_json())
+    }
+    /// THE RELEASE: built and signed by the engine from the lock its own walk saw (`lock_seen`), sent through the
+    /// independent quorum, marked `released`. `rate_sat_vb` 0 = the quoted release fee over the size. The tip is the
+    /// walk's own top (never the provider's word). Returns {hash, txid, hex, rate_sat_vb, fee_sats, reserve_returned_sats,
+    /// stop_release_block, broadcast: "ok" | "<why>"}; the page hands `hex` to the provider's /release too.
+    pub fn onchain_pay_release(&self, hash_hex: &str, rate_sat_vb: u64) -> js_sys::Promise {
+        let inner = self.inner.clone();
+        let hash_hex = hash_hex.to_string();
+        future_to_promise(async move {
+            let (built, independent) = {
+                let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                let (root_key, independent, _n) = wallet.onchain_handles();
+                let storage = t2_storage(&root_key);
+                let view = lij_core::tier2_wallet::load_view(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
+                let tip = view.cursor.scanned_to;
+                (wallet.node().onchain_pay_release(&hash_hex, rate_sat_vb, tip).map_err(|e| JsValue::from_str(&e.to_string()))?, independent)
+            };
+            let mut v: serde_json::Value = serde_json::from_str(&built).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let hex_s = v["hex"].as_str().unwrap_or("").to_string();
+            let txid = v["txid"].as_str().unwrap_or("").to_string();
+            let rate = v["rate_sat_vb"].as_u64().unwrap_or(0);
+            let bytes = hex::decode(&hex_s).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let broadcast = match independent.broadcast_raw_tx(&bytes).await {
+                Ok(()) => "ok".to_string(),
+                Err(e) if e.to_string().to_ascii_lowercase().contains("already") => "ok".to_string(),
+                Err(e) => e.to_string(),
+            };
+            {
+                let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                // marked released whatever the quorum said: the provider's /release carries the same bytes (the page's next step)
+                wallet.node().onchain_pay_mark_released(&hash_hex, &txid, &hex_s, rate).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            }
+            if broadcast != "ok" { log::warn!("[onchain-pay] the release {}… was not taken by the quorum: {broadcast} — the provider's door carries it", &txid[..16.min(txid.len())]); }
+            v["broadcast"] = serde_json::Value::String(broadcast);
+            Ok(JsValue::from_str(&v.to_string()))
+        })
+    }
+
+    /// Payment A or B of an on-chain pay (`which` = "a" | "b"): the record's own invoice (checked at record_quote; the
+    /// page cannot substitute one), paid to the provider on the internal self-hop like a Push Key's lock, returning as
+    /// soon as the HTLC is out — both are hold invoices (A settles when the lock goes, B when the release is in a block).
+    /// The amount is capped at the record's; the timelock at B's quoted expiry + 6. The record turns `paying` with the
+    /// payment id. JSON {ok, payment_id, hash} or {ok:false, error}.
+    pub fn onchain_pay_pay(&self, hash_hex: &str, which: &str, route_endpoint: &str, route_macaroon_hex: &str) -> js_sys::Promise {
+        let inner = self.inner.clone();
+        let hash_hex = hash_hex.trim().to_ascii_lowercase();
+        let which = which.trim().to_ascii_lowercase();
+        let route_endpoint = route_endpoint.to_string();
+        let route_macaroon_hex = route_macaroon_hex.to_string();
+        future_to_promise(async move {
+            let fail = |m: String| Ok(JsValue::from_str(&serde_json::json!({ "ok": false, "error": m }).to_string()));
+            if which != "a" && which != "b" { return fail("which must be a or b".into()); }
+            let (mut prep, dest_is_lsp, inv_hash, cap_msat, max_cltv) = {
+                let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                let rec: serde_json::Value = match wallet.node().onchain_pay_record_json(&hash_hex) { Ok(j) => serde_json::from_str(&j).unwrap_or(serde_json::Value::Null), Err(e) => return fail(e.to_string()) };
+                let state = rec["state"].as_str().unwrap_or("");
+                if state != "quoted" && state != "paying" { return fail(format!("not open for paying ({state})")); }
+                let bolt11 = rec[if which == "a" { "a_bolt11" } else { "b_bolt11" }].as_str().unwrap_or("").to_string();
+                let cap_msat = if which == "a" { (rec["provider_fee_sats"].as_u64().unwrap_or(0) + rec["lock_fee_sats"].as_u64().unwrap_or(0)) * 1000 } else { rec["lock_sats"].as_u64().unwrap_or(0) * 1000 };
+                let max_cltv = if which == "a" { 40 + 6 } else { rec["refund_blocks"].as_u64().unwrap_or(144) as u32 + 40 + 6 + 20 };
+                let prep = match wallet.node().prepare_lsp_route_request_msat(&bolt11, &route_endpoint, &[], None) {
+                    Ok(p) => p,
+                    Err(e) => return fail(format!("prepare failed: {e}")),
+                };
+                let dest_is_lsp = wallet.node().dest_is_active_lsp(&prep.dest_pubkey_hex);
+                let inv_hash = hex::encode(prep.payment_hash.0);
+                (prep, dest_is_lsp, inv_hash, cap_msat, max_cltv)
+            };
+            if !dest_is_lsp { return fail("the invoice is not from this wallet's provider".into()); }
+            if which == "b" && inv_hash != hash_hex { return fail("payment B is not under this payment's hash".into()); }
+            if prep.amount_msat > cap_msat { return fail(format!("the invoice asks {} msat; the record allows {} — refusing", prep.amount_msat, cap_msat)); }
+            if prep.final_cltv_delta > max_cltv { return fail(format!("the invoice's timelock is {} blocks; at most {} — refusing", prep.final_cltv_delta, max_cltv)); }
+            // v249: the provider's height, so the self-hop clears LND's floor whatever the phone's tip says
+            let base = prep.url.split("/v1/").next().unwrap_or("").to_string();
+            let lsp_height: Option<u32> = if base.is_empty() { None } else {
+                match lij_core::node::fetch_get_with_macaroon(&format!("{base}/v1/outcome?hash={inv_hash}"), &route_macaroon_hex).await {
+                    Ok(t) => serde_json::from_str::<serde_json::Value>(&t).ok().and_then(|v| v.get("height").and_then(|h| h.as_u64()).map(|h| h as u32)),
+                    Err(_) => None,
+                }
+            };
+            let payment_id_hex = hex::encode(prep.payment_id.0);
+            let result = {
+                let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                if let (Some(h), Some(b)) = (lsp_height, wallet.node().ldk_best_block_height()) {
+                    if h > b { prep.final_cltv_delta += h - b; }
+                }
+                let r = match wallet.node().apply_lsp_route_and_send(r#"{"ok":false,"error":"destination_is_lsp","routes":[],"internal":true}"#, &prep) {
+                    Ok(r) => r,
+                    Err(e) => return fail(format!("send failed: {e}")),
+                };
+                if r.success {
+                    let (a, b) = if which == "a" { (Some(payment_id_hex.as_str()), None) } else { (None, Some(payment_id_hex.as_str())) };
+                    if let Err(e) = wallet.node().onchain_pay_mark(&hash_hex, "paying", a, b, None) { log::warn!("[onchain-pay] mark paying failed: {e}"); }
+                }
+                r
+            };
+            if !r_success(&result) { return fail(result.error.clone().unwrap_or_else(|| "send rejected".into())); }
+            Ok(JsValue::from_str(&serde_json::json!({ "ok": true, "payment_id": payment_id_hex, "hash": hash_hex, "which": which }).to_string()))
+        })
     }
 
     /// A link's facts without accepting it (the claim sheet before the tap). JSON or an error string.

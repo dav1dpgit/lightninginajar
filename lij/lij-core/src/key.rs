@@ -204,6 +204,38 @@ impl RootKey {
         out
     }
 
+    /// v361 (S66 Mon 2026-11-02, DP 23:12 "Go on Phase 1" — Lightning pays on-chain, design v0.6 §10): THE PAYMENT SECRET
+    /// of an on-chain pay — the 32 bytes whose SHA-256 is H, the hash payment B is locked to and the hand-over address is
+    /// built from. DERIVED like the LNURLp and push preimages (HKDF-SHA256 over the master secret, the index as info)
+    /// under its OWN salt, so it can collide with neither and a published secret says nothing about any other. Never
+    /// stored: a wallet restored from its words re-derives every secret by the record's index.
+    pub fn onchain_pay_secret(&self, index: u32) -> [u8; 32] {
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+        let hk = Hkdf::<Sha256>::new(
+            Some(b"LiJ-OnchainPay-preimage-v1"),
+            &self.master_xprv.private_key.secret_bytes(),
+        );
+        let mut out = [0u8; 32];
+        hk.expand(&index.to_be_bytes(), &mut out)
+            .expect("32 bytes is well within HKDF-SHA256's output limit");
+        out
+    }
+
+    /// v361: THE RELEASE KEY of an on-chain pay — the key W the hand-over script requires beside the secret — at
+    /// m/525h/1h/<index>h: under LiJ's own purpose (the identity sits at m/525h, the legacy static-remote-key chain at
+    /// m/525h/0/0/0/n); branch 1h was unused. It holds coins for the one release only and never touches the m/84 tree.
+    pub fn onchain_pay_release_key(&self, index: u32) -> LijResult<bitcoin::secp256k1::SecretKey> {
+        let secp = Secp256k1::new();
+        let path: DerivationPath = format!("m/525h/1h/{index}h")
+            .parse()
+            .map_err(|e| LijError::Key(format!("Path parse error: {e}")))?;
+        Ok(self.master_xprv
+            .derive_priv(&secp, &path)
+            .map_err(|e| LijError::Key(format!("Key derivation failed: {e}")))?
+            .private_key)
+    }
+
     /// v323 (S58, Mix step 7 — DP 2026-10-12 23:21 "Agreed the Tatara key comes from the 12 words on a path of its
     /// own"): the Tatara key — this wallet's place in its provider's weekly ring of Mix-on wallets (door 1). DERIVED like
     /// the LNURLp and push preimages (HKDF-SHA256 over the master secret) under its OWN salt, so it is apart from every

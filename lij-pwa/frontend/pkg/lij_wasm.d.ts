@@ -768,6 +768,43 @@ export class LijWalletHandle {
      */
     onchain_multi_quote(req: string): string;
     /**
+     * The provider's status row for this payment ({T, handover_address, lock_txids, lock_vout, lock_block, …}), checked
+     * against the address H, W, L and T make before it is believed. Returns the record.
+     */
+    onchain_pay_lock_report(hash_hex: string, report_json: string): string;
+    /**
+     * The page's marks: `paying` (with the two payment ids), `failed`, `returned` (with a reason).
+     */
+    onchain_pay_mark(hash_hex: string, state: string, a_payment_id?: string | null, b_payment_id?: string | null, reason?: string | null): void;
+    /**
+     * Payment A or B of an on-chain pay (`which` = "a" | "b"): the record's own invoice (checked at record_quote; the
+     * page cannot substitute one), paid to the provider on the internal self-hop like a Push Key's lock, returning as
+     * soon as the HTLC is out — both are hold invoices (A settles when the lock goes, B when the release is in a block).
+     * The amount is capped at the record's; the timelock at B's quoted expiry + 6. The record turns `paying` with the
+     * payment id. JSON {ok, payment_id, hash} or {ok:false, error}.
+     */
+    onchain_pay_pay(hash_hex: string, which: string, route_endpoint: string, route_macaroon_hex: string): Promise<any>;
+    /**
+     * Step 1: the next index → {index, hash, release_pubkey}; the page asks the provider for a quote with them.
+     */
+    onchain_pay_prepare(recipient_address: string): string;
+    /**
+     * Step 2: the provider's quote (its JSON as it came), checked, becomes the record (`quoted`). The reserve's return
+     * address is the change chain's next unused index (past every reserve index already handed out). Returns the record.
+     */
+    onchain_pay_record_quote(index: number, quote_json: string, recipient_address: string, amount_sats: bigint, release_fee_sats: bigint, reserve_sats: bigint, provider_pubkey_hex: string, endpoint: string): string;
+    /**
+     * THE RELEASE: built and signed by the engine from the lock its own walk saw (`lock_seen`), sent through the
+     * independent quorum, marked `released`. `rate_sat_vb` 0 = the quoted release fee over the size. The tip is the
+     * walk's own top (never the provider's word). Returns {hash, txid, hex, rate_sat_vb, fee_sats, reserve_returned_sats,
+     * stop_release_block, broadcast: "ok" | "<why>"}; the page hands `hex` to the provider's /release too.
+     */
+    onchain_pay_release(hash_hex: string, rate_sat_vb: bigint): Promise<any>;
+    /**
+     * Every on-chain pay, newest first (LDK's word on A and B folded in).
+     */
+    onchain_pay_status_json(): string;
+    /**
      * v282 (S50, coin control cut 3): the picker's quote. `req` is JSON {"dest", "fee_rate_sat_per_kw",
      * "inputs"?: [{"txid","vout"}], "amount_sats"?, "fill"?: bool} → CoinQuote JSON (chosen, chosen_sats,
      * max_sats, need_sats, covered, short_sats, fill [...], fill_covers, sendable_sats, frozen_sats,
@@ -1509,6 +1546,13 @@ export interface InitOutput {
     readonly lijwallethandle_onchain_history: (a: number) => any;
     readonly lijwallethandle_onchain_max: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly lijwallethandle_onchain_multi_quote: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_onchain_pay_lock_report: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly lijwallethandle_onchain_pay_mark: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number];
+    readonly lijwallethandle_onchain_pay_pay: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => any;
+    readonly lijwallethandle_onchain_pay_prepare: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_onchain_pay_record_quote: (a: number, b: number, c: number, d: number, e: number, f: number, g: bigint, h: bigint, i: bigint, j: number, k: number, l: number, m: number) => [number, number, number, number];
+    readonly lijwallethandle_onchain_pay_release: (a: number, b: number, c: number, d: bigint) => any;
+    readonly lijwallethandle_onchain_pay_status_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_onchain_quote: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_onchain_summary: (a: number) => any;
     readonly lijwallethandle_open_channel: (a: number, b: bigint) => any;
@@ -1599,8 +1643,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_220: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_221: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_227: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_228: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

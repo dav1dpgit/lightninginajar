@@ -61,6 +61,11 @@ pub const CHAIN_SP: u32 = 352;
 /// "Proceed with the scanner fix"): in the walk's net, TR_WIDTH_DIV-th of its width.
 pub const CHAIN_BIP86: u32 = 86;
 pub const CHAIN_BIP86_INTERNAL: u32 = 87;
+/// v361 (S66, Lightning pays on-chain — design v0.6 §10): the HAND-OVER addresses of this wallet's open on-chain pays —
+/// one P2WSH script per payment, built from the record (H, W, L, T), watched through the same block-filter walk as every
+/// other address (by block; no per-address question to anyone). NOT a coin chain: an output here never enters the
+/// coin ledger (apply_txs records it as a hand-over event instead), so no balance, pick or sweep ever sees it.
+pub const CHAIN_HANDOVER: u32 = 7000;
 /// v317: the m/86 branches are watched to net_width / TR_WIDTH_DIV (500 of 2,500): an exit per round, not a receive per
 /// payment — and a taproot key costs about twice a P2WPKH one to derive.
 pub const TR_WIDTH_DIV: u32 = 5;
@@ -201,6 +206,18 @@ impl WalletScripts {
         Ok(Self { entries, by_spk })
     }
 
+    /// v361: the same net plus the hand-over scripts of the open on-chain pays — a new set (the cached net is shared);
+    /// each extra is (the record's index, its scriptPubKey) under CHAIN_HANDOVER.
+    pub fn with_extras(&self, extras: &[(u32, ScriptBuf)]) -> Self {
+        let mut out = self.clone();
+        for (index, spk) in extras {
+            if out.by_spk.contains_key(&spk.to_bytes()) { continue; }
+            out.by_spk.insert(spk.to_bytes(), (CHAIN_HANDOVER, *index));
+            out.entries.push(MatchEntry { chain: CHAIN_HANDOVER, index: *index, script_pubkey: spk.clone() });
+        }
+        out
+    }
+
     /// v317: the BIP86 entries alone (the subset whose spends the witness cannot name).
     pub fn tr_entries(&self) -> impl Iterator<Item = &MatchEntry> {
         self.entries.iter().filter(|e| bip86_branch(e.chain).is_some())
@@ -247,6 +264,14 @@ fn derive_p2wpkh_spk(parent: &ExtendedPrivKey, n: u32, network: Network) -> LijR
     let pubkey = bitcoin::PublicKey::new(child.private_key.public_key(&secp));
     let address = Address::p2wpkh(&bitcoin::CompressedPublicKey(pubkey.inner), network);
     Ok(address.script_pubkey())
+}
+
+/// v361: the P2WPKH scriptPubKey at `index` of the change chain (m/84h/coin'/0h/1/index) — where the unused
+/// speed-up reserve of an on-chain pay returns (a change-shaped output: the wallet's own, swept and watched like any
+/// change coin; the fixed net covers index < net_width).
+pub fn change_spk_at(root_key: &RootKey, index: u32, network: Network) -> LijResult<ScriptBuf> {
+    let parent = derive_child(&root_key.onchain_key()?, CHAIN_CHANGE)?;
+    derive_p2wpkh_spk(&parent, index, network)
 }
 
 /// Does this block's compact filter match any of the wallet's scripts? `true`

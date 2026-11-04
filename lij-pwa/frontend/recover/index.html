@@ -222,7 +222,7 @@ https://mempool.emzy.de/api</textarea>
 // ── constants of the standard ──────────────────────────────────────────────────────────────────
 const HKDF_SALT = 'lijox-black-start', HKDF_INFO = 'escape-kit-v1', AAD_PREFIX = 'lijox-kit-v1:';
 const NOSTR_KIND = 30078, NOSTR_D = 'lijox-kit-v1';
-const RECOVER_BUILD = 'v1080';   // bumped by hand whenever this file changes; the releases row for that page build carries this file's SHA-256 — v1080 (S66, engine v360): the payments in flight, R1 the return / claim and R2 the collect, inside each channel's card
+const RECOVER_BUILD = 'v1082';   // bumped by hand whenever this file changes; the releases row for that page build carries this file's SHA-256 — v1080 (S66, engine v360): the payments in flight, R1 the return / claim and R2 the collect, inside each channel's card
 // v988 (S61, DP 2026-10-19): the providers this page knows WITHOUT the directory — the LIJOX registry as it stood when this
 // build was cut, each provider with every door it names (routes: direct and Cloudflare). Used when the directory cannot be
 // read (a saved copy, the directory's host down) and to add a provider the live list no longer carries. Any LIJOX provider
@@ -569,6 +569,8 @@ function mergeKits(opened) {
   if (trc.size || list[0].k.taproot_coins) base.taproot_coins = Array.from(trc.values());
   const mxe = new Map(); for (const o of list) for (const g of (o.k.mix_exits || [])) { if (Array.isArray(g) && g.length && !mxe.has(g[0])) mxe.set(g[0], g); }   // v987: the Mix pools too, by their first exit
   if (mxe.size || list[0].k.mix_exits) base.mix_exits = Array.from(mxe.values());
+  const ocp = new Map(); for (const o of list) for (const r of (o.k.onchain_pay || [])) { if (r && r.hash && !ocp.has(r.hash)) ocp.set(r.hash, r); }   // v1082 (engine v361): the on-chain pays, by hash, the newest copy's word first
+  if (ocp.size || list[0].k.onchain_pay) base.onchain_pay = Array.from(ocp.values());
   return base;
 }
 window.__mergeKits = mergeKits;   // the gate checks the merge directly
@@ -613,8 +615,9 @@ function render(kit) {
   const trs = (kit.taproot_coins || []);   // v968 (engine v318): one pre-signed sweep per taproot coin — by choice
   const mxs = (kit.mix_exits || []).filter((g) => Array.isArray(g) && g.length);   // v987 (engine v323): each unfinished Mix pool's signed exits
   const nlegs = chans.reduce((n, c) => n + (Array.isArray(c.htlcs) ? c.htlcs.length : 0), 0);   // v360 (engine v360): the payments in flight — one leg each inside its channel's card
+  const ocps = (kit.onchain_pay || []).filter((r) => r && r.hash);   // v1082 (engine v361): the on-chain pays from Lightning still open
   unwatchAll(); S.kit = true; S.nch = chans.length; S.nsp = sps.length; S.nlegs = nlegs; S.closesSent.clear(); S.closesConf.clear(); S.collectsSent.clear(); S.spSent.clear(); S.returnsSent.clear(); S.legCollectsSent.clear(); paintSteps();   // v903: the steps
-  head.innerHTML = '<h2 style="margin-top:0">Your kit</h2>' + row('made', esc(new Date(Number(kit.made_at) || 0).toLocaleString())) + row('channels', chans.length) + (nlegs ? row('payments in flight', nlegs) : '') + row('silent-payment coins', sps.length) + (trs.length ? row('taproot coins', trs.length) : '') + (mxs.length ? row('Mix pools not finished', mxs.length) : '') + row('funds land at', esc(kit.sweep_destination_address || '—'), true)
+  head.innerHTML = '<h2 style="margin-top:0">Your kit</h2>' + row('made', esc(new Date(Number(kit.made_at) || 0).toLocaleString())) + row('channels', chans.length) + (nlegs ? row('payments in flight', nlegs) : '') + (ocps.length ? row('on-chain payments from Lightning', ocps.length) : '') + row('silent-payment coins', sps.length) + (trs.length ? row('taproot coins', trs.length) : '') + (mxs.length ? row('Mix pools not finished', mxs.length) : '') + row('funds land at', esc(kit.sweep_destination_address || '—'), true)
     + '<p class="dim">The close pays the balances as they were when this kit was made. Funds reach the address above — any wallet on your 12 words shows them (BIP84; a third-party wallet may need its address gap limit raised to 500).</p>'
     + (chans.length ? '<div class="rwarn">Used this wallet after ' + esc(new Date(Number(kit.made_at) || 0).toLocaleString()) + '? Then this kit is out of date — safe only while your provider stays gone.</div>' : '');   // v903 (Design v2)
   box.appendChild(head);
@@ -740,6 +743,27 @@ function render(kit) {
         if (st) st.innerHTML = lines.map(esc).join('<br>');
         if (!okAny) break;   // exit k+1 spends exit k's output: stop at the first that did not go
       }
+      b.disabled = false;
+    }; });
+  }
+  // v1082 (engine v361 — Lightning pays on-chain, design v0.6 §10): payments to an on-chain address paid from the Lightning
+  // balance through the provider, still open when the kit was made. A release the wallet had signed can be sent again from
+  // here; one it had not — nothing to do: the provider takes its bitcoin back at T and the amount returns with the payments
+  // in flight above (the kit's channel close carries them).
+  if (ocps.length) {
+    const d = document.createElement('div'); d.className = 'card'; d.id = 'ocpcard';
+    const fmt = (n) => (Number(n) || 0).toLocaleString();
+    const words = (r) => r.release_hex ? 'the wallet signed and sent the release — send it again if it has not confirmed'
+      : (r.state === 'lock_seen' || r.state === 'locked') ? 'the provider’s bitcoin was sent; the wallet had not yet released it — nothing to do here: if the wallet never releases, the provider takes its bitcoin back at block ' + fmt(r.t) + ' and the amount returns to the Lightning balance (one of the payments in flight above)'
+      : 'the wallet was still paying its provider — the amount returns with the payments in flight above';
+    d.innerHTML = '<h2 style="margin-top:0">On-chain payments from Lightning · ' + ocps.length + '</h2>'
+      + '<p class="dim">Payments to an on-chain address, paid from the Lightning balance through the provider, that were still open when this kit was made.</p>'
+      + ocps.map((r, i) => row('payment ' + (i + 1) + ' · ' + fmt(r.amount_sats) + ' sats', esc(String(r.recipient || '').slice(0, 14)) + '…', true) + '<p class="dim">' + esc(words(r)) + '</p>'
+        + (r.release_hex ? '<p><button class="primary" data-ocprel="' + i + '">Send the release again</button></p><div class="dim" id="ocpst' + i + '"></div><details><summary>Raw transaction (broadcast anywhere)</summary><label>the release</label><div class="mono">' + esc(r.release_hex) + '</div></details>' : '')).join('');
+    box.appendChild(d);
+    d.querySelectorAll('[data-ocprel]').forEach((b) => { b.onclick = async () => {
+      const i = Number(b.dataset.ocprel); b.disabled = true; const r = await broadcast(ocps[i].release_hex);
+      const st = $('ocpst' + i); if (st) st.textContent = r.map((x) => (x.ok ? 'accepted' : 'refused') + ' by ' + x.s.replace(/^https:\/\//, '') + (x.ok ? '' : ' (' + x.t + ')')).join(' · ');
       b.disabled = false;
     }; });
   }
