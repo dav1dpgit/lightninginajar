@@ -222,7 +222,8 @@ https://mempool.emzy.de/api</textarea>
 // ── constants of the standard ──────────────────────────────────────────────────────────────────
 const HKDF_SALT = 'lijox-black-start', HKDF_INFO = 'escape-kit-v1', AAD_PREFIX = 'lijox-kit-v1:';
 const NOSTR_KIND = 30078, NOSTR_D = 'lijox-kit-v1';
-const RECOVER_BUILD = 'v1082';   // bumped by hand whenever this file changes; the releases row for that page build carries this file's SHA-256 — v1080 (S66, engine v360): the payments in flight, R1 the return / claim and R2 the collect, inside each channel's card
+const RECOVER_BUILD = 'v1090';   // v1090 (S66, engine v362): the kit's fast copy of a release — "Send the faster one"
+// const RECOVER_BUILD = 'v1082';   // bumped by hand whenever this file changes; the releases row for that page build carries this file's SHA-256 — v1080 (S66, engine v360): the payments in flight, R1 the return / claim and R2 the collect, inside each channel's card
 // v988 (S61, DP 2026-10-19): the providers this page knows WITHOUT the directory — the LIJOX registry as it stood when this
 // build was cut, each provider with every door it names (routes: direct and Cloudflare). Used when the directory cannot be
 // read (a saved copy, the directory's host down) and to add a provider the live list no longer carries. Any LIJOX provider
@@ -759,10 +760,10 @@ function render(kit) {
     d.innerHTML = '<h2 style="margin-top:0">On-chain payments from Lightning · ' + ocps.length + '</h2>'
       + '<p class="dim">Payments to an on-chain address, paid from the Lightning balance through the provider, that were still open when this kit was made.</p>'
       + ocps.map((r, i) => row('payment ' + (i + 1) + ' · ' + fmt(r.amount_sats) + ' sats', esc(String(r.recipient || '').slice(0, 14)) + '…', true) + '<p class="dim">' + esc(words(r)) + '</p>'
-        + (r.release_hex ? '<p><button class="primary" data-ocprel="' + i + '">Send the release again</button></p><div class="dim" id="ocpst' + i + '"></div><details><summary>Raw transaction (broadcast anywhere)</summary><label>the release</label><div class="mono">' + esc(r.release_hex) + '</div></details>' : '')).join('');
+        + (r.release_hex ? '<p><button class="primary" data-ocprel="' + i + '">Send the release again</button>' + (r.release_hex_fast ? ' <button data-ocprel="' + i + '" data-fast="1">Send the faster one</button>' : '') + '</p><div class="dim" id="ocpst' + i + '"></div><details><summary>Raw transaction (broadcast anywhere)</summary><label>the release</label><div class="mono">' + esc(r.release_hex) + '</div>' + (r.release_hex_fast ? '<label>the faster one (twice the fee, from the reserve — the same payment)</label><div class="mono">' + esc(r.release_hex_fast) + '</div>' : '') + '</details>' : '')).join('');
     box.appendChild(d);
-    d.querySelectorAll('[data-ocprel]').forEach((b) => { b.onclick = async () => {
-      const i = Number(b.dataset.ocprel); b.disabled = true; const r = await broadcast(ocps[i].release_hex);
+    d.querySelectorAll('[data-ocprel]').forEach((b) => { b.onclick = async () => {   // v1090: the faster copy (the kit carries both; the same lock, the same recipient, the whole reserve as fee)
+      const i = Number(b.dataset.ocprel); b.disabled = true; const r = await broadcast(b.dataset.fast ? ocps[i].release_hex_fast : ocps[i].release_hex);
       const st = $('ocpst' + i); if (st) st.textContent = r.map((x) => (x.ok ? 'accepted' : 'refused') + ' by ' + x.s.replace(/^https:\/\//, '') + (x.ok ? '' : ' (' + x.t + ')')).join(' · ');
       b.disabled = false;
     }; });

@@ -42,9 +42,9 @@ use lightning::util::ser::{Readable, Writeable, Writer};
 
 use crate::cooperative_chain_msg::{
     BlockHeightUpdate, BroadcastAck, BroadcastTx, ChainDataBundle, ChannelStateUpdate,
-    FeeScheduleUpdate, FundingTxConfirmed, RegisterWatchOutput, RegisterWatchTx,
+    FeeRatesKw, FeeScheduleUpdate, FundingTxConfirmed, RegisterWatchOutput, RegisterWatchTx,
     SubscribeChainData, TYPE_BLOCK_HEIGHT_UPDATE, TYPE_BROADCAST_ACK, TYPE_BROADCAST_TX,
-    TYPE_CHAIN_DATA_BUNDLE, TYPE_CHANNEL_STATE_UPDATE, TYPE_FEE_SCHEDULE_UPDATE,
+    TYPE_CHAIN_DATA_BUNDLE, TYPE_CHANNEL_STATE_UPDATE, TYPE_FEE_RATES_KW, TYPE_FEE_SCHEDULE_UPDATE,
     TYPE_FUNDING_TX_CONFIRMED, TYPE_REGISTER_WATCH_OUTPUT, TYPE_REGISTER_WATCH_TX,
     TYPE_SUBSCRIBE_CHAIN_DATA,
 };
@@ -65,6 +65,7 @@ pub enum CooperativeChainMessage {
     RegisterWatchOutput(RegisterWatchOutput),
     BroadcastTx(BroadcastTx),
     BroadcastAck(BroadcastAck),
+    FeeRatesKw(FeeRatesKw),   // v362
 }
 
 impl Writeable for CooperativeChainMessage {
@@ -80,6 +81,7 @@ impl Writeable for CooperativeChainMessage {
             Self::RegisterWatchOutput(m) => m.write(w),
             Self::BroadcastTx(m) => m.write(w),
             Self::BroadcastAck(m) => m.write(w),
+            Self::FeeRatesKw(m) => m.write(w),
         }
     }
 }
@@ -97,6 +99,7 @@ impl Type for CooperativeChainMessage {
             Self::RegisterWatchOutput(_) => TYPE_REGISTER_WATCH_OUTPUT,
             Self::BroadcastTx(_) => TYPE_BROADCAST_TX,
             Self::BroadcastAck(_) => TYPE_BROADCAST_ACK,
+            Self::FeeRatesKw(_) => TYPE_FEE_RATES_KW,
         }
     }
 }
@@ -257,6 +260,9 @@ impl CustomMessageReader for CooperativeChainHandler {
             }
             TYPE_BROADCAST_ACK => {
                 CooperativeChainMessage::BroadcastAck(Readable::read(buffer)?)
+            }
+            TYPE_FEE_RATES_KW => {
+                CooperativeChainMessage::FeeRatesKw(Readable::read(buffer)?)
             }
             _ => return Ok(None),
         };

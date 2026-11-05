@@ -74,6 +74,17 @@ pub struct OnchainPayRecord {
     #[serde(default)] pub end_reason: Option<String>,
     #[serde(default)] pub paid_block: Option<u32>,        // LDK's height when A and B went out (the T bound's anchor)
     #[serde(default)] pub walk_from: Option<u32>,         // set by the lock report: the walk re-reads from here once
+    // v362 (Phase 2 — fractional rates, design v0.7; Phase 3 — the speed-up): the rates in sat per kilo-vbyte (a whole
+    // number of thousandths of a sat/vB), the provider's six-block suggestion for the release, the fast copy of the
+    // release at twice the rate (the whole reserve — the Black start page's "send the faster one"), the block the
+    // first release went out at, and how many times it was replaced
+    #[serde(default)] pub lock_rate_sat_kvb: Option<u64>,
+    #[serde(default)] pub release_rate_suggested_sat_kvb: Option<u64>,
+    #[serde(default)] pub release_rate_sat_kvb: Option<u64>,
+    #[serde(default)] pub release_hex_fast: Option<String>,
+    #[serde(default)] pub release_txid_fast: Option<String>,
+    #[serde(default)] pub released_at_block: Option<u32>,
+    #[serde(default)] pub release_replacements: u32,
 }
 
 impl OnchainPayRecord {
@@ -126,22 +137,25 @@ pub fn release_vbytes(script_len: usize, recipient_spk_len: usize, with_reserve:
 /// THE RELEASE: from the lock's output (`lock`, `lock_value` sats) at the hand-over `script` to `recipient_spk` with
 /// `amount_sats`; the rest, less a fee at `rate_sat_vb`, back to `reserve_spk` — or into the fee when it would be dust.
 /// Signed by `w_key` with SIGHASH_ALL; the secret is the second witness item. `None` when the lock cannot pay the
-/// amount and the fee.
+/// amount and the fee. v362: the rate is in sat per KILO-vbyte (1 sat/vB = 1000; 0.2 sat/vB = 200), floored at 100
+/// (0.1 sat/vB, Core 30+'s relay floor); the fee is rounded up once.
+pub const MIN_RATE_SAT_KVB: u64 = 100;
+pub fn fee_at(vbytes: u64, rate_sat_kvb: u64) -> u64 { (vbytes * rate_sat_kvb.max(MIN_RATE_SAT_KVB) + 999) / 1000 }
 pub fn build_release(
     lock: OutPoint, lock_value: u64, script: &ScriptBuf, w_key: &SecretKey, secret: &[u8; 32],
-    recipient_spk: &ScriptBuf, amount_sats: u64, reserve_spk: &ScriptBuf, rate_sat_vb: u64,
+    recipient_spk: &ScriptBuf, amount_sats: u64, reserve_spk: &ScriptBuf, rate_sat_kvb: u64,
 ) -> LijResult<Transaction> {
     const DUST: u64 = 294;
     if lock_value < amount_sats { return Err(LijError::Node("the lock carries less than the amount".into())); }
     let vb_with = release_vbytes(script.len(), recipient_spk.len(), true);
     let vb_without = release_vbytes(script.len(), recipient_spk.len(), false);
     let rest = lock_value - amount_sats;
-    let fee_with = vb_with * rate_sat_vb.max(1);
+    let fee_with = fee_at(vb_with, rate_sat_kvb);
     let (outputs, _fee) = if rest >= fee_with + DUST {
         (vec![TxOut { value: Amount::from_sat(amount_sats), script_pubkey: recipient_spk.clone() }, TxOut { value: Amount::from_sat(rest - fee_with), script_pubkey: reserve_spk.clone() }], fee_with)
     } else {
-        let fee_without = vb_without * rate_sat_vb.max(1);
-        if rest < fee_without { return Err(LijError::Node(format!("the lock cannot pay the amount and a fee of {fee_without} sats at {rate_sat_vb} sat/vB"))); }
+        let fee_without = fee_at(vb_without, rate_sat_kvb);
+        if rest < fee_without { return Err(LijError::Node(format!("the lock cannot pay the amount and a fee of {fee_without} sats at {} sat/vB", (rate_sat_kvb.max(MIN_RATE_SAT_KVB) as f64) / 1000.0))); }
         (vec![TxOut { value: Amount::from_sat(amount_sats), script_pubkey: recipient_spk.clone() }], rest)
     };
     let mut tx = Transaction {
@@ -213,8 +227,8 @@ mod tests {
         let recipient = Address::from_str("bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3").unwrap().assume_checked().script_pubkey();
         let reserve = Address::from_str("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4").unwrap().assume_checked().script_pubkey();
         let lock = OutPoint::from_str(&format!("{}:1", "ab".repeat(32))).unwrap();
-        for rate in [1u64, 5, 10] {
-            let tx = build_release(lock, 101_700, &script, &w_key, &secret, &recipient, 100_000, &reserve, rate).unwrap();
+        for rate in [1u64, 5, 10] {   // whole sat/vB — the rate goes in as sat/kvB (v362)
+            let tx = build_release(lock, 101_700, &script, &w_key, &secret, &recipient, 100_000, &reserve, rate * 1000).unwrap();
             assert_eq!(tx.input.len(), 1); assert_eq!(tx.input[0].previous_output, lock);
             assert_eq!(tx.input[0].sequence, Sequence(0xffff_fffd), "replaceable");
             assert_eq!(tx.lock_time, LockTime::ZERO);
@@ -235,12 +249,18 @@ mod tests {
             let sig = bitcoin::secp256k1::ecdsa::Signature::from_der(&items[0][..items[0].len() - 1]).unwrap();
             secp.verify_ecdsa(&Message::from_digest(sighash.to_byte_array()), &sig, &w).expect("W's signature");
             assert_eq!(items[0][items[0].len() - 1], 0x01);
-            let again = build_release(lock, 101_700, &script, &w_key, &secret, &recipient, 100_000, &reserve, rate).unwrap();
+            let again = build_release(lock, 101_700, &script, &w_key, &secret, &recipient, 100_000, &reserve, rate * 1000).unwrap();
             assert_eq!(again, tx, "the same bytes every time");
         }
-        assert!(build_release(lock, 100_050, &script, &w_key, &secret, &recipient, 100_000, &reserve, 5).is_err(), "a lock that cannot pay the fee is refused");
-        assert!(build_release(lock, 101_700, &script, &w_key, &secret, &recipient, 100_000, &reserve, 40).is_err(), "40 sat/vB needs more than the reserve holds — refused, the amount is never touched");
-        assert!(build_release(lock, 90_000, &script, &w_key, &secret, &recipient, 100_000, &reserve, 5).is_err(), "a lock below the amount is refused");
+        assert!(build_release(lock, 100_050, &script, &w_key, &secret, &recipient, 100_000, &reserve, 5_000).is_err(), "a lock that cannot pay the fee is refused");
+        assert!(build_release(lock, 101_700, &script, &w_key, &secret, &recipient, 100_000, &reserve, 40_000).is_err(), "40 sat/vB needs more than the reserve holds — refused, the amount is never touched");
+        assert!(build_release(lock, 90_000, &script, &w_key, &secret, &recipient, 100_000, &reserve, 5_000).is_err(), "a lock below the amount is refused");
+        // v362 (Phase 2): a fractional rate — 0.2 sat/vB on a 170-vB release is 34 sats, rounded up once; 0.05 is floored at 0.1
+        let frac = build_release(lock, 101_700, &script, &w_key, &secret, &recipient, 100_000, &reserve, 200).unwrap();
+        let fee_frac = 101_700 - frac.output.iter().map(|o| o.value.to_sat()).sum::<u64>();
+        let vb_frac = (frac.weight().to_wu() + 3) / 4;
+        assert!(fee_frac >= (vb_frac * 200 + 999) / 1000 && fee_frac <= (vb_frac * 200 + 999) / 1000 + 3, "0.2 sat/vB: fee {fee_frac} for {vb_frac} vB");
+        assert_eq!(fee_at(170, 200), 34); assert_eq!(fee_at(170, 50), fee_at(170, 100)); assert_eq!(fee_at(170, 1_000), 170); assert_eq!(fee_at(170, 1_234), 210);
     }
 
     #[test]

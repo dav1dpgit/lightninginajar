@@ -801,6 +801,14 @@ export class LijWalletHandle {
      */
     onchain_pay_release(hash_hex: string, rate_sat_vb: bigint): Promise<any>;
     /**
+     * v362 (Phase 2 — fractional rates; Phase 3 — the speed-up): the same as `onchain_pay_release`, the rate in sat per
+     * KILO-vbyte (1.2 sat/vB = 1200). The engine builds the release and its fast copy at twice the rate; the main one is
+     * broadcast through the quorum and both are kept on the record (mark_released_v2, with the walk's tip — the block the
+     * first release went out at, and the replacement count). On a `released` record this IS the replacement. Returns the
+     * engine's JSON plus `broadcast`.
+     */
+    onchain_pay_release_kvb(hash_hex: string, rate_sat_kvb: bigint): Promise<any>;
+    /**
      * Every on-chain pay, newest first (LDK's word on A and B folded in).
      */
     onchain_pay_status_json(): string;
@@ -1552,6 +1560,7 @@ export interface InitOutput {
     readonly lijwallethandle_onchain_pay_prepare: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_onchain_pay_record_quote: (a: number, b: number, c: number, d: number, e: number, f: number, g: bigint, h: bigint, i: bigint, j: number, k: number, l: number, m: number) => [number, number, number, number];
     readonly lijwallethandle_onchain_pay_release: (a: number, b: number, c: number, d: bigint) => any;
+    readonly lijwallethandle_onchain_pay_release_kvb: (a: number, b: number, c: number, d: bigint) => any;
     readonly lijwallethandle_onchain_pay_status_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_onchain_quote: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_onchain_summary: (a: number) => any;
@@ -1643,8 +1652,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_227: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_228: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_229: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

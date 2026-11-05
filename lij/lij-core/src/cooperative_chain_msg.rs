@@ -57,6 +57,11 @@ pub const TYPE_REGISTER_WATCH_OUTPUT: u16 = 32815;
 pub const TYPE_BROADCAST_TX: u16 = 32817;
 /// LSP → Wallet: result of a broadcast request.
 pub const TYPE_BROADCAST_ACK: u16 = 32819;
+/// LSP → Wallet (v362, adapter 0.122.0 — Phase 2 of Lightning pays on-chain, design v0.7 §3 A): the exact fee rates in
+/// sat/kw beside the bundle's whole sat/vB. The bundle's u32 fields and the hard-required protocol version cannot change
+/// without breaking every older wallet, so the exact numbers ride in their own message; an older wallet ignores the
+/// unknown odd type (BOLT 1). Sent right after every ChainDataBundle.
+pub const TYPE_FEE_RATES_KW: u16 = 32821;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -185,6 +190,45 @@ impl Readable for ChainDataBundle {
 
 impl Type for ChainDataBundle {
     fn type_id(&self) -> u16 { TYPE_CHAIN_DATA_BUNDLE }
+}
+
+// ── 11. FeeRatesKw (LSP → wallet, v362) ──────────────────────────────────────
+// fast / medium / slow in sat per kilo-weight (LND's own unit: 250 = 1 sat/vB; 253 = LND's floor) and the relay floor of
+// the node the rates come from, in the same unit. Four u32 after the version byte.
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FeeRatesKw {
+    pub fast_sat_per_kw: u32,
+    pub medium_sat_per_kw: u32,
+    pub slow_sat_per_kw: u32,
+    pub relay_floor_sat_per_kw: u32,
+}
+
+impl Writeable for FeeRatesKw {
+    fn write<W: Writer>(&self, w: &mut W) -> Result<(), lightning::io::Error> {
+        write_version(w)?;
+        self.fast_sat_per_kw.write(w)?;
+        self.medium_sat_per_kw.write(w)?;
+        self.slow_sat_per_kw.write(w)?;
+        self.relay_floor_sat_per_kw.write(w)?;
+        Ok(())
+    }
+}
+
+impl Readable for FeeRatesKw {
+    fn read<R: lightning::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+        let _v = read_version(r)?;
+        Ok(Self {
+            fast_sat_per_kw: Readable::read(r)?,
+            medium_sat_per_kw: Readable::read(r)?,
+            slow_sat_per_kw: Readable::read(r)?,
+            relay_floor_sat_per_kw: Readable::read(r)?,
+        })
+    }
+}
+
+impl Type for FeeRatesKw {
+    fn type_id(&self) -> u16 { TYPE_FEE_RATES_KW }
 }
 
 // ── 3. BlockHeightUpdate (LSP → wallet) ─────────────────────────────────────
@@ -666,6 +710,15 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_fee_rates_kw() {   // v362
+        let msg = FeeRatesKw { fast_sat_per_kw: 1250, medium_sat_per_kw: 300, slow_sat_per_kw: 253, relay_floor_sat_per_kw: 253 };
+        roundtrip(&msg, TYPE_FEE_RATES_KW);
+        // the bytes the adapter's encoder writes (cooperative-chain-msg.js encodeFeeRatesKw): version, four big-endian u32
+        let mut bytes = Vec::new(); msg.write(&mut bytes).unwrap();
+        assert_eq!(bytes, vec![2, 0, 0, 4, 0xe2, 0, 0, 1, 0x2c, 0, 0, 0, 0xfd, 0, 0, 0, 0xfd]);
+    }
+
+    #[test]
     fn roundtrip_block_height_update() {
         let msg = BlockHeightUpdate {
             new_height: 880_248,
@@ -802,6 +855,7 @@ mod tests {
             TYPE_REGISTER_WATCH_OUTPUT,
             TYPE_BROADCAST_TX,
             TYPE_BROADCAST_ACK,
+            TYPE_FEE_RATES_KW,
         ];
         let mut sorted = ids.to_vec();
         sorted.sort();
@@ -822,6 +876,7 @@ mod tests {
             TYPE_REGISTER_WATCH_OUTPUT,
             TYPE_BROADCAST_TX,
             TYPE_BROADCAST_ACK,
+            TYPE_FEE_RATES_KW,
         ];
         for id in ids {
             assert!(id >= 32768, "type {id} below experimental range");

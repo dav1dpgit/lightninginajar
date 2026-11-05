@@ -132,6 +132,21 @@ impl FeeQuote {
         }
     }
 
+    /// v362 (Phase 2 of Lightning pays on-chain, design v0.7 §3 A): the same schedule as `from_fast_sat_per_vb`, from the
+    /// fast rate in sat/kw as the provider's FeeRatesKw message carries it — no rounding to a whole sat/vB on the way in.
+    pub fn from_fast_sat_per_kw(fast_kw: u32) -> Self {
+        let fast_kw = fast_kw.max(FEE_FLOOR_SAT_PER_KW);
+        Self {
+            min_allowed_anchor_channel_remote: FEE_FLOOR_SAT_PER_KW,
+            min_allowed_non_anchor_channel_remote: FEE_FLOOR_SAT_PER_KW,
+            anchor_channel: (fast_kw / 4).max(FEE_FLOOR_SAT_PER_KW),
+            non_anchor_channel: fast_kw,
+            channel_close_minimum: COOP_CLOSE_ACCEPT_FLOOR_SAT_PER_KW,
+            on_chain_sweep: fast_kw,
+            output_spending: fast_kw.saturating_mul(3),
+        }
+    }
+
     fn floor() -> Self {
         Self {
             min_allowed_anchor_channel_remote: FEE_FLOOR_SAT_PER_KW,

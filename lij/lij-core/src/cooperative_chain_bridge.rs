@@ -35,7 +35,7 @@ use crate::broadcaster::{CooperativeBroadcaster, LijBroadcaster};
 use crate::chain_filter::LijChainFilter;
 use crate::cooperative_chain_handler::{CooperativeChainHandler, CooperativeChainMessage};
 use crate::cooperative_chain_msg::{
-    BroadcastResult, BroadcastTx, ChannelStateChange, FeeScheduleUpdate, FundingTxConfirmed,
+    BroadcastResult, BroadcastTx, ChannelStateChange, FeeRatesKw, FeeScheduleUpdate, FundingTxConfirmed,
     RegisterWatchOutput, RegisterWatchTx, SubscribeChainData,
 };
 use crate::error::{LijError, LijResult};
@@ -66,6 +66,9 @@ struct SharedState {
     /// Most recent fee schedule received from the LSP. Set by ChainDataBundle
     /// and FeeScheduleUpdate inbound messages.
     last_fee_quote: Option<FeeQuote>,
+    /// v362: the exact rates (sat/kw) and the relay floor from the provider's FeeRatesKw, when it sends one — the
+    /// picker's numbers; the bundle's whole sat/vB stay the fallback for a provider that does not.
+    last_fee_rates_kw: Option<FeeRatesKw>,
     /// Most recent block height. For now informational; the cold-start
     /// orchestrator (step 6) will read this.
     last_block_height: Option<u32>,
@@ -267,6 +270,11 @@ impl CooperativeChainBridge {
 
     /// Last known cooperative-cached block height. None if no bundle received yet.
     /// Used by the cold-start orchestrator.
+    /// v362: the provider's exact rates, when it has sent them.
+    pub fn cooperative_fee_rates_kw(&self) -> Option<FeeRatesKw> {
+        self.state.lock().unwrap().last_fee_rates_kw.clone()
+    }
+
     pub fn cooperative_block_height(&self) -> Option<u32> {
         self.state.lock().unwrap().last_block_height
     }
@@ -352,6 +360,16 @@ impl CooperativeChainBridge {
                 state.chain_msgs = state.chain_msgs.wrapping_add(1);   // v295
                 drop(state);
                 log::debug!("cooperative_chain_bridge: BlockHeightUpdate to {}", h.new_height);
+            }
+            CooperativeChainMessage::FeeRatesKw(f) => {   // v362: the exact rates — they take the quote over the bundle's whole numbers
+                let mut state = self.state.lock().unwrap();
+                state.last_fee_quote = Some(FeeQuote::from_fast_sat_per_kw(f.fast_sat_per_kw));
+                state.last_fee_rates_kw = Some(f.clone());
+                drop(state);
+                log::info!(
+                    "cooperative_chain_bridge: FeeRatesKw received, {}/{}/{} sat/kw, floor {}",
+                    f.fast_sat_per_kw, f.medium_sat_per_kw, f.slow_sat_per_kw, f.relay_floor_sat_per_kw
+                );
             }
             CooperativeChainMessage::FeeScheduleUpdate(f) => {
                 self.state.lock().unwrap().last_fee_quote =

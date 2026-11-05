@@ -4767,6 +4767,9 @@ impl LijNode {
             created: now, updated: now, t: None, lock_block: None, handover_address: None, lock_txid: None, lock_vout: None,
             lock_seen_txid: None, lock_seen_height: None, release_txid: None, release_hex: None, release_rate_sat_vb: None, release_height: None,
             a_payment_id: None, b_payment_id: None, ended: None, end_reason: None, paid_block: None, walk_from: None,
+            // v362: the provider's exact rates when it sends them (adapter 0.122.0) — the lock's, and its six-block suggestion for the release
+            lock_rate_sat_kvb: gu("lock_rate_sat_kvb"), release_rate_suggested_sat_kvb: gu("release_rate_sat_kvb"),
+            release_rate_sat_kvb: None, release_hex_fast: None, release_txid_fast: None, released_at_block: None, release_replacements: 0,
         };
         recs.insert(hash.clone(), rec.clone());
         self.onchain_pay_save(&recs);
@@ -4904,7 +4907,15 @@ impl LijNode {
     /// (`lock_seen`, or `released` for a faster replacement) and the tip is below the stop block. `rate_sat_vb` 0 =
     /// the quoted release fee over the release's size. Returns {hash, txid, hex, rate_sat_vb, fee_sats, reserve_returned_sats};
     /// the wasm layer broadcasts and marks `released` (onchain_pay_mark_released) — nothing is marked here.
-    pub fn onchain_pay_release(&self, hash_hex: &str, rate_sat_vb: u64, tip: u32) -> LijResult<String> {
+    pub fn onchain_pay_release(&self, hash_hex: &str, rate_sat_vb: u64, tip: u32) -> LijResult<String> {   // the v361 door: a whole sat/vB
+        self.onchain_pay_release_kvb(hash_hex, rate_sat_vb.saturating_mul(1000), tip)
+    }
+    /// v362 (Phase 2 — fractional rates; Phase 3 — the speed-up): the rate in sat per KILO-vbyte (1.2 sat/vB = 1200); 0 =
+    /// the quoted release fee over the release's size. Builds the release AND its fast copy at twice the rate (the whole
+    /// reserve when the reserve is one release fee — the Black start page's "send the faster one"); both in the answer
+    /// (`hex`, `txid`, `hex_fast`, `txid_fast`), with `rate_sat_kvb`. On a `released` record this is the REPLACEMENT the
+    /// page's speed-up asks for: the same lock, the same recipient output, a higher fee from the reserve.
+    pub fn onchain_pay_release_kvb(&self, hash_hex: &str, rate_sat_kvb: u64, tip: u32) -> LijResult<String> {
         use std::str::FromStr;
         let h = hash_hex.trim().to_ascii_lowercase();
         let recs = self.onchain_pay_load();
@@ -4926,13 +4937,18 @@ impl LijNode {
         let recipient_spk = self.onchain_pay_recipient_spk(&rec.recipient)?;
         let reserve_spk = crate::tier2::change_spk_at(&self.root_key, rec.reserve_index, self.network)?;
         let vb = crate::onchain_pay::release_vbytes(script.len(), recipient_spk.len(), true);
-        let rate = if rate_sat_vb == 0 { (rec.release_fee_sats / vb.max(1)).max(1) } else { rate_sat_vb };
+        let rate = if rate_sat_kvb == 0 { (rec.release_fee_sats * 1000 / vb.max(1)).max(crate::onchain_pay::MIN_RATE_SAT_KVB) } else { rate_sat_kvb.max(crate::onchain_pay::MIN_RATE_SAT_KVB) };
         let tx = crate::onchain_pay::build_release(lock, rec.lock_sats, &script, &w_key, &secret, &recipient_spk, rec.amount_sats, &reserve_spk, rate)?;
         let out_sum: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
         let reserve_returned = tx.output.get(1).map(|o| o.value.to_sat()).unwrap_or(0);
+        // the fast copy: twice the rate — with the reserve one release fee, the reserve output is gone and the fee is the whole rest
+        let fast = crate::onchain_pay::build_release(lock, rec.lock_sats, &script, &w_key, &secret, &recipient_spk, rec.amount_sats, &reserve_spk, rate.saturating_mul(2)).ok();
+        let fast_fee = fast.as_ref().map(|t| rec.lock_sats - t.output.iter().map(|o| o.value.to_sat()).sum::<u64>());
         Ok(serde_json::json!({
             "hash": rec.hash, "txid": tx.compute_txid().to_string(), "hex": hex::encode(bitcoin::consensus::serialize(&tx)),
-            "rate_sat_vb": rate, "fee_sats": rec.lock_sats - out_sum, "reserve_returned_sats": reserve_returned, "stop_release_block": stop,
+            "rate_sat_vb": (rate + 999) / 1000, "rate_sat_kvb": rate, "fee_sats": rec.lock_sats - out_sum, "reserve_returned_sats": reserve_returned, "stop_release_block": stop,
+            "txid_fast": fast.as_ref().map(|t| t.compute_txid().to_string()), "hex_fast": fast.as_ref().map(|t| hex::encode(bitcoin::consensus::serialize(t))), "fee_fast_sats": fast_fee,
+            "replacement": rec.state == "released", "released_at_block": rec.released_at_block, "release_replacements": rec.release_replacements,
         }).to_string())
     }
     /// The release went out (the wasm layer broadcast it): `released`, with the txid, the hex (the kit carries it) and the rate.
@@ -4944,6 +4960,23 @@ impl LijNode {
         rec.state = "released".into(); rec.release_txid = Some(txid.to_ascii_lowercase()); rec.release_hex = Some(hex_s.to_ascii_lowercase()); rec.release_rate_sat_vb = Some(rate_sat_vb); rec.updated = current_time_secs();
         self.onchain_pay_save(&recs);
         log::info!("[onchain-pay] {}: RELEASED by {}… at {} sat/vB", &h[..16], &txid[..16.min(txid.len())], rate_sat_vb);
+        Ok(())
+    }
+    /// v362: the release (or its replacement) went out — the rate in sat/kvB, the fast copy kept for the kit, the block the
+    /// first release went out at, the replacement count. A second call on a `released` record is a replacement.
+    pub fn onchain_pay_mark_released_v2(&self, hash_hex: &str, txid: &str, hex_s: &str, rate_sat_kvb: u64, hex_fast: Option<&str>, txid_fast: Option<&str>, tip: u32) -> LijResult<()> {
+        let h = hash_hex.trim().to_ascii_lowercase();
+        let mut recs = self.onchain_pay_load();
+        let rec = recs.get_mut(&h).ok_or_else(|| LijError::Invoice("no such on-chain pay".into()))?;
+        if !(rec.state == "lock_seen" || rec.state == "released") { return Err(LijError::Invoice(format!("not releasable ({})", rec.state))); }
+        let replacement = rec.state == "released";
+        if replacement { rec.release_replacements = rec.release_replacements.saturating_add(1); } else { rec.released_at_block = Some(tip); rec.release_replacements = 0; }
+        rec.state = "released".into(); rec.release_txid = Some(txid.to_ascii_lowercase()); rec.release_hex = Some(hex_s.to_ascii_lowercase());
+        rec.release_rate_sat_kvb = Some(rate_sat_kvb); rec.release_rate_sat_vb = Some((rate_sat_kvb + 999) / 1000);
+        rec.release_hex_fast = hex_fast.map(|s| s.to_ascii_lowercase()); rec.release_txid_fast = txid_fast.map(|s| s.to_ascii_lowercase());
+        rec.updated = current_time_secs();
+        self.onchain_pay_save(&recs);
+        log::info!("[onchain-pay] {}: {} by {}… at {} sat/kvB (block {tip})", &h[..16], if replacement { "RELEASE REPLACED" } else { "RELEASED" }, &txid[..16.min(txid.len())], rate_sat_kvb);
         Ok(())
     }
 
@@ -5008,6 +5041,7 @@ impl LijNode {
             "hash": r.hash, "state": r.state, "amount_sats": r.amount_sats, "recipient": r.recipient, "lock_sats": r.lock_sats,
             "handover_address": r.handover_address, "lock_txid": r.lock_seen_txid.clone().or(r.lock_txid.clone()), "lock_vout": r.lock_vout,
             "t": r.t, "stop_release_block": r.stop_release_block(), "release_txid": r.release_txid, "release_hex": r.release_hex,
+            "release_txid_fast": r.release_txid_fast, "release_hex_fast": r.release_hex_fast,   // v362: the copy at twice the rate — the whole reserve
             "provider": r.provider, "created": r.created,
         })).collect()
     }
@@ -6488,13 +6522,28 @@ impl LijNode {
     /// estimator (cooperative-first). Tiering mirrors
     /// FeeQuote::from_fast_sat_per_vb's philosophy: normal = fast/2,
     /// slow = fast/4, all floored at 1 sat/vB.
+    /// v362 (Phase 2, design v0.7 §3 A): when the provider has sent its exact rates (FeeRatesKw — sat/kw, and the relay
+    /// floor of the node they come from), the three tiers are those numbers, floored at that relay floor, with
+    /// decimals; otherwise the old derivation from the picker's whole number. `relay_floor_vb` is in the JSON either
+    /// way (253 sat/kw = 1.012 sat/vB when nothing better is known), and `exact` says which path answered.
     pub fn fee_rates_json(&self) -> String {
         let (fast_kw, source, escalation) = self.fee_estimator.picker_summary();
+        if let Some(r) = self.cooperative_bridge.cooperative_fee_rates_kw() {
+            let floor_vb = (r.relay_floor_sat_per_kw.max(1) as f64) / 250.0;
+            let vb = |kw: u32| ((kw as f64) / 250.0).max(floor_vb);
+            let fast_vb = vb(r.fast_sat_per_kw);
+            let normal_vb = vb(r.medium_sat_per_kw).min(fast_vb);
+            let slow_vb = vb(r.slow_sat_per_kw).min(normal_vb);
+            return format!(
+                "{{\"fast_vb\":{:.3},\"normal_vb\":{:.3},\"slow_vb\":{:.3},\"relay_floor_vb\":{:.3},\"exact\":true,\"source\":\"{}\",\"escalation\":{}}}",
+                fast_vb, normal_vb, slow_vb, floor_vb, source, escalation
+            );
+        }
         let fast_vb = ((fast_kw as f64) / 250.0).max(1.0);
         let normal_vb = (fast_vb / 2.0).max(1.0);
         let slow_vb = (fast_vb / 4.0).max(1.0);
         format!(
-            "{{\"fast_vb\":{:.2},\"normal_vb\":{:.2},\"slow_vb\":{:.2},\"source\":\"{}\",\"escalation\":{}}}",
+            "{{\"fast_vb\":{:.2},\"normal_vb\":{:.2},\"slow_vb\":{:.2},\"relay_floor_vb\":1.012,\"exact\":false,\"source\":\"{}\",\"escalation\":{}}}",
             fast_vb, normal_vb, slow_vb, source, escalation
         )
     }
@@ -8688,12 +8737,38 @@ mod tests {
         assert_eq!(tx.compute_txid().to_string(), rel["txid"].as_str().unwrap());
         let rel0: serde_json::Value = serde_json::from_str(&node.onchain_pay_release(&hash, 0, 1_002).unwrap()).unwrap();
         assert!(rel0["rate_sat_vb"].as_u64().unwrap() >= 4, "rate 0 = the quoted fee over the size: {}", rel0["rate_sat_vb"]);
-        node.onchain_pay_mark_released(&hash, rel["txid"].as_str().unwrap(), rel["hex"].as_str().unwrap(), 5).unwrap();
+        // v362 (Phase 2 + 3): the release in sat/kvB — 0.2 sat/vB builds (34 sats on 170 vB, rounded up once), the fast copy
+        // at twice the rate rides beside it; the v361 door (whole sat/vB) answers the same rate in both units
+        let relf: serde_json::Value = serde_json::from_str(&node.onchain_pay_release_kvb(&hash, 200, 1_002).unwrap()).unwrap();
+        let txf: bitcoin::Transaction = bitcoin::consensus::deserialize(&hex::decode(relf["hex"].as_str().unwrap()).unwrap()).unwrap();
+        let vbf = (txf.weight().to_wu() + 3) / 4;
+        assert_eq!(relf["rate_sat_kvb"], 200); assert_eq!(relf["rate_sat_vb"], 1);
+        assert!(relf["fee_sats"].as_u64().unwrap() >= (vbf * 200 + 999) / 1000 && relf["fee_sats"].as_u64().unwrap() <= (vbf * 200 + 999) / 1000 + 3, "0.2 sat/vB: fee {} for {vbf} vB", relf["fee_sats"]);
+        assert!(relf["hex_fast"].as_str().is_some() && relf["fee_fast_sats"].as_u64().unwrap() >= relf["fee_sats"].as_u64().unwrap() * 2 - 3, "the fast copy pays twice: {} vs {}", relf["fee_fast_sats"], relf["fee_sats"]);
+        assert_eq!(relf["replacement"], false);
+        let rel5: serde_json::Value = serde_json::from_str(&node.onchain_pay_release(&hash, 5, 1_002).unwrap()).unwrap();
+        assert_eq!(rel5["rate_sat_kvb"], 5_000); assert_eq!(rel5["rate_sat_vb"], 5); assert_eq!(rel5["hex"], rel["hex"], "the v361 door builds the same bytes");
+        node.onchain_pay_mark_released_v2(&hash, relf["txid"].as_str().unwrap(), relf["hex"].as_str().unwrap(), 200, relf["hex_fast"].as_str(), relf["txid_fast"].as_str(), 1_002).unwrap();
         let st: Vec<serde_json::Value> = serde_json::from_str(&node.onchain_pay_status_json()).unwrap();
-        assert_eq!(st[0]["state"], "released"); assert_eq!(st[0]["release_txid"], rel["txid"]);
+        assert_eq!(st[0]["state"], "released"); assert_eq!(st[0]["release_txid"], relf["txid"]); assert_eq!(st[0]["release_rate_sat_kvb"], 200); assert_eq!(st[0]["released_at_block"], 1_002); assert_eq!(st[0]["release_replacements"], 0);
+        assert_eq!(st[0]["release_hex_fast"], relf["hex_fast"]); assert_eq!(st[0]["lock_rate_sat_kvb"], serde_json::Value::Null, "the v361-style quote carried no exact rates");
         let kit: serde_json::Value = serde_json::from_str(&node.escape_export().unwrap()).unwrap();
-        assert_eq!(kit["onchain_pay"][0]["release_hex"], rel["hex"], "the kit carries the signed release");
+        assert_eq!(kit["onchain_pay"][0]["release_hex"], relf["hex"], "the kit carries the signed release");
+        assert_eq!(kit["onchain_pay"][0]["release_hex_fast"], relf["hex_fast"], "and its fast copy");
         assert_eq!(kit["onchain_pay"][0]["stop_release_block"], t - 12);
+        // Phase 3: the REPLACEMENT — a release on a released record, at a higher rate, from the same lock; the reserve
+        // output shrinks; the count goes up; released_at_block stays the first one
+        let rep: serde_json::Value = serde_json::from_str(&node.onchain_pay_release_kvb(&hash, 1_500, 1_010).unwrap()).unwrap();
+        assert_eq!(rep["replacement"], true); assert_eq!(rep["released_at_block"], 1_002);
+        let txr: bitcoin::Transaction = bitcoin::consensus::deserialize(&hex::decode(rep["hex"].as_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(txr.input[0].previous_output, txf.input[0].previous_output, "the same lock");
+        assert_eq!(txr.output[0], txf.output[0], "the recipient's output untouched");
+        assert!(txr.output[1].value.to_sat() < txf.output[1].value.to_sat(), "the reserve output pays the higher fee");
+        node.onchain_pay_mark_released_v2(&hash, rep["txid"].as_str().unwrap(), rep["hex"].as_str().unwrap(), 1_500, rep["hex_fast"].as_str(), rep["txid_fast"].as_str(), 1_010).unwrap();
+        let st: Vec<serde_json::Value> = serde_json::from_str(&node.onchain_pay_status_json()).unwrap();
+        assert_eq!(st[0]["release_replacements"], 1); assert_eq!(st[0]["released_at_block"], 1_002); assert_eq!(st[0]["release_txid"], rep["txid"]);
+        // the original release (rel) is what the walk will see confirm below: the first copy is still a valid spend of the lock
+        node.onchain_pay_mark_released(&hash, rel["txid"].as_str().unwrap(), rel["hex"].as_str().unwrap(), 5).unwrap();
         // step 7: the walk sees the spend with the secret → done
         let secret_hex = hex::encode(items[1]);
         assert_eq!(node.onchain_pay_note_events(&[ev(101_700, Some((rel["txid"].as_str().unwrap(), Some(&secret_hex))))], 1_003), 1);
