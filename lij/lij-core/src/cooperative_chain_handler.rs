@@ -42,10 +42,10 @@ use lightning::util::ser::{Readable, Writeable, Writer};
 
 use crate::cooperative_chain_msg::{
     BlockHeightUpdate, BroadcastAck, BroadcastTx, ChainDataBundle, ChannelStateUpdate,
-    FeeRatesKw, FeeScheduleUpdate, FundingTxConfirmed, RegisterWatchOutput, RegisterWatchTx,
+    FeeRatesKw, FeeScheduleUpdate, FundingTxConfirmed, JitFundingAbandoned, RegisterWatchOutput, RegisterWatchTx,
     SubscribeChainData, TYPE_BLOCK_HEIGHT_UPDATE, TYPE_BROADCAST_ACK, TYPE_BROADCAST_TX,
     TYPE_CHAIN_DATA_BUNDLE, TYPE_CHANNEL_STATE_UPDATE, TYPE_FEE_RATES_KW, TYPE_FEE_SCHEDULE_UPDATE,
-    TYPE_FUNDING_TX_CONFIRMED, TYPE_REGISTER_WATCH_OUTPUT, TYPE_REGISTER_WATCH_TX,
+    TYPE_FUNDING_TX_CONFIRMED, TYPE_JIT_FUNDING_ABANDONED, TYPE_REGISTER_WATCH_OUTPUT, TYPE_REGISTER_WATCH_TX,
     TYPE_SUBSCRIBE_CHAIN_DATA,
 };
 
@@ -66,6 +66,7 @@ pub enum CooperativeChainMessage {
     BroadcastTx(BroadcastTx),
     BroadcastAck(BroadcastAck),
     FeeRatesKw(FeeRatesKw),   // v362
+    JitFundingAbandoned(JitFundingAbandoned),   // v363
 }
 
 impl Writeable for CooperativeChainMessage {
@@ -82,6 +83,7 @@ impl Writeable for CooperativeChainMessage {
             Self::BroadcastTx(m) => m.write(w),
             Self::BroadcastAck(m) => m.write(w),
             Self::FeeRatesKw(m) => m.write(w),
+            Self::JitFundingAbandoned(m) => m.write(w),
         }
     }
 }
@@ -100,6 +102,7 @@ impl Type for CooperativeChainMessage {
             Self::BroadcastTx(_) => TYPE_BROADCAST_TX,
             Self::BroadcastAck(_) => TYPE_BROADCAST_ACK,
             Self::FeeRatesKw(_) => TYPE_FEE_RATES_KW,
+            Self::JitFundingAbandoned(_) => TYPE_JIT_FUNDING_ABANDONED,
         }
     }
 }
@@ -124,6 +127,15 @@ pub struct ReceivedMessage {
 /// Per BOLT 9, odd bits are "optional" — peers without support stay connected
 /// and ignore. When the BLIP allocates a real bit, we'll change this constant.
 pub const COOPERATIVE_CHAIN_DATA_FEATURE_BIT: usize = 257;
+
+/// v363 (wallet trusts LSP — docs/design/jit-trust/wallet-trusts-lsp-v0.1.md §5.1/§6.1): this wallet accepts a JIT
+/// channel whose funding transaction the provider HOLDS BACK until the wallet has claimed the payment, and it
+/// understands `JitFundingAbandoned` (type 32823) when the payment was refused. A provider reads this bit from its
+/// node's peer list (LND `ListPeers` → `features`) at open time; a wallet without it gets the publish-first open.
+/// Odd = optional (BOLT 9). NOT 259: LDK 0.2's node context knows 258/259 as DnsResolver (bLIP-32), and
+/// set_optional_custom_bit refuses a known bit (lightning-types features.rs KNOWN_FEATURE_MASK byte 32). 261 is the
+/// next odd bit free in both the init and the node context.
+pub const LIJ_FUNDING_HOLD_FEATURE_BIT: usize = 261;
 
 pub struct CooperativeChainHandler {
     /// Outbound queue. Drained by PeerManager via get_and_clear_pending_msg.
@@ -264,6 +276,9 @@ impl CustomMessageReader for CooperativeChainHandler {
             TYPE_FEE_RATES_KW => {
                 CooperativeChainMessage::FeeRatesKw(Readable::read(buffer)?)
             }
+            TYPE_JIT_FUNDING_ABANDONED => {
+                CooperativeChainMessage::JitFundingAbandoned(Readable::read(buffer)?)
+            }
             _ => return Ok(None),
         };
         Ok(Some(msg))
@@ -298,6 +313,8 @@ impl CustomMessageHandler for CooperativeChainHandler {
     fn provided_node_features(&self) -> NodeFeatures {
         let mut f = NodeFeatures::empty();
         f.set_optional_custom_bit(COOPERATIVE_CHAIN_DATA_FEATURE_BIT)
+            .expect("custom bit should be in the optional range");
+        f.set_optional_custom_bit(LIJ_FUNDING_HOLD_FEATURE_BIT)   // v363
             .expect("custom bit should be in the optional range");
         f
     }
@@ -336,6 +353,8 @@ impl CustomMessageHandler for CooperativeChainHandler {
     fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
         let mut f = InitFeatures::empty();
         f.set_optional_custom_bit(COOPERATIVE_CHAIN_DATA_FEATURE_BIT)
+            .expect("custom bit should be in the optional range");
+        f.set_optional_custom_bit(LIJ_FUNDING_HOLD_FEATURE_BIT)   // v363: the provider reads this one from ListPeers
             .expect("custom bit should be in the optional range");
         f
     }
@@ -535,6 +554,22 @@ mod tests {
         let mut init_bytes = Vec::new();
         init_features.write(&mut init_bytes).unwrap();
         assert!(!init_bytes.is_empty());
+        // v363: both custom bits are in the init features and both are OPTIONAL (odd) — the provider reads bit 259
+        // from LND's peer list; an LSP that does not know either bit keeps the connection (BOLT 9).
+        assert!(init_features.supports_unknown_bits(), "custom bits must be set");
+        assert!(init_features.requires_unknown_bits() == false, "custom bits must be optional, never required");
+        // the serialized vector: a 2-byte length then the bytes, most significant first. Bit 257 is byte index 32
+        // from the LEAST significant end (257 / 8), bit value 1 << 1; bit 261 is the same byte, value 1 << 5.
+        let len = u16::from_be_bytes([init_bytes[0], init_bytes[1]]) as usize;
+        assert_eq!(init_bytes.len(), 2 + len);
+        let byte_from_lsb = |i: usize| init_bytes[2 + (len - 1 - i)];
+        assert_eq!(byte_from_lsb(32) & (1 << 1), 1 << 1, "bit 257");
+        assert_eq!(byte_from_lsb(32) & (1 << 5), 1 << 5, "bit 261");
+        // and the node features carry both as well (the node context knows 258/259 — DnsResolver — hence 261)
+        let mut nb = Vec::new(); node_features.write(&mut nb).unwrap();
+        let nlen = u16::from_be_bytes([nb[0], nb[1]]) as usize;
+        let nbyte = nb[2 + (nlen - 1 - 32)];
+        assert_eq!(nbyte & (1 << 1), 1 << 1); assert_eq!(nbyte & (1 << 5), 1 << 5);
     }
 
     #[test]

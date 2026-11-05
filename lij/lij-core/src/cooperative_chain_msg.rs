@@ -62,6 +62,12 @@ pub const TYPE_BROADCAST_ACK: u16 = 32819;
 /// without breaking every older wallet, so the exact numbers ride in their own message; an older wallet ignores the
 /// unknown odd type (BOLT 1). Sent right after every ChainDataBundle.
 pub const TYPE_FEE_RATES_KW: u16 = 32821;
+/// LSP → Wallet (v363, adapter 0.124.0 — wallet trusts LSP, design docs/design/jit-trust/wallet-trusts-lsp-v0.1.md
+/// §5.4/§6.2): a JIT channel whose funding transaction the provider HELD BACK (published only once the wallet had
+/// claimed the payment) was abandoned because the payment was refused — the funding was never published and never
+/// will be. The wallet drops the channel only under its own rule (its balance in it is zero, no HTLC pending, the
+/// funding unknown to its books); otherwise the message is logged and ignored. An older wallet ignores the type.
+pub const TYPE_JIT_FUNDING_ABANDONED: u16 = 32823;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -229,6 +235,37 @@ impl Readable for FeeRatesKw {
 
 impl Type for FeeRatesKw {
     fn type_id(&self) -> u16 { TYPE_FEE_RATES_KW }
+}
+
+// ── 12. JitFundingAbandoned (LSP → wallet, v363) ─────────────────────────────
+// The funding outpoint of the abandoned JIT channel: the txid in LDK's own byte order (as every txid on this wire —
+// `Txid::write` writes the internal bytes, the reverse of the display hex) and the output index as a u32. The
+// provider sends it right after `AbandonChannel`, while the wallet is still connected (it just failed the payment).
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JitFundingAbandoned {
+    pub funding_txid: Txid,
+    pub output_index: u32,
+}
+
+impl Writeable for JitFundingAbandoned {
+    fn write<W: Writer>(&self, w: &mut W) -> Result<(), lightning::io::Error> {
+        write_version(w)?;
+        self.funding_txid.write(w)?;
+        self.output_index.write(w)?;
+        Ok(())
+    }
+}
+
+impl Readable for JitFundingAbandoned {
+    fn read<R: lightning::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+        let _v = read_version(r)?;
+        Ok(Self { funding_txid: Readable::read(r)?, output_index: Readable::read(r)? })
+    }
+}
+
+impl Type for JitFundingAbandoned {
+    fn type_id(&self) -> u16 { TYPE_JIT_FUNDING_ABANDONED }
 }
 
 // ── 3. BlockHeightUpdate (LSP → wallet) ─────────────────────────────────────
@@ -719,6 +756,23 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_jit_funding_abandoned() {   // v363
+        use std::str::FromStr;
+        // a txid given in DISPLAY hex: the wire carries its bytes REVERSED (LDK's internal order), then the index
+        let display = "0a15095b35b9000000000000000000000000000000000000000000000000ffee";
+        let msg = JitFundingAbandoned { funding_txid: Txid::from_str(display).unwrap(), output_index: 1 };
+        roundtrip(&msg, TYPE_JIT_FUNDING_ABANDONED);
+        let mut bytes = Vec::new(); msg.write(&mut bytes).unwrap();
+        assert_eq!(bytes.len(), 1 + 32 + 4);
+        assert_eq!(bytes[0], PROTOCOL_VERSION);
+        let mut display_bytes = hex::decode(display).unwrap(); display_bytes.reverse();
+        assert_eq!(&bytes[1..33], &display_bytes[..], "the txid's bytes are the display hex reversed — what the adapter must send");
+        assert_eq!(&bytes[33..], &[0, 0, 0, 1]);
+        // the adapter's encoder (cooperative-chain-msg.js encodeJitFundingAbandoned) writes exactly these bytes
+        assert_eq!(bytes[1], 0xee); assert_eq!(bytes[2], 0xff); assert_eq!(bytes[32], 0x0a);
+    }
+
+    #[test]
     fn roundtrip_block_height_update() {
         let msg = BlockHeightUpdate {
             new_height: 880_248,
@@ -856,6 +910,7 @@ mod tests {
             TYPE_BROADCAST_TX,
             TYPE_BROADCAST_ACK,
             TYPE_FEE_RATES_KW,
+            TYPE_JIT_FUNDING_ABANDONED,
         ];
         let mut sorted = ids.to_vec();
         sorted.sort();
@@ -877,6 +932,7 @@ mod tests {
             TYPE_BROADCAST_TX,
             TYPE_BROADCAST_ACK,
             TYPE_FEE_RATES_KW,
+            TYPE_JIT_FUNDING_ABANDONED,
         ];
         for id in ids {
             assert!(id >= 32768, "type {id} below experimental range");

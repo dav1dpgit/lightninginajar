@@ -314,6 +314,14 @@ pub static FEE_MARGIN_SATS: std::sync::atomic::AtomicU64 = std::sync::atomic::At
 /// so a receive that fails on it says why, in plain sight.
 pub static ANCHORS_REFUSED_AT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub static ANCHORS_REFUSED_SATS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// v363 (wallet trusts LSP — crate::jit_funding, THE WATCH): sats this wallet owns in inbound zero-conf channels whose
+/// funding transaction nobody has seen (books and quorum) for WATCH_FLOOR_MS — a provider that took the payment and has
+/// not published. 0 = nothing to say. The page reads them (jit_funding_watch_json) for the health pane's row; the tape
+/// gets a line every 30 s while it holds. JIT_NEVER_FUNDED_DROPS counts the channels dropped under the rule since load.
+pub static JIT_UNPUBLISHED_SATS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static JIT_UNPUBLISHED_CHANNELS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static JIT_UNPUBLISHED_SINCE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static JIT_NEVER_FUNDED_DROPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// v312: a channel type the wallet's recovery promise covers — static remote key and no anchors of either kind (the
 /// m/84 pin needs a plain to_remote; an anchors to_remote is a P2WSH with a CSV the 12 words alone cannot spend).
 pub fn channel_type_words_recoverable(ct: &lightning::types::features::ChannelTypeFeatures) -> bool {
@@ -519,6 +527,15 @@ pub struct LijNode {
     /// Pool channels this wallet dropped itself (a stop before the coin signature; a coin spent elsewhere) — their
     /// ChannelClosed is a dropped open, never filed as a close.
     pool_drops: Arc<Mutex<std::collections::HashSet<ChannelId>>>,
+    /// v363 (wallet trusts LSP, crate::jit_funding): JIT channels whose funding the provider never published, dropped
+    /// under the rule — by the funding outpoint "txid:vout". Persisted (NEVER_FUNDED_KEY); loaded at boot; the
+    /// ChannelClosed handler files no close for them, every monitor reader skips them, and `restore` archives their
+    /// monitor keys before loading.
+    never_funded: Arc<Mutex<std::collections::HashMap<String, crate::jit_funding::NeverFunded>>>,
+    /// v364: the audit's drop decisions (channel id, counterparty, outpoint key), made in the async block on the
+    /// provider's answer and CARRIED OUT by the next synchronous tick on a FRESH view — never on the view taken before
+    /// the HTTP round trip (the review, finding 6).
+    jit_audit_drops: Arc<Mutex<Vec<(ChannelId, bitcoin::secp256k1::PublicKey, String)>>>,
     #[allow(deprecated)]
     closed_channel_watcher: crate::closed_channel_watcher::ClosedChannelWatcher,
     network_graph: LijNetworkGraph,
@@ -850,6 +867,8 @@ impl LijNode {
             open_failures: Arc::new(Mutex::new(Vec::new())),
             pool_channels: Arc::new(Mutex::new(std::collections::HashMap::new())),
             pool_drops: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            never_funded: Arc::new(Mutex::new(crate::jit_funding::load_never_funded(&*storage))),   // v363
+            jit_audit_drops: Arc::new(Mutex::new(Vec::new())),   // v364
             #[allow(deprecated)]
             closed_channel_watcher: crate::closed_channel_watcher::ClosedChannelWatcher::new(),
             network_graph, scorer, storage,
@@ -897,8 +916,64 @@ impl LijNode {
         config: WalletConfig,
         storage: Arc<dyn LijStorage>,
     ) -> LijResult<Self> {
+        // v364 (the review, finding 5): a boot that archived the monitor of a never-funded JIT channel and then could
+        // not load the manager (the manager still held the channel — the tab died between the drop and the manager's
+        // save) puts that monitor back and loads once more, instead of a wallet that will not start.
+        let again = root_key.clone();
+        match Self::restore_inner(root_key, config.clone(), storage.clone()).await {
+            Ok(n) => Ok(n),
+            Err(e) => {
+                if crate::jit_funding::unarchive_after_failed_load(&*storage, MONITOR_KEY_PREFIX, persist::ARCHIVED_MONITOR_KEY_PREFIX) {
+                    log::error!("restore: the first load failed ({e}) right after archiving never-funded monitors — they are back; loading again");
+                    Self::restore_inner(again, config, storage).await
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    async fn restore_inner(
+        root_key: RootKey,
+        config: WalletConfig,
+        storage: Arc<dyn LijStorage>,
+    ) -> LijResult<Self> {
         let cm_blob_opt = storage.get(CHANNEL_MANAGER_KEY)?;
-        let monitor_keys = storage.list_with_prefix(MONITOR_KEY_PREFIX)?;
+        let mut monitor_keys = storage.list_with_prefix(MONITOR_KEY_PREFIX)?;
+        // v363 (wallet trusts LSP): a JIT channel the wallet dropped as never funded (crate::jit_funding) keeps a
+        // monitor LDK would load again — it holds a 0-sat balance for good, so LDK's own archiving never takes it.
+        // Its storage key is archived HERE, before the load (in-session archiving races the persister's writes); the
+        // manager no longer has the channel (it was force-closed without a broadcast and persisted after), so an
+        // absent monitor is allowed. Marked `archived` once done; the map keeps the record.
+        {
+            let mut nf = crate::jit_funding::load_never_funded(&*storage);
+            let mut changed = false;
+            let mut archived_now: Vec<String> = Vec::new();
+            for (op_key, rec) in nf.iter_mut() {
+                // v364: only an entry whose force close is DONE and whose manager was saved without the channel
+                // (`closed`) loses its monitor here; any other entry keeps it — the manager may still hold the channel
+                if !rec.closed { continue; }
+                let active_key = format!("{MONITOR_KEY_PREFIX}{op_key}");
+                if let Some(pos) = monitor_keys.iter().position(|k| k == &active_key) {
+                    let archived_key = format!("{}{op_key}", persist::ARCHIVED_MONITOR_KEY_PREFIX);
+                    match storage.get(&active_key)? {
+                        Some(blob) => {
+                            storage.set(&archived_key, &blob)?;
+                            archived_now.push(op_key.clone());
+                            crate::jit_funding::note_archived_this_boot(&*storage, &archived_now);   // before the active key goes
+                            storage.delete(&active_key)?;
+                            log::warn!("restore: never-funded JIT channel {} (funding {op_key}) — its monitor archived at boot: {active_key} -> {archived_key}", rec.channel_id);
+                        }
+                        None => {}
+                    }
+                    monitor_keys.remove(pos);
+                    if !rec.archived { rec.archived = true; changed = true; }
+                } else if !rec.archived {
+                    rec.archived = true; changed = true;   // nothing left to archive (never written, or archived already)
+                }
+            }
+            if changed { crate::jit_funding::save_never_funded(&*storage, &nf); }
+        }
 
         if cm_blob_opt.is_none() && monitor_keys.is_empty() {
             log::info!("restore: no persisted state — creating fresh node");
@@ -1149,6 +1224,27 @@ impl LijNode {
             ReadableArgs::read(&mut cursor, read_args)
                 .map_err(|e| LijError::Storage(format!("CM deser failed: {:?}", e)))?;
         let channel_manager = Arc::new(channel_manager);
+        crate::jit_funding::clear_archived_this_boot(&*storage);   // v364: the manager loaded — nothing to put back
+        {
+            // v364: entries left `closed: false` — the drop was cut short somewhere. Channel still in the manager → the
+            // drop never took: the entry goes (the audit may make the decision again, freshly); channel gone → the force
+            // close happened and the manager was saved without it: `closed`, archived at the next boot.
+            let mut nf = crate::jit_funding::load_never_funded(&*storage);
+            let open_ids: std::collections::HashSet<String> = channel_manager.list_channels().iter().map(|c| hex::encode(c.channel_id.0)).collect();
+            let mut changed = false;
+            let keys: Vec<String> = nf.iter().filter(|(_, r)| !r.closed).map(|(k, _)| k.clone()).collect();
+            for k in keys {
+                let still_open = nf.get(&k).map(|r| open_ids.contains(&r.channel_id)).unwrap_or(false);
+                if still_open {
+                    log::warn!("restore: never-funded entry for funding {k} — the manager still holds the channel; the drop never completed, the entry is removed (the audit judges again)");
+                    nf.remove(&k); changed = true;
+                } else if let Some(r) = nf.get_mut(&k) {
+                    log::info!("restore: never-funded entry for funding {k} — the channel is gone from the manager; marked closed (its monitor is archived at the next start)");
+                    r.closed = true; changed = true;
+                }
+            }
+            if changed { crate::jit_funding::save_never_funded(&*storage, &nf); }
+        }
 
         // v243 (S46): re-label closures v241/v242 mis-filed as Force (one pass, idempotent).
         match crate::closed_channel_log::ClosedChannelLog::new(storage.clone()).relabel_misfiled_cooperative() {
@@ -1215,6 +1311,8 @@ impl LijNode {
             open_failures: Arc::new(Mutex::new(Vec::new())),
             pool_channels: Arc::new(Mutex::new(std::collections::HashMap::new())),
             pool_drops: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            never_funded: Arc::new(Mutex::new(crate::jit_funding::load_never_funded(&*storage))),   // v363
+            jit_audit_drops: Arc::new(Mutex::new(Vec::new())),   // v364
             #[allow(deprecated)]
             closed_channel_watcher: crate::closed_channel_watcher::ClosedChannelWatcher::new(),
             network_graph,
@@ -2552,6 +2650,13 @@ impl LijNode {
                             return Ok(());
                         }
                     }
+                    // v363 (wallet trusts LSP): a JIT channel dropped as never funded (crate::jit_funding) — the
+                    // provider held the funding back and abandoned the channel; this wallet owned nothing in it. Not a
+                    // close: no record, no row (the force close without a broadcast spends a funding that does not exist).
+                    if self.never_funded.lock().map(|m| m.values().any(|r| r.channel_id == channel_id_hex)).unwrap_or(false) {
+                        log::info!("ChannelClosed for never-funded JIT channel {} ({:?}) — the provider never published its funding; nothing was owned in it; not a close", channel_id_hex, reason);
+                        return Ok(());
+                    }
                     // TEMP diagnostic: record the ChannelClosed event with reason +
                     // timestamp so the close SEQUENCE for a channel is visible.
                     close_event_record(format!(
@@ -2945,6 +3050,7 @@ impl LijNode {
         // Process cooperative chain inbound messages and forward new chain-filter
         // registrations to the LSP. Both are sync — no spawn_local needed.
         self.cooperative_bridge.process_inbound_tick(tick_count);
+        self.jit_abandons_tick();   // v363: the provider's "that channel was never funded" — judged by THE RULE, then acted on
         self.cooperative_bridge.process_new_registrations_tick();
 
         // Phase 3.7.L: Sync the chain coordinator's bridge_observed_tip from
@@ -3757,7 +3863,26 @@ impl LijNode {
                     .map(|v| crate::tier2_wallet::derive_history(&v).into_iter().map(|h| h.txid).collect())
                     .unwrap_or_default();
                 let mut candidates: Vec<(lightning::ln::types::ChannelId, bitcoin::secp256k1::PublicKey, String)> = Vec::new();
+                // v363 (wallet trusts LSP — crate::jit_funding §6.3/§6.4): INBOUND zero-conf channels whose funding
+                // the wallet's books do not know. THE PROVIDER IS ASKED (GET /v1/jit-funding/status — adapter 0.124.0+;
+                // an older adapter answers nothing and nothing happens), never the mempools: a 1 sat/vB funding can be
+                // evicted from every server's mempool for hours while it exists — the v277 lesson, "fix the proof".
+                // (a) the AUDIT: nothing owned, no HTLC, and the provider says ABANDONED — the message never came (the
+                //     wallet was away): the same drop as the message's, under the same rule, at once;
+                // (b) the WATCH: sats owned — the provider says it is still HOLDING the funding 30 min after the claim, or
+                //     says ABANDONED about a channel this wallet owns sats in — said out loud (tape + the page's health
+                //     row); nothing is dropped. A funding the quorum has not seen gets a soft note only.
+                let mut inbound: Vec<(lightning::ln::types::ChannelId, bitcoin::secp256k1::PublicKey, String, u32, crate::jit_funding::ChannelView)> = Vec::new();
                 for c in cm.list_channels() {
+                    if !c.is_outbound && c.is_channel_ready && c.confirmations_required == Some(0) && c.confirmations.unwrap_or(0) == 0 {
+                        if let Some(f) = c.funding_txo {
+                            let view = self.jit_channel_view(&c, &pending, &history);
+                            if !view.funding_known_to_books {
+                                inbound.push((c.channel_id, c.counterparty.node_id, f.txid.to_string(), f.index as u32, view));
+                            }
+                        }
+                        continue;
+                    }
                     // v193 (S29) — DP ruling "harden for outbound now": the untracked-test only
                     // proves death for spends WE authored; inbound is outside the sweep's
                     // jurisdiction. A channel with no funding yet is LDK's own timer's business.
@@ -3768,15 +3893,81 @@ impl LijNode {
                         candidates.push((c.channel_id, c.counterparty.node_id, f.txid.to_string()));
                     }
                 }
+                let audit_drops = self.jit_audit_drops.clone();   // v364: decisions only; the tick carries them out on a fresh view
+                let provider = self.active_lsp.as_ref().and_then(|l| match (&l.info.route_endpoint, &l.info.route_macaroon) {
+                    (Some(e), Some(m)) => Some((e.trim_end_matches('/').to_string(), m.clone())),
+                    _ => None,
+                });
+                // v364 (the review, finding 6): the active provider is asked about ITS channels only — its answer rules
+                // over no other provider's channel
+                let active_lsp_hex = self.active_lsp.as_ref().map(|l| l.info.pubkey.to_lowercase());
+                let our_pubkey_hex = hex::encode(cm.get_our_node_id().serialize());
                 wasm_bindgen_futures::spawn_local(async move {
                     use crate::cancelled_open::{load_dead_map, save_dead_map, verdict, Verdict, ABANDON_MESSAGE};
                     let mut map = load_dead_map(&*storage);
                     let now = crate::tier2_wallet::now_ms();
                     let mut changed = false;
-                    let live: std::collections::HashSet<String> = candidates.iter().map(|c| c.2.clone()).collect();
+                    let live: std::collections::HashSet<String> = candidates.iter().map(|c| c.2.clone()).chain(inbound.iter().map(|c| c.2.clone())).collect();
                     let before = map.len();
                     map.retain(|k, _| live.contains(k));   // a channel that left the list takes its clock with it
                     if map.len() != before { changed = true; }
+                    // v363: the inbound channels — the audit and the watch (the provider is asked; the quorum only notes)
+                    let mut unpublished_sats: u64 = 0; let mut unpublished_n: u64 = 0; let mut unpublished_since: u64 = 0;
+                    for (chan_id, peer, ftx, vout, view) in inbound {
+                        let short = &ftx[..16.min(ftx.len())];
+                        let op_key = crate::jit_funding::outpoint_key(&ftx, vout);
+                        let peer_is_active_lsp = active_lsp_hex.as_deref() == Some(hex::encode(peer.serialize()).to_lowercase().as_str());
+                        let status = match (&provider, peer_is_active_lsp) {
+                            (Some((endpoint, mac)), true) => crate::jit_funding::fetch_funding_status(endpoint, mac, &our_pubkey_hex, &op_key).await,
+                            _ => None,
+                        };
+                        let nothing_owned = crate::jit_funding::refuse_reason_channel(&view).is_none();
+                        match status.as_deref() {
+                            // the provider's record says the channel will never be funded: abandoned by it, cancelled (its open
+                            // never completed on its side), or lost (orphan — LND no longer has it)
+                            Some("abandoned") | Some("cancelled") | Some("orphan") if nothing_owned => {
+                                log::warn!("[jit-trust] AUDIT: the provider's record for channel {} (funding {short}…) says {} and this wallet owns nothing in it, no payment pending — the message never came (this wallet was away); the drop is queued for the next tick, which judges the channel again as it stands then", hex::encode(chan_id.0), status.as_deref().unwrap_or("?"));
+                                if let Ok(mut q) = audit_drops.lock() { if !q.iter().any(|(id, _, _)| *id == chan_id) { q.push((chan_id, peer, op_key.clone())); } }
+                                map.remove(&ftx); changed = true;
+                                continue;
+                            }
+                            Some("abandoned") | Some("cancelled") | Some("orphan") => {
+                                // the provider's record says the funding will never be published, yet this wallet OWNS SATS in the
+                                // channel — it cannot take them back off-chain, and the funding it never published is its loss;
+                                // this wallet keeps every record
+                                unpublished_sats += view.our_claimable_sats; unpublished_n += 1;
+                                let t0 = match map.get(&ftx) { Some(t) => *t, None => { map.insert(ftx.clone(), now); changed = true; now } };
+                                if unpublished_since == 0 || t0 < unpublished_since { unpublished_since = t0; }
+                                log::error!("[jit-trust] THE WATCH: the provider's record says channel {} (funding {short}…) is {} while this wallet owns {} sats in it — the funding was never published; this wallet keeps the channel and its records (the provider owes it)", hex::encode(chan_id.0), status.as_deref().unwrap_or("?"), view.our_claimable_sats);
+                            }
+                            Some("held") | Some("paid") | Some("funded") if crate::jit_funding::watch_applies(&view) => {
+                                let t0 = match map.get(&ftx) { Some(t) => *t, None => { map.insert(ftx.clone(), now); changed = true; now } };
+                                let age = now.saturating_sub(t0);
+                                if age >= crate::jit_funding::WATCH_FLOOR_MS {
+                                    unpublished_sats += view.our_claimable_sats; unpublished_n += 1;
+                                    if unpublished_since == 0 || t0 < unpublished_since { unpublished_since = t0; }
+                                    log::warn!("[jit-trust] THE WATCH: this wallet owns {} sats in channel {} and the provider says it is still holding the funding transaction ({short}…) {} min after the claim — it has not published it", view.our_claimable_sats, hex::encode(chan_id.0), age / 60_000);
+                                }
+                            }
+                            Some("published") | Some("confirmed") => { if map.remove(&ftx).is_some() { changed = true; } }
+                            _ => {
+                                // the provider has no record (an older adapter, a channel opened the old way, or unreachable):
+                                // only a soft note when the chain servers have not seen the funding either — never a drop
+                                if crate::jit_funding::watch_applies(&view) {
+                                    if let Some(false) = indep.tx_known(&ftx).await {
+                                        let t0 = match map.get(&ftx) { Some(t) => *t, None => { map.insert(ftx.clone(), now); changed = true; now } };
+                                        let age = now.saturating_sub(t0);
+                                        if age >= crate::jit_funding::WATCH_FLOOR_MS && age / 1000 % 600 < 30 {
+                                            log::warn!("[jit-trust] note: none of the chain servers this wallet asks has seen the funding {short}… of channel {} ({} sats owned) for {} min — a low-fee funding can leave their mempools; the provider has no record to ask", hex::encode(chan_id.0), view.our_claimable_sats, age / 60_000);
+                                        }
+                                    } else if map.remove(&ftx).is_some() { changed = true; }
+                                }
+                            }
+                        }
+                    }
+                    JIT_UNPUBLISHED_SATS.store(unpublished_sats, std::sync::atomic::Ordering::Relaxed);
+                    JIT_UNPUBLISHED_CHANNELS.store(unpublished_n, std::sync::atomic::Ordering::Relaxed);
+                    JIT_UNPUBLISHED_SINCE_MS.store(unpublished_since, std::sync::atomic::Ordering::Relaxed);
                     for (chan_id, peer, ftx) in candidates {
                         let in_pending = pending.contains(&ftx);
                         let in_history = history.contains(&ftx);
@@ -6892,7 +7083,7 @@ impl LijNode {
         let chain_monitor = self.chain_monitor.as_ref()
             .ok_or_else(|| LijError::Node("chain monitor not initialized".to_string()))?;
         let mut ids: Vec<String> = Vec::new();
-        for channel_id in chain_monitor.list_monitors() {
+        for channel_id in self.live_monitor_ids() {   // v363: never-funded JIT channels are not in the kit
             if let Ok(m) = chain_monitor.get_monitor(channel_id) {
                 ids.push(m.lij_latest_holder_commitment_txid().to_string());
             }
@@ -7014,7 +7205,7 @@ impl LijNode {
         // the channels this copy knows: their factors decode an older kit's commitment numbers
         let mut factors: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
         if let Some(cm) = self.chain_monitor.as_ref() {
-            for channel_id in cm.list_monitors() {
+            for channel_id in self.live_monitor_ids() {   // v363
                 if let Ok(m) = cm.get_monitor(channel_id) {
                     let f = m.get_funding_txo();
                     factors.insert(format!("{}:{}", f.txid, f.index), m.lij_commitment_obscure_factor());
@@ -7087,7 +7278,7 @@ impl LijNode {
         // first and finished after the coin legs, because each payment in flight gets collects to fresh m/84
         // addresses AFTER the taproot coins' — no existing leg's address moves.
         let mut channel_rows: Vec<(serde_json::Value, Vec<lightning::chain::channelmonitor::LijHtlcLeg>, Vec<bitcoin::Transaction>)> = Vec::new();
-        for channel_id in chain_monitor.list_monitors() {   // 0.2: keyed by channel id
+        for channel_id in self.live_monitor_ids() {   // 0.2: keyed by channel id · v363: never-funded JIT channels left out
             let monitor = match chain_monitor.get_monitor(channel_id) {
                 Ok(m) => m,
                 Err(()) => continue, // monitor evicted between list and get
@@ -7283,7 +7474,7 @@ impl LijNode {
             None => return "[]".to_string(),
         };
         let mut items: Vec<String> = Vec::new();
-        for channel_id in cm.list_monitors() {   // 0.2: keyed by channel id
+        for channel_id in self.live_monitor_ids() {   // 0.2: keyed by channel id · v363: never-funded JIT channels left out
             if let Ok(monitor) = cm.get_monitor(channel_id) {
                 let funding_outpoint = monitor.get_funding_txo();
                 for bal in monitor.get_claimable_balances() {
@@ -7320,7 +7511,7 @@ impl LijNode {
             None => return "[]".to_string(),
         };
         let mut items: Vec<String> = Vec::new();
-        for channel_id in cm.list_monitors() {   // 0.2: keyed by channel id
+        for channel_id in self.live_monitor_ids() {   // 0.2: keyed by channel id · v363: never-funded JIT channels left out
             if let Ok(monitor) = cm.get_monitor(channel_id) {
                 let funding_outpoint = monitor.get_funding_txo();
                 let mut close_sats: u64 = 0;
@@ -7490,7 +7681,7 @@ impl LijNode {
                     .iter()
                     .filter_map(|c| c.funding_txo.map(|o| (o.txid, o.index)))
                     .collect();
-                let monitors = mon.list_monitors();
+                let monitors = self.live_monitor_ids();   // v363
                 let total = monitors.len();
                 let open = monitors   // 0.2: ids only — look each monitor's funding outpoint up
                     .iter()
@@ -7907,6 +8098,52 @@ mod stream_watch_tests {
     }
 }
 
+/// v363 (crate::jit_funding): drop a JIT channel the wallet owns nothing in and whose funding was never published.
+/// THE MAP FIRST (the ChannelClosed handler consults it in the same event pass), then the force close WITHOUT a broadcast
+/// (a commitment transaction spending a funding that does not exist could never confirm; broadcasting it would only make
+/// noise). The monitor's storage key is archived at the next boot (`restore`); until then every reader skips it.
+impl LijNode {
+    /// v363/v364: drop a JIT channel the provider never funded. The map entry goes in FIRST (so the ChannelClosed
+    /// handler files no close), then the force close without a broadcast, then the MANAGER IS SAVED without the channel,
+    /// and only then is the entry marked `closed` — the state in which its monitor may be archived at a boot and hidden
+    /// from the kit, the balances and the sweeps. A failed force close removes the entry again: the channel is still
+    /// there, its monitor must stay (the review, finding 5).
+    pub(crate) fn jit_drop_never_funded(&self, channel_id: &ChannelId, counterparty: &bitcoin::secp256k1::PublicKey, op_key: &str, how: &str) {
+        let cm = match self.channel_manager.as_ref() { Some(c) => c.clone(), None => return };
+        let channel_id_hex = hex::encode(channel_id.0);
+        {
+            let mut m = match self.never_funded.lock() { Ok(m) => m, Err(_) => return };
+            m.insert(op_key.to_string(), crate::jit_funding::NeverFunded {
+                channel_id: channel_id_hex.clone(),
+                counterparty: hex::encode(counterparty.serialize()),
+                at_ms: current_time_secs() * 1000,
+                how: how.to_string(),
+                archived: false,
+                closed: false,
+            });
+            crate::jit_funding::save_never_funded(&*self.storage, &m);
+        }
+        match cm.force_close_without_broadcasting_txn(channel_id, counterparty, crate::jit_funding::ABANDON_MESSAGE.to_string()) {
+            Ok(()) => {
+                let saved = self.persist_channel_manager();
+                if let Ok(mut m) = self.never_funded.lock() {
+                    if let Some(r) = m.get_mut(op_key) { r.closed = saved.is_ok(); }
+                    crate::jit_funding::save_never_funded(&*self.storage, &m);
+                }
+                JIT_NEVER_FUNDED_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                match saved {
+                    Ok(()) => log::warn!("[jit-trust] channel {channel_id_hex} (funding {op_key}) DROPPED as never funded ({how}) — the provider held the funding back and abandoned it; this wallet owned nothing in it; no close is filed; the manager is saved without it; the monitor is archived at the next start"),
+                    Err(e) => log::error!("[jit-trust] channel {channel_id_hex} (funding {op_key}) dropped ({how}) but the manager could not be saved ({e}) — the entry stays open; the next boot reconciles it"),
+                }
+            }
+            Err(e) => {
+                if let Ok(mut m) = self.never_funded.lock() { m.remove(op_key); crate::jit_funding::save_never_funded(&*self.storage, &m); }
+                log::error!("[jit-trust] channel {channel_id_hex} (funding {op_key}): force_close_without_broadcasting_txn failed: {e:?} — the channel stays, the entry is removed (its monitor must stay with it)");
+            }
+        }
+    }
+}
+
 fn current_time_secs() -> u64 {
     #[cfg(target_arch = "wasm32")]
     { (js_sys::Date::now() / 1000.0) as u64 }
@@ -7973,11 +8210,17 @@ async fn check_funding_outpoints_for_spends(
     // Android) to the live few, which is what lets reconcile_done actually
     // latch on a phone network — the corpses no longer lengthen the walk
     // that would bury them.
+    // v363: a never-funded JIT channel's funding would 404 on every server for ever — it leaves the walk too
+    let never_funded = crate::jit_funding::load_never_funded(&*storage);
     let outpoints: Vec<(bitcoin::Txid, u16)> = chain_monitor
         .list_monitors()
         .into_iter()
         .filter_map(|cid| match chain_monitor.get_monitor(cid) {   // 0.2: ids only
-            Ok(m) if !m.lij_is_resolved_awaiting_archive() => { let op = m.get_funding_txo(); Some((op.txid, op.index)) },
+            Ok(m) if !m.lij_is_resolved_awaiting_archive() => {
+                let op = m.get_funding_txo();
+                if never_funded.get(&crate::jit_funding::outpoint_key(&op.txid.to_string(), op.index as u32)).map(|r| r.closed).unwrap_or(false) { return None; }
+                Some((op.txid, op.index))
+            },
             _ => None, // resolved, or evicted between list and get — nothing to walk
         })
         .collect();
@@ -8877,6 +9120,119 @@ mod tests {
 // wallet restart will not load archived monitors, eliminating their
 // downstream effects.
 impl LijNode {
+    // ── v363 (S67, DP 2026-11-04 "Go on all"): WALLET TRUSTS LSP — the never-funded JIT channel ───────────────────
+    // docs/design/jit-trust/wallet-trusts-lsp-v0.1.md §6; the rule and the persisted map live in crate::jit_funding.
+
+    /// Is this monitor's channel one the wallet dropped as never funded? Every reader of `list_monitors()` asks.
+    pub fn monitor_never_funded(&self, monitor: &lightning::chain::channelmonitor::ChannelMonitor<crate::signer::LijChannelSigner>) -> bool {
+        let op = monitor.get_funding_txo();
+        let key = crate::jit_funding::outpoint_key(&op.txid.to_string(), op.index as u32);
+        self.never_funded.lock().map(|m| m.get(&key).map(|r| r.closed).unwrap_or(false)).unwrap_or(false)   // v364: only a DONE drop hides its monitor
+    }
+
+    /// The monitors that count: every monitor but the never-funded ones.
+    pub fn live_monitor_ids(&self) -> Vec<ChannelId> {
+        let cm = match self.chain_monitor.as_ref() { Some(c) => c, None => return Vec::new() };
+        cm.list_monitors()
+            .into_iter()
+            .filter(|id| match cm.get_monitor(*id) { Ok(m) => !self.monitor_never_funded(&m), Err(()) => false })
+            .collect()
+    }
+
+    /// One channel as the rule sees it (LDK's details, its monitor, the wallet's books).
+    fn jit_channel_view(
+        &self,
+        c: &lightning::ln::channel_state::ChannelDetails,
+        pending_txids: &std::collections::HashSet<String>,
+        history_txids: &std::collections::HashSet<String>,
+    ) -> crate::jit_funding::ChannelView {
+        let our_claimable_sats: u64 = self
+            .chain_monitor
+            .as_ref()
+            .and_then(|cm| cm.get_monitor(c.channel_id).ok())
+            .map(|m| m.get_claimable_balances().iter().map(|b| b.claimable_amount_satoshis()).sum())
+            .unwrap_or(u64::MAX);   // no monitor → the rule refuses ("owns sats") rather than guess
+        let funding_known_to_books = c
+            .funding_txo
+            .map(|f| { let t = f.txid.to_string(); pending_txids.contains(&t) || history_txids.contains(&t) })
+            .unwrap_or(true);   // no funding yet → treated as known: not this rule's case
+        crate::jit_funding::ChannelView {
+            is_outbound: c.is_outbound,
+            confirmations_required: c.confirmations_required,
+            confirmations: c.confirmations,
+            our_claimable_sats,
+            pending_inbound_htlcs: c.pending_inbound_htlcs.len(),
+            pending_outbound_htlcs: c.pending_outbound_htlcs.len(),
+            funding_known_to_books,
+        }
+    }
+
+    /// The wallet's own books: the tier-2 walk's pending list and confirmed history, as txid sets.
+    fn jit_books(&self) -> (std::collections::HashSet<String>, std::collections::HashSet<String>) {
+        let pending: std::collections::HashSet<String> =
+            crate::tier2_wallet::load_pending(&*self.storage).iter().map(|p| p.txid.clone()).collect();
+        let history: std::collections::HashSet<String> = crate::tier2_wallet::load_view(&*self.storage)
+            .map(|v| crate::tier2_wallet::derive_history(&v).into_iter().map(|h| h.txid).collect())
+            .unwrap_or_default();
+        (pending, history)
+    }
+
+    /// The queued `JitFundingAbandoned` messages, each judged by THE RULE (crate::jit_funding::refuse_reason) and, when
+    /// nothing refuses, acted on: the map first, then the force close without a broadcast. Called every tick.
+    fn jit_abandons_tick(&self) {
+        let queued = self.cooperative_bridge.take_pending_abandons();
+        let audit: Vec<(ChannelId, bitcoin::secp256k1::PublicKey, String)> = self.jit_audit_drops.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+        if queued.is_empty() && audit.is_empty() { return; }
+        let cm = match self.channel_manager.as_ref() { Some(c) => c.clone(), None => return };
+        let active_lsp = self.active_lsp.as_ref().map(|l| l.info.pubkey.to_lowercase());
+        let (pending, history) = self.jit_books();
+        // v364: the audit's decisions, judged AGAIN here on the channel as it stands now (the async block's view was
+        // taken before the provider answered — sats could have landed in between); the provider must be this wallet's
+        // active provider and the channel's counterparty, as for the message
+        for (chan_id, peer, op_key) in audit {
+            let c = match cm.list_channels().into_iter().find(|c| c.channel_id == chan_id) {
+                Some(c) => c,
+                None => { log::info!("[jit-trust] AUDIT: channel {} (funding {op_key}) is gone already — nothing to drop", hex::encode(chan_id.0)); continue; }
+            };
+            let peer_hex = hex::encode(peer.serialize()).to_lowercase();
+            let counterparty_hex = hex::encode(c.counterparty.node_id.serialize()).to_lowercase();
+            let view = self.jit_channel_view(&c, &pending, &history);
+            match crate::jit_funding::refuse_reason(peer_hex == counterparty_hex, active_lsp.as_deref() == Some(peer_hex.as_str()), &view) {
+                Some(why) => log::warn!("[jit-trust] AUDIT: the drop of channel {} (funding {op_key}) is REFUSED on the fresh view — {why}; the channel stays (owned {} sats, {} in / {} out HTLC)", hex::encode(c.channel_id.0), view.our_claimable_sats, view.pending_inbound_htlcs, view.pending_outbound_htlcs),
+                None => self.jit_drop_never_funded(&c.channel_id, &c.counterparty.node_id, &op_key, "audit"),
+            }
+        }
+        for (sender, a) in queued {
+            let sender_hex = hex::encode(sender.serialize()).to_lowercase();
+            let op_key = crate::jit_funding::outpoint_key(&a.funding_txid.to_string(), a.output_index);
+            let found = cm.list_channels().into_iter().find(|c| {
+                c.funding_txo.map(|f| f.txid == a.funding_txid && f.index as u32 == a.output_index).unwrap_or(false)
+            });
+            let c = match found {
+                Some(c) => c,
+                None => {
+                    log::warn!("[jit-trust] JitFundingAbandoned from {}… for funding {op_key}: no such channel — ignored", &sender_hex[..16]);
+                    continue;
+                }
+            };
+            let counterparty_hex = hex::encode(c.counterparty.node_id.serialize()).to_lowercase();
+            let view = self.jit_channel_view(&c, &pending, &history);
+            let sender_is_counterparty = sender_hex == counterparty_hex;
+            let sender_is_active_lsp = active_lsp.as_deref() == Some(sender_hex.as_str());
+            match crate::jit_funding::refuse_reason(sender_is_counterparty, sender_is_active_lsp, &view) {
+                Some(why) => {
+                    log::warn!(
+                        "[jit-trust] JitFundingAbandoned from {}… for channel {} (funding {op_key}) REFUSED — {why}; the channel stays (owned {} sats, {} in / {} out HTLC)",
+                        &sender_hex[..16], hex::encode(c.channel_id.0), view.our_claimable_sats, view.pending_inbound_htlcs, view.pending_outbound_htlcs
+                    );
+                }
+                None => {
+                    self.jit_drop_never_funded(&c.channel_id, &c.counterparty.node_id, &op_key, "message");
+                }
+            }
+        }
+    }
+
     /// Archive a stored ChannelMonitor by funding outpoint, removing it from
     /// the active monitor set. Used for cleaning up zombies — force-closed
     /// channels whose claim outputs were already swept (e.g. via BIP84) but

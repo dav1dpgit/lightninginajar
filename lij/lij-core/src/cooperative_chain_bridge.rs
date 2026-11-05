@@ -35,7 +35,7 @@ use crate::broadcaster::{CooperativeBroadcaster, LijBroadcaster};
 use crate::chain_filter::LijChainFilter;
 use crate::cooperative_chain_handler::{CooperativeChainHandler, CooperativeChainMessage};
 use crate::cooperative_chain_msg::{
-    BroadcastResult, BroadcastTx, ChannelStateChange, FeeRatesKw, FeeScheduleUpdate, FundingTxConfirmed,
+    BroadcastResult, BroadcastTx, ChannelStateChange, FeeRatesKw, FeeScheduleUpdate, FundingTxConfirmed, JitFundingAbandoned,
     RegisterWatchOutput, RegisterWatchTx, SubscribeChainData,
 };
 use crate::error::{LijError, LijResult};
@@ -91,6 +91,9 @@ struct SharedState {
     /// Confirm trait. Drained by LijNode::background_tick which has access to
     /// ChannelManager + ChainMonitor.
     pending_confirmations: Vec<FundingTxConfirmed>,
+    /// v363 (wallet trusts LSP): `JitFundingAbandoned` messages with their SENDER, drained by the tick, which alone can
+    /// check the channel (its balance, its HTLCs, its counterparty) before anything is dropped.
+    pending_abandons: Vec<(PublicKey, JitFundingAbandoned)>,
     /// v295 (S52): every chain message received (ChainDataBundle or BlockHeightUpdate) — the tick's
     /// stream check asks "did anything arrive since I asked?" by this count, not by a seconds clock.
     chain_msgs: u64,
@@ -216,7 +219,7 @@ impl CooperativeChainBridge {
             received.len()
         );
         for r in received {
-            self.dispatch(r.message, current_tick);
+            self.dispatch(r.sender, r.message, current_tick);
         }
     }
 
@@ -321,6 +324,12 @@ impl CooperativeChainBridge {
         std::mem::take(&mut state.pending_confirmations)
     }
 
+    /// v363: the queued `JitFundingAbandoned` messages, each with the peer that sent it.
+    pub fn take_pending_abandons(&self) -> Vec<(PublicKey, JitFundingAbandoned)> {
+        let mut state = self.state.lock().unwrap();
+        std::mem::take(&mut state.pending_abandons)
+    }
+
     /// v231: put confirmations back (in front) that the tick could not apply yet
     /// because their block is above the accepted tip; the next tick takes them again.
     pub fn requeue_pending_confirmations(&self, mut held: Vec<FundingTxConfirmed>) {
@@ -329,8 +338,15 @@ impl CooperativeChainBridge {
         state.pending_confirmations = held;
     }
 
-    fn dispatch(&self, msg: CooperativeChainMessage, current_tick: u64) {
+    fn dispatch(&self, sender: PublicKey, msg: CooperativeChainMessage, current_tick: u64) {
         match msg {
+            CooperativeChainMessage::JitFundingAbandoned(a) => {   // v363: queued with its sender; the tick decides
+                log::warn!(
+                    "cooperative_chain_bridge: JitFundingAbandoned from {} for funding {}:{} — queued for the tick's checks",
+                    sender, a.funding_txid, a.output_index
+                );
+                self.state.lock().unwrap().pending_abandons.push((sender, a));
+            }
             CooperativeChainMessage::ChainDataBundle(b) => {
                 let mut state = self.state.lock().unwrap();
                 state.last_block_height = Some(b.tip_height);
@@ -583,6 +599,24 @@ mod tests {
     }
 
     #[test]
+    fn v363_jit_funding_abandoned_is_queued_with_its_sender_for_the_tick() {
+        use crate::cooperative_chain_msg::JitFundingAbandoned;
+        let bridge = make_bridge();
+        let sender = dummy_pubkey(5);
+        let tx = build_dummy_tx(3);
+        let msg = CooperativeChainMessage::JitFundingAbandoned(JitFundingAbandoned { funding_txid: tx.txid(), output_index: 1 });
+        bridge.dispatch(sender, msg, 0);
+        let q = bridge.take_pending_abandons();
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].0, sender, "the sender rides with the message — the tick checks it against the channel's counterparty");
+        assert_eq!(q[0].1.funding_txid, tx.txid());
+        assert_eq!(q[0].1.output_index, 1);
+        assert!(bridge.take_pending_abandons().is_empty(), "taken once");
+        // the bridge itself touches no channel: nothing else in its state moved
+        assert!(bridge.take_pending_confirmations().is_empty());
+    }
+
+    #[test]
     fn funding_tx_confirmed_with_matching_txid_gets_queued() {
         let bridge = make_bridge();
         let tx = build_dummy_tx(7);
@@ -597,7 +631,7 @@ mod tests {
             raw_tx_bytes: raw_bytes,
             tx_index: 0,  // Step 3.6 (SCID fix)
         });
-        bridge.dispatch(msg, 0);
+        bridge.dispatch(dummy_pubkey(9), msg, 0);
         let pending = bridge.take_pending_confirmations();
         assert_eq!(pending.len(), 1, "valid message should be queued");
         assert_eq!(pending[0].txid, txid);
@@ -619,7 +653,7 @@ mod tests {
             raw_tx_bytes: raw_bytes,
             tx_index: 0,  // Step 3.6 (SCID fix)
         });
-        bridge.dispatch(msg, 0);
+        bridge.dispatch(dummy_pubkey(9), msg, 0);
         let pending = bridge.take_pending_confirmations();
         assert_eq!(pending.len(), 0, "txid mismatch should be dropped");
     }
@@ -636,7 +670,7 @@ mod tests {
             raw_tx_bytes: vec![0xff, 0xff, 0xff], // not a valid tx
             tx_index: 0,  // Step 3.6 (SCID fix)
         });
-        bridge.dispatch(msg, 0);
+        bridge.dispatch(dummy_pubkey(9), msg, 0);
         let pending = bridge.take_pending_confirmations();
         assert_eq!(pending.len(), 0, "unparseable raw_tx_bytes should be dropped");
     }

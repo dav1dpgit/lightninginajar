@@ -63,5 +63,6 @@ pub mod tatara;   // S58 (DP 2026-10-12 19:11 "Go on Step 3"): LIJOX's Tatara �
 pub mod progress;   // v346 (S59 Thu, DP 17:13): the restore's progress — the Offline room's and the boot's read of the saved channel state, step by step, for the page to show
 pub mod cancelled_open;   // v277 (S48, DP): the cancelled-open sweep's honest proof (history + quorum + a two-hour floor)
 pub mod inflight;   // v360 (S66, DP 21:28 "Go"): Black start — the in-flight payment collect (the kit's `htlcs` leg); docs/design/black-start/in-flight-collect-v0.1.md
+pub mod jit_funding;   // v363 (S67, DP 2026-11-04 "Go on all"): wallet trusts LSP — the never-funded JIT channel rule, the audit, the watch; docs/design/jit-trust/wallet-trusts-lsp-v0.1.md §6
 pub mod onchain_pay;   // v361 (S66, DP 23:12 "Go on Phase 1"): Lightning pays on-chain — the wallet's pure half (the hand-over script, the release, the record); docs/design/onchain-pay/lightning-paying-onchain-v0.6.md
 

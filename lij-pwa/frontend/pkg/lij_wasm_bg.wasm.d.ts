@@ -10,6 +10,7 @@ export const derive_account_zpub: (a: number, b: number) => [number, number, num
 export const derive_receive_address: (a: number, b: number, c: number) => [number, number, number, number];
 export const fetch_lsp_registry: (a: number, b: number) => any;
 export const health_check_lsp: (a: number, b: number) => any;
+export const jit_funding_watch_json: () => [number, number];
 export const lij_init: () => void;
 export const lijwallethandle_abandon_payment_by_id: (a: number, b: number, c: number) => [number, number];
 export const lijwallethandle_active_lsp_json: (a: number) => [number, number, number, number];
@@ -238,8 +239,8 @@ export const rustsecp256k1_v0_10_0_default_error_callback_fn: (a: number, b: num
 export const wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
 export const wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
 export const wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965: (a: number, b: number, c: any) => void;
-export const wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_228: (a: number, b: number, c: any) => void;
 export const wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_229: (a: number, b: number, c: any) => void;
+export const wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_230: (a: number, b: number, c: any) => void;
 export const wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

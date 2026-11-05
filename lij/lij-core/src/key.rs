@@ -40,6 +40,7 @@ use crate::error::{LijError, LijResult};
 
 /// The root key material derived from the user's mnemonic.
 /// Holds the master extended private key; all Lightning and on-chain keys derive from it.
+#[derive(Clone)]
 pub struct RootKey {
     master_xprv: ExtendedPrivKey,
     pub master_xpub: ExtendedPubKey,

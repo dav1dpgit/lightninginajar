@@ -1280,6 +1280,13 @@ export function fetch_lsp_registry(worker_url: string): Promise<string>;
 
 export function health_check_lsp(endpoint: string): Promise<boolean>;
 
+/**
+ * v363 (wallet trusts LSP — THE WATCH): sats this wallet owns in inbound zero-conf channels whose funding nobody has
+ * seen for 30 minutes (the provider took the payment and has not published), the channel count, since when (unix ms;
+ * 0 = nothing to say), and the channels dropped as never funded since this page loaded.
+ */
+export function jit_funding_watch_json(): string;
+
 export function lij_init(): void;
 
 /**
@@ -1424,6 +1431,7 @@ export interface InitOutput {
     readonly derive_receive_address: (a: number, b: number, c: number) => [number, number, number, number];
     readonly fetch_lsp_registry: (a: number, b: number) => any;
     readonly health_check_lsp: (a: number, b: number) => any;
+    readonly jit_funding_watch_json: () => [number, number];
     readonly lij_init: () => void;
     readonly lijwallethandle_abandon_payment_by_id: (a: number, b: number, c: number) => [number, number];
     readonly lijwallethandle_active_lsp_json: (a: number) => [number, number, number, number];
@@ -1652,8 +1660,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_228: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_229: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_230: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
