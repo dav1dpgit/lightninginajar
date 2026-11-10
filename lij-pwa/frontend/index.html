@@ -15,6 +15,11 @@
      /wallet/ goes to the wallet with the fragment kept, before anything here paints. The box (Phase B) serves the wallet
      page for /wallet/* itself, so there this never runs. -->
 <script>if (/^\/wallet\/./.test(location.pathname)) location.replace('/wallet/' + location.search + location.hash);</script>
+<!-- S67 (2026-11-06, DP, iPhone only): a Home Screen icon made from THIS page (not from /wallet/) opens here every time
+     and its owner has to tap "Open the wallet"; his wallet lives in that icon's own storage, so a new icon would start
+     empty. Inside such an icon Safari sets navigator.standalone (Apple-only; Android browsers have no such flag), so the
+     page goes straight to the wallet, query and fragment kept. No manifest here still — install stays from /wallet/. -->
+<script>try{if(navigator.standalone===true)location.replace('/wallet/'+location.search+location.hash);}catch(e){}</script>
 <style>.lij-jar{width:100%;height:100%;display:block}</style>
 <style>/* phones: the hero screenshot sits centred under the copy; the desktop ride-left/up (script) is off */
 @media (max-width: 599px) { #lij-op-btns { grid-template-columns: 1fr !important; max-width: none !important; } #lij-op-node-panel { grid-template-columns: 1fr !important; } #lij-op-node-qr { justify-self: center !important; } }
