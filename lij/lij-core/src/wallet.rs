@@ -658,6 +658,23 @@ impl LijWallet {
         Self::inject_state_blob(storage, &root_key, blob)
     }
 
+    /// v365 (S68): write a channel state file's manager and records into storage, with the words alone and no wallet
+    /// built (the pattern of import_backup_file). Refused unless the file can stand whole — channel_state_file::apply.
+    /// Returns how many records were written; the page builds the wallet after.
+    pub fn apply_channel_state_file(
+        mnemonic_str: &str,
+        config: &WalletConfig,
+        storage: &dyn LijStorage,
+        file: &[u8],
+    ) -> LijResult<u32> {
+        let network = parse_bitcoin_network(&config.network)?;
+        let mnemonic: bip39::Mnemonic = mnemonic_str
+            .parse()
+            .map_err(|e| LijError::Key(format!("Invalid mnemonic: {e}")))?;
+        let root_key = RootKey::from_mnemonic(&mnemonic, network)?;
+        crate::channel_state_file::apply(storage, &root_key.encryption_key(), file)
+    }
+
     /// v268: open a blob and count its channel monitors; writes nothing.
     fn count_state_blob(root_key: &RootKey, blob: &StateBlob) -> LijResult<u32> {
         let enc_key = root_key.encryption_key();

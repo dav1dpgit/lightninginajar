@@ -7,7 +7,14 @@
 <meta name="description" content="A bitcoin on-chain and pure-Lightning wallet that runs anywhere, no intermediaries. Your key, your money.">
 <meta name="theme-color" content="#f3f2f2">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<!-- No web-app manifest here by design: install happens from /wallet/. /.well-known/lnurlp/* is a Pages Function and stays. -->
+<!-- S68 (2026-11-10, DP: "I am trying to prevent someone from creating a wallet Home Screen icon from the web splash page
+     again" — and a page cannot stop the phone's own Add to Home Screen): the wallet's manifest is linked here too, so an
+     icon made FROM THIS PAGE is the wallet's icon — it starts at /wallet/ (the manifest's start_url and scope), inside the
+     wallet's own offline copy, never on this page. Until today this page linked no manifest ("install happens from
+     /wallet/"), and an icon made here opened here. /.well-known/lnurlp/* is a Pages Function and stays. -->
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=47">
+<meta name="apple-mobile-web-app-title" content="LiJ Wallet">
 <!-- S62 (2026-10-21, DP): Cloudflare Pages answers any path under /wallet/ with THIS page — it does not apply the
      _redirects rewrite (/wallet/* → the wallet page), measured on the live name: /wallet/anything-under-wallet is this
      file. A Push Key link (lightninginajar.xyz/wallet/claim#v1…) opened on a phone without the wallet landed here and the

@@ -22,6 +22,7 @@ pub mod node;
 pub mod push;   // v280 (S49): Push Key — the pure half (link, pair, records)
 pub mod peer;
 pub mod persist;
+pub mod channel_state_file;   // v365 (S68): the channel state file — the manager and the channel records in one 65,531-byte encrypted file (BOLT #1110's size), with the spill rule
 pub mod seed_vault;
 pub mod wallet;
 pub mod types;

@@ -779,6 +779,149 @@ mod v311_bundle_tests {
     }
 }
 
+/// v366: the amounts a split send to the provider itself carries. The plan (mpp_plan) rounds the total UP to whole
+/// sats; an internal payment has no forwarding hop to absorb that, so the excess (under one sat) comes off ONE
+/// part and the parts sum to the invoice's exact millisats. An invoice without an amount, or a plan that is not
+/// above the invoice, leaves the parts as planned.
+/// v367 (S68, the Session's review of v366): the excess comes off the LARGEST part, not the last. The last part can
+/// be as small as one sat, and a part cut to under a sat is below a channel's HTLC minimum — LDK would refuse the
+/// whole send. The largest part always has the room. (Only if it could not cover the excess — a plan far above the
+/// invoice, which mpp_plan does not make — do the other parts give way, largest first.)
+pub(crate) fn mpp_internal_part_amounts(planned_msat: &[u64], invoice_msat: Option<u64>) -> Vec<u64> {
+    let mut out: Vec<u64> = planned_msat.to_vec();
+    let sum: u64 = out.iter().sum();
+    if let Some(inv) = invoice_msat {
+        if sum > inv {
+            let mut excess = sum - inv;
+            let mut order: Vec<usize> = (0..out.len()).collect();
+            order.sort_by(|&x, &y| out[y].cmp(&out[x]).then(x.cmp(&y)));
+            for i in order {
+                let a = &mut out[i];
+                if excess == 0 { break; }
+                let cut = excess.min(*a);
+                *a -= cut;
+                excess -= cut;
+            }
+        }
+    }
+    out
+}
+
+/// v368 (S68 Wed 2026-11-11, DP 21:46 "Go with the engine build now" — his field find: a 420,002-sat invoice of
+/// a wallet whose two channels had 269,029 sats of room at most, "LND returned no routes"): THE PARTS THAT FIT BOTH
+/// ENDS. The provider (adapter 0.127.1) answers a route request no one channel of the receiving wallet can carry with
+/// `parts_sats` — sizes that each fit one of that wallet's channels. This lays those sizes over THIS wallet's own
+/// channels (`sender` = (scid, usable sats), as mpp_plan reads them): each receiving part goes whole onto the channel
+/// with the most left, and is cut further only when no channel of ours has that much left — a piece of a part still
+/// fits the channel the part was sized for. The parts sum to `total_sats` exactly. One sat short (a route request
+/// rounds a part-sat invoice down) goes onto the smallest receiving part; the provider's sizes keep 1,000 sats back.
+pub(crate) fn mpp_refit_parts(receiver_parts_sats: &[u64], sender: &[(u64, u64)], total_sats: u64) -> Result<Vec<MppPart>, String> {
+    const MAX_PARTS: usize = 10;   // LDK's ceiling for one payment
+    let mut recv: Vec<u64> = receiver_parts_sats.iter().copied().filter(|p| *p > 0).collect();
+    if recv.len() < 2 { return Err("refit: fewer than two parts in the provider's answer".into()); }
+    let sum: u64 = recv.iter().sum();
+    if sum + 1 == total_sats {
+        if let Some(m) = recv.iter_mut().min() { *m += 1; }
+    } else if sum != total_sats {
+        return Err(format!("refit: the provider's parts sum to {} sats, the payment is {} sats", sum, total_sats));
+    }
+    recv.sort_by(|a, b| b.cmp(a));
+    let mut left: Vec<(u64, u64)> = sender.iter().copied().filter(|(_, s)| *s > 0).collect();
+    if left.iter().map(|(_, s)| *s).sum::<u64>() < total_sats {
+        return Err(format!("exceeds_total: {} sats exceeds sendable {} sats", total_sats, left.iter().map(|(_, s)| *s).sum::<u64>()));
+    }
+    let mut out: Vec<MppPart> = Vec::new();
+    for part in recv {
+        let mut need = part;
+        while need > 0 {
+            let i = match (0..left.len()).max_by(|&x, &y| left[x].1.cmp(&left[y].1).then(y.cmp(&x))) {
+                Some(i) if left[i].1 > 0 => i,
+                _ => return Err("refit: no channel of ours has room left".into()),
+            };
+            let take = need.min(left[i].1);
+            out.push(MppPart { scid: left[i].0, part_msat: take * 1000 });
+            left[i].1 -= take;
+            need -= take;
+            if out.len() > MAX_PARTS { return Err(format!("refit: more than {} parts needed", MAX_PARTS)); }
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod v368_refit_tests {
+    use super::mpp_refit_parts as f;
+    fn amounts(v: &[super::MppPart]) -> Vec<(u64, u64)> { v.iter().map(|p| (p.scid, p.part_msat / 1000)).collect() }
+    #[test]
+    fn v368_one_sender_channel_carries_both_receiving_parts() {
+        // DP's case: the sender has one channel with the room; the receiver's channels take 269,029 + 150,973
+        let got = f(&[269_029, 150_973], &[(7, 600_000)], 420_002).unwrap();
+        assert_eq!(amounts(&got), vec![(7, 269_029), (7, 150_973)]);
+    }
+    #[test]
+    fn v368_two_sender_channels_each_part_on_the_channel_with_the_most_left() {
+        let got = f(&[150_973, 269_029], &[(1, 300_000), (2, 200_000)], 420_002).unwrap();
+        assert_eq!(amounts(&got), vec![(1, 269_029), (2, 150_973)]);
+        assert_eq!(got.iter().map(|p| p.part_msat).sum::<u64>(), 420_002_000);
+    }
+    #[test]
+    fn v368_a_receiving_part_larger_than_any_sender_channel_is_cut_and_still_sums() {
+        // sender 200,000 + 150,000 + 100,000; receiver parts 269,029 + 150,973
+        let got = f(&[269_029, 150_973], &[(1, 200_000), (2, 150_000), (3, 100_000)], 420_002).unwrap();
+        assert_eq!(amounts(&got), vec![(1, 200_000), (2, 69_029), (3, 100_000), (2, 50_973)]);
+        assert_eq!(got.iter().map(|p| p.part_msat).sum::<u64>(), 420_002_000);
+        // every piece is at most the receiving part it was cut from
+        assert!(got.iter().all(|p| p.part_msat / 1000 <= 269_029));
+    }
+    #[test]
+    fn v368_one_sat_short_goes_onto_the_smallest_part_any_other_mismatch_is_refused() {
+        let got = f(&[269_029, 150_973], &[(7, 600_000)], 420_003).unwrap();
+        assert_eq!(amounts(&got), vec![(7, 269_029), (7, 150_974)]);
+        assert!(f(&[269_029, 150_973], &[(7, 600_000)], 420_010).is_err());
+        assert!(f(&[269_029, 150_973], &[(7, 600_000)], 420_001).is_err());
+    }
+    #[test]
+    fn v368_refused_when_we_cannot_send_that_much_or_the_answer_is_not_a_split() {
+        assert!(f(&[269_029, 150_973], &[(7, 400_000)], 420_002).unwrap_err().contains("exceeds_total"));
+        assert!(f(&[420_002], &[(7, 600_000)], 420_002).is_err());
+        assert!(f(&[], &[(7, 600_000)], 0).is_err());
+    }
+}
+
+#[cfg(test)]
+mod v366_internal_split_tests {
+    use super::mpp_internal_part_amounts as f;
+    #[test]
+    fn v366_whole_sat_invoice_parts_unchanged() {
+        assert_eq!(f(&[516_485_000, 3_515_000], Some(520_000_000)), vec![516_485_000, 3_515_000]);
+    }
+    #[test]
+    fn v367_sub_sat_invoice_the_largest_part_trimmed_to_the_exact_millisats() {
+        let got = f(&[400_000_000, 120_001_000], Some(520_000_250));
+        assert_eq!(got, vec![399_999_250, 120_001_000]);
+        assert_eq!(got.iter().sum::<u64>(), 520_000_250);
+        // the largest part gives way wherever it sits in the plan
+        assert_eq!(f(&[3_000, 900_000, 5_000], Some(907_400)), vec![3_000, 899_400, 5_000]);
+    }
+    #[test]
+    fn v367_a_one_sat_last_part_is_never_cut_below_a_sat() {
+        // v366 cut the last part: [519_999_000, 1_000] against 519_999_250 left a 250-msat part, under the HTLC minimum
+        let got = f(&[519_999_000, 1_000], Some(519_999_250));
+        assert_eq!(got, vec![519_998_250, 1_000]);
+        assert!(got.iter().all(|a| *a >= 1_000));
+    }
+    #[test]
+    fn v366_no_amount_or_plan_below_the_invoice_left_as_planned() {
+        assert_eq!(f(&[1_000, 2_000], None), vec![1_000, 2_000]);
+        assert_eq!(f(&[1_000, 2_000], Some(5_000)), vec![1_000, 2_000]);
+    }
+    #[test]
+    fn v367_a_plan_far_above_the_invoice_parts_give_way_largest_first() {
+        assert_eq!(f(&[10_000, 300], Some(9_900)), vec![9_600, 300]);
+        assert_eq!(f(&[500, 300], Some(200)), vec![0, 200]);
+    }
+}
+
 #[cfg(test)]
 mod v312_anchors_tests {
     use lightning::types::features::ChannelTypeFeatures;
@@ -6490,6 +6633,141 @@ impl LijNode {
             .map(|r| (r, payment_id))
     }
 
+    /// v368: the provider answered "no route" with the part sizes that fit the receiving wallet's channels
+    /// (`parts_sats`). The split over this wallet's own channels (mpp_refit_parts), with mpp_decision's own
+    /// checks: the invoice's amount wins, the invoice must allow a split (basic_mpp), the channels are read as
+    /// mpp_plan reads them.
+    #[cfg(target_arch = "wasm32")]
+    pub fn mpp_refit(&self, bolt11: &str, user_amount_sat: Option<u64>, receiver_parts_sats: &[u64]) -> LijResult<Vec<MppPart>> {
+        use bitcoin::secp256k1::PublicKey;
+        let cm = self.channel_manager.as_ref()
+            .ok_or_else(|| LijError::Node("ChannelManager not initialized".into()))?;
+        let invoice = bolt11.trim().parse::<lightning_invoice::Bolt11Invoice>()
+            .map_err(|e| LijError::Payment(format!("Invalid invoice: {:?}", e)))?;
+        let amount_msat = invoice.amount_milli_satoshis()
+            .or(user_amount_sat.map(|s| s.saturating_mul(1000)))
+            .ok_or_else(|| LijError::Payment("refit: the invoice has no amount".into()))?;
+        if !invoice.features().map(|f| f.supports_basic_mpp()).unwrap_or(false) {
+            return Err(LijError::Payment("refit: the invoice does not allow a split payment".into()));
+        }
+        let lsp_pubkey_hex = self.active_lsp.as_ref()
+            .map(|a| a.info.pubkey.clone())
+            .ok_or_else(|| LijError::Payment("No active LSP".into()))?;
+        let lsp_pubkey = PublicKey::from_slice(&hex::decode(&lsp_pubkey_hex)
+            .map_err(|e| LijError::Payment(format!("LSP pubkey hex: {:?}", e)))?)
+            .map_err(|e| LijError::Payment(format!("LSP PublicKey: {:?}", e)))?;
+        let chans: Vec<(u64, u64)> = cm.list_channels().iter()
+            .filter(|c| c.counterparty.node_id == lsp_pubkey)
+            .filter(|c| c.is_usable)
+            .filter_map(|c| {
+                let scid = c.short_channel_id.or(c.outbound_scid_alias)?;
+                let cap = c.outbound_capacity_msat.min(c.next_outbound_htlc_limit_msat);
+                let usable_sats = fee_adjusted_deliverable_msat(cap) / 1000;
+                if usable_sats == 0 { None } else { Some((scid, usable_sats)) }
+            })
+            .collect();
+        let total_sats = (amount_msat + 999) / 1000;
+        let parts = mpp_refit_parts(receiver_parts_sats, &chans, total_sats).map_err(LijError::Payment)?;
+        log::info!("MPP refit (v368): {} part(s) for {} sats — the provider's sizes {:?} over {} channel(s) of ours",
+            parts.len(), total_sats, receiver_parts_sats, chans.len());
+        Ok(parts)
+    }
+
+    /// v366 (S68 Wed 2026-11-11, DP 16:38 "Yes" — his field find: 520,000 sats to a Lightning address, split
+    /// across two channels, failed twice before anything left the phone): is this invoice's payee the active
+    /// provider itself? True for the address rail's invoices (the provider issues them on its own node). The
+    /// split send asks this first — an internal payment needs no route from the provider.
+    #[cfg(target_arch = "wasm32")]
+    pub fn mpp_dest_is_lsp(&self, bolt11: &str) -> bool {
+        let invoice = match bolt11.trim().parse::<lightning_invoice::Bolt11Invoice>() {
+            Ok(i) => i,
+            Err(_) => return false,
+        };
+        let dest_hex = hex::encode(invoice.recover_payee_pub_key().serialize());
+        self.active_lsp.as_ref()
+            .map(|a| a.info.pubkey.eq_ignore_ascii_case(&dest_hex))
+            .unwrap_or(false)
+    }
+
+    /// v366: THE SPLIT SEND TO THE PROVIDER ITSELF — the v222 rule (single path, apply_lsp_route_and_send) given
+    /// to the split path. Before this, every shard's route ask got the adapter's deliberate empty answer
+    /// ("destination is this LSP") and build_mpp_path's parser refused it ("LND returned no routes"), so an
+    /// address payment larger than the sender's largest channel could never be sent. Here each planned part is
+    /// ONE hop — wallet → provider over that part's own channel, the part's amount, the invoice's final CLTV —
+    /// and the parts go out as one payment (one hash, one secret, one payment_id). No route is asked and no
+    /// forwarding fee applies (the provider is the payee). The parts are trimmed to the invoice's exact
+    /// millisats (the plan rounds up to whole sats). The routed split path above is untouched.
+    #[cfg(target_arch = "wasm32")]
+    pub fn send_mpp_internal(
+        &self,
+        parts: &[MppPart],
+        bolt11: &str,
+    ) -> LijResult<(PaymentResult, lightning::ln::channelmanager::PaymentId)> {
+        use bitcoin::secp256k1::PublicKey;
+        let cm = self.channel_manager.as_ref()
+            .ok_or_else(|| LijError::Node("ChannelManager not initialized".into()))?;
+        let invoice = bolt11.trim().parse::<lightning_invoice::Bolt11Invoice>()
+            .map_err(|e| LijError::Payment(format!("Invalid invoice: {:?}", e)))?;
+        // The identity pair, exactly as send_mpp_from_responses derives it.
+        let (payment_hash, recipient_onion) = if invoice.amount_milli_satoshis().is_some() {
+            let (h, o, _route_params) =
+                payment_parameters_from_invoice(&invoice)
+                .map_err(|e| LijError::Payment(format!("Invoice params error: {:?}", e)))?;
+            (h, o)
+        } else {
+            use bitcoin::hashes::Hash as _;
+            (
+                lightning::types::payment::PaymentHash(invoice.payment_hash().to_byte_array()),
+                lightning::ln::channelmanager::RecipientOnionFields::secret_only(
+                    *invoice.payment_secret(),
+                ),
+            )
+        };
+        use lightning::sign::EntropySource;
+        let payment_id = lightning::ln::channelmanager::PaymentId(
+            self.keys_manager.get_secure_random_bytes());
+        let final_cltv_delta = invoice.min_final_cltv_expiry_delta() as u32;
+
+        let lsp_pubkey_hex = self.active_lsp.as_ref()
+            .map(|a| a.info.pubkey.clone())
+            .ok_or_else(|| LijError::Payment("No active LSP — internal split route".into()))?;
+        let lsp_pubkey = PublicKey::from_slice(&hex::decode(&lsp_pubkey_hex)
+            .map_err(|e| LijError::Payment(format!("LSP pubkey hex: {:?}", e)))?)
+            .map_err(|e| LijError::Payment(format!("LSP PublicKey: {:?}", e)))?;
+
+        let planned: Vec<u64> = parts.iter().map(|p| p.part_msat).collect();
+        let amounts = mpp_internal_part_amounts(&planned, invoice.amount_milli_satoshis());
+        let channels = cm.list_channels();
+        let mut paths: Vec<Path> = Vec::with_capacity(parts.len());
+        for (part, amount_msat) in parts.iter().zip(amounts.iter()) {
+            if *amount_msat == 0 { continue; }
+            // The part's own channel must still be there and usable (the plan was made a moment ago).
+            channels.iter()
+                .filter(|c| c.counterparty.node_id == lsp_pubkey && c.is_usable)
+                .find(|c| c.short_channel_id == Some(part.scid)
+                       || c.outbound_scid_alias == Some(part.scid))
+                .ok_or_else(|| LijError::Payment(format!(
+                    "MPP shard channel scid={} not found/usable", part.scid)))?;
+            log::info!("MPP internal shard: scid={} amount_msat={} final_cltv={} (dest == provider, no route asked)",
+                part.scid, amount_msat, final_cltv_delta);
+            paths.push(Path {
+                hops: vec![RouteHop {
+                    pubkey: lsp_pubkey,
+                    node_features: NodeFeatures::empty(),
+                    short_channel_id: part.scid,
+                    channel_features: ChannelFeatures::empty(),
+                    fee_msat: *amount_msat,
+                    cltv_expiry_delta: final_cltv_delta,
+                    maybe_announced_channel: false,
+                }],
+                blinded_tail: None,
+            });
+        }
+        log::info!("MPP internal: assembled {} one-hop shard path(s) to the provider; submitting as one payment", paths.len());
+        self.send_assembled_mpp(paths, payment_hash, recipient_onion, payment_id)
+            .map(|r| (r, payment_id))
+    }
+
 
     // ── Channels ──────────────────────────────────────────────────────────────
 
@@ -7181,6 +7459,47 @@ impl LijNode {
             }
         }
         Ok((out, failed))
+    }
+
+    /// v365 (S68, the channel state file — channel_state_file.rs): each live channel record's update number, by the
+    /// record's storage name ("txid:vout"). The number rises with every change to that channel.
+    pub fn channel_state_ids(&self) -> std::collections::HashMap<String, u64> {
+        let mut out = std::collections::HashMap::new();
+        if let Some(cm) = self.chain_monitor.as_ref() {
+            for channel_id in self.live_monitor_ids() {
+                if let Ok(m) = cm.get_monitor(channel_id) {
+                    let f = m.get_funding_txo();
+                    out.insert(format!("{}:{}", f.txid, f.index), m.get_latest_update_id());
+                }
+            }
+        }
+        out
+    }
+
+    /// v365: this copy's channel state fingerprint — what the wallet compares with its holder's on reconnect.
+    /// "" when there is no channel manager yet.
+    pub fn channel_state_fp(&self) -> LijResult<String> {
+        Ok(crate::channel_state_file::local_state_fp(self.storage.as_ref(), &self.root_key.encryption_key(), &self.channel_state_ids())?.unwrap_or_default())
+    }
+
+    /// v365: build the channel state file from this moment's state. The manager is saved first, so the file's manager
+    /// is never behind its records. `min_version`: the holder's last number (the file's number is the clock in
+    /// milliseconds, and always above it). {"version","state_fp","file_hex","included","spilled"}, or "null" when
+    /// there is no channel state.
+    pub fn channel_state_file_build_json(&self, min_version: u64) -> LijResult<String> {
+        self.persist_channel_manager()?;
+        let now = crate::storage::now_ms();
+        let version = now.max(min_version.saturating_add(1));
+        match crate::channel_state_file::build(self.storage.as_ref(), &self.root_key.encryption_key(), &self.channel_state_ids(), version, now)? {
+            None => Ok("null".to_string()),
+            Some(b) => Ok(serde_json::json!({ "version": version, "state_fp": b.state_fp, "file_hex": hex::encode(&b.file), "included": b.included, "spilled": b.spilled }).to_string()),
+        }
+    }
+
+    /// v365: a held file against this copy — see channel_state_file::compare. Read-only.
+    pub fn channel_state_file_compare_json(&self, file_hex: &str) -> LijResult<String> {
+        let file = hex::decode(file_hex.trim()).map_err(|_| LijError::Backup("channel state file: not hex".into()))?;
+        Ok(crate::channel_state_file::compare(self.storage.as_ref(), &self.root_key.encryption_key(), &self.channel_state_ids(), &file)?.to_string())
     }
 
     /// v313 (S57, DP 17:55 "where anything is different … Go"): what the chain must be asked before a merge — the

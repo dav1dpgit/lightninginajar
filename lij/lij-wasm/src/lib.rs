@@ -96,7 +96,11 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v364".to_string()  // v364 (S67 Thu 2026-11-05 00:xx, THE REVIEW'S FIXES on the wallet's half — DP 23:56 "Go ahead"; design docs/design/jit-trust/wallet-trusts-lsp-v0.3.md): (5) a never-funded drop marks its map entry `closed` only after the force close AND a manager save without the channel; only a `closed` entry's monitor is archived at boot or hidden from the kit, the balances and the sweeps; a boot that archived a monitor and then could not load the manager puts it back and loads once more (jit_funding::unarchive_after_failed_load); entries found open at boot are reconciled against the loaded manager. (6) the offline audit asks the active provider about ITS channels only, and its drop decisions are queued for the next synchronous tick, which judges the channel AGAIN on a fresh view (sats landed during the HTTP round trip → refused). (14) a provider record saying cancelled or orphan is judged like abandoned: nothing owned → the drop; sats owned → THE WATCH, red. ---- v363 (S67 Wed 2026-11-04, DP 22:17 "Go on all. Agreed across the board." — WALLET TRUSTS LSP, design docs/design/jit-trust/wallet-trusts-lsp-v0.1.md): the wallet's half of held JIT funding. Init/node feature bit 261 (LIJ_FUNDING_HOLD_FEATURE_BIT; 259 is DnsResolver in LDK 0.2's node context) tells a provider this wallet accepts a JIT channel whose funding is published only after its claim; the new peer message JitFundingAbandoned (type 32823 — funding txid + index) is judged by THE RULE (lij_core::jit_funding: sender = counterparty = active provider; inbound, zero-conf, no confirmation; the monitor's balance for us ZERO and no HTLC pending; the funding unknown to the wallet's books) and only then is the channel dropped — the persisted never_funded map first, then force_close_without_broadcasting_txn; the ChannelClosed handler files no close for it, every monitor reader (kit, balances, fingerprint, diagnostics, the reconcile walk) skips it, and `restore` archives its monitor key at the next boot. THE AUDIT (the message never came — the wallet was away): an inbound zero-conf channel with nothing owned and no HTLC whose funding is unknown to books and quorum for two hours (the CONFLICT-AUDIT's clock) is dropped the same way. THE WATCH: sats owned on a funding nobody has seen for 30 min — a tape line every 30 s and jit_funding_watch_json for the page. Tests: jit_funding (the rule, the watch, the map), roundtrip_jit_funding_abandoned (the wire bytes), the feature bits.
+    "phase11-v368".to_string()  // v368 (S68 Wed 2026-11-11, DP 21:46 "Go with the engine build now" — his field find: a 420,002-sat INVOICE of a wallet on the same provider whose two channels had 269,029 sats of room at most: "LND returned no routes" on every try; the UM890 journal: "[SYNTH] no channel … can carry 420002 (best spendable 270927 across 2)"): THE PARTS THAT FIT BOTH ENDS. Adapter 0.127.1 answers such a route request `no_route` with `parts_sats` — sizes that each fit one of the receiving wallet's channels. send_loop: (a) the single path, on an empty route answer that carries parts_sats, lays those sizes over this wallet's own channels (node.rs mpp_refit → mpp_refit_parts, 5 native tests) and runs the split path with them; (b) the split path, when a shard's route answer is empty, asks once for the WHOLE amount and does the same. Once per send (refitted). Each part still asks its own route; send_mpp_from_responses, build_mpp_path and the internal split (v366/v367) are untouched. An older adapter sends no parts_sats — every send behaves as before.
+    // "phase11-v367".to_string()  // v367 (S68 Wed 2026-11-11, DP 17:03 "make any corrections to the sharding issue code fix that you see that are missed"): the Session's review of v366 (the split send to the provider itself). The path itself matches the single path's v222 rule hop for hop — one correction: the excess under one sat that the whole-sat plan leaves over a millisat-exact invoice came off the LAST part, which can be a single sat; a part cut to under a sat is below the HTLC minimum and LDK refuses the whole send. It now comes off the LARGEST part (mpp_internal_part_amounts; tests v367_*). Nothing else changed.
+    // "phase11-v366".to_string()  // v366 (S68 Wed 2026-11-11, DP 16:38 "Yes" — his field find: 520,000 sats to a Lightning address between two wallets on the same provider "went to shard mode, then failed", twice; the UM890 journal showed each shard's route ask answered "destination is this LSP — answering empty"): A SPLIT SEND TO THE PROVIDER ITSELF. The single path has ignored that empty answer since v222 and built the one-hop route itself; the split path (v158) never got the rule — build_mpp_path's parser refused the empty answer ("LND returned no routes") before anything left the phone, so an address payment above the sender's largest channel could never be sent. Now: node.rs mpp_dest_is_lsp (the invoice's payee is the active provider) and send_mpp_internal (each planned part = ONE hop over its own channel, the invoice's final CLTV, no route asked, no forwarding fee; parts trimmed to the invoice's exact millisats by mpp_internal_part_amounts — 4 native tests); lib.rs send_loop's Multi branch asks mpp_dest_is_lsp once, skips the per-shard route asks and calls send_mpp_internal. The routed split path (send_mpp_from_responses, build_mpp_path) and the single path are untouched. No page change, no adapter change.
+    // "phase11-v365".to_string()  // v365 (S68 Wed 2026-11-11, DP "Continue/go" — THE CHANNEL STATE FILE, docs/design/recovery/peer-storage-and-recovery-v0.4.md §2): the manager and one record per channel in ONE encrypted binary file of exactly 65,531 bytes (BOLT #1110's size) with the spill rule — a list line for every channel always, whole records smallest first while they fit, a record that does not fit stays in the LIJOX copy; channel_state_fp (compared with the holder on reconnect), channel_state_file_build_json (the manager saved first), channel_state_file_compare_json (same / local_newer / file_newer / file_newer_incomplete / conflict), and the static apply_channel_state_file (refused unless every record that is only a line equals this copy's). New module channel_state_file.rs, 4 tests. Nothing calls these yet — the page does from v1103.
+    // "phase11-v364".to_string()  // v364 (S67 Thu 2026-11-05 00:xx, THE REVIEW'S FIXES on the wallet's half — DP 23:56 "Go ahead"; design docs/design/jit-trust/wallet-trusts-lsp-v0.3.md): (5) a never-funded drop marks its map entry `closed` only after the force close AND a manager save without the channel; only a `closed` entry's monitor is archived at boot or hidden from the kit, the balances and the sweeps; a boot that archived a monitor and then could not load the manager puts it back and loads once more (jit_funding::unarchive_after_failed_load); entries found open at boot are reconciled against the loaded manager. (6) the offline audit asks the active provider about ITS channels only, and its drop decisions are queued for the next synchronous tick, which judges the channel AGAIN on a fresh view (sats landed during the HTTP round trip → refused). (14) a provider record saying cancelled or orphan is judged like abandoned: nothing owned → the drop; sats owned → THE WATCH, red. ---- v363 (S67 Wed 2026-11-04, DP 22:17 "Go on all. Agreed across the board." — WALLET TRUSTS LSP, design docs/design/jit-trust/wallet-trusts-lsp-v0.1.md): the wallet's half of held JIT funding. Init/node feature bit 261 (LIJ_FUNDING_HOLD_FEATURE_BIT; 259 is DnsResolver in LDK 0.2's node context) tells a provider this wallet accepts a JIT channel whose funding is published only after its claim; the new peer message JitFundingAbandoned (type 32823 — funding txid + index) is judged by THE RULE (lij_core::jit_funding: sender = counterparty = active provider; inbound, zero-conf, no confirmation; the monitor's balance for us ZERO and no HTLC pending; the funding unknown to the wallet's books) and only then is the channel dropped — the persisted never_funded map first, then force_close_without_broadcasting_txn; the ChannelClosed handler files no close for it, every monitor reader (kit, balances, fingerprint, diagnostics, the reconcile walk) skips it, and `restore` archives its monitor key at the next boot. THE AUDIT (the message never came — the wallet was away): an inbound zero-conf channel with nothing owned and no HTLC whose funding is unknown to books and quorum for two hours (the CONFLICT-AUDIT's clock) is dropped the same way. THE WATCH: sats owned on a funding nobody has seen for 30 min — a tape line every 30 s and jit_funding_watch_json for the page. Tests: jit_funding (the rule, the watch, the map), roundtrip_jit_funding_abandoned (the wire bytes), the feature bits.
     // "phase11-v362".to_string()  // v362 (S66 Wed 2026-11-04, DP 16:19 "Both; the higher of the two; one decimal; proceed now" — LIGHTNING PAYS ON-CHAIN PHASE 2 + 3, design v0.7 and phase3-release-speedup-v0.1): FRACTIONAL FEE RATES — the provider's exact rates read from the new peer message FeeRatesKw (type 32821; sat/kw and the relay floor; the bundle's whole sat/vB stay the fallback), FeeQuote::from_fast_sat_per_kw, fee_rates_json with the three exact tiers floored at the relay floor and `relay_floor_vb` / `exact`; the release priced in sat per kilo-vbyte (onchain_pay_release_kvb; fee_at rounds up once; the floor 0.1 sat/vB), the quote's lock_rate_sat_kvb and release_rate_sat_kvb (the provider's six-block suggestion) kept on the record; THE SPEED-UP'S GROUND — the release and its FAST COPY at twice the rate (the whole reserve) built together, both kept (release_hex_fast — the Black start page's "send the faster one"), mark_released_v2 with released_at_block and release_replacements (a release on a `released` record is the replacement); the kit leg carries the fast copy.
     // "phase11-v361".to_string()  // v361 (S66 Mon 2026-11-02 → Tue 03, DP 23:12 "Go on Phase 1" — LIGHTNING PAYS ON-CHAIN, THE WALLET'S HALF; docs/design/onchain-pay/lightning-paying-onchain-v0.6.md): a wallet pays an on-chain address from its Lightning balance through its provider (adapter 0.120.0). The engine: onchain_pay.rs — the hand-over script OP_SIZE 32 EQUAL IF SHA256 H EQUALVERIFY W ELSE DROP T CLTV DROP L ENDIF CHECKSIG, byte for byte the adapter's (pinned against its vector), the release built and signed (SIGHASH_ALL, replaceable; the secret in the witness; the unused reserve back to the change chain), the lock report's check (the provider's address must be the one H, W, L and T make; T inside the agreed bounds); key.rs — the secret (HKDF, own salt) and the release key (m/525h/1h/<index>h), both derived by index, never stored; node.rs — the records in the state blob (lij_onchain_pay + its index ride the backup), prepare → record_quote (B under H with the lock's amount, A the provider's, L a key, the windows sane) → paying → locked (the report checked) → lock_seen (the wallet's OWN walk saw the lock) → released → done | returned | taken_back | failed, LDK's word on A and B latched, the kit's `onchain_pay` leg (the signed release rides it); tier2 — the hand-over scripts join the block-filter walk as CHAIN_HANDOVER extras whose outputs are EVENTS (Tier2View.handover: never a coin, never a balance), spends recorded with the secret when the witness carries one, rolled back and rebuilt with the walk; the walk re-reads from a reported lock's block once. PROOF_ACTIONS gains "onchain-pay". No state format change for older wallets (new keys only). // v360 (S66 Mon 2026-11-02, DP 21:28 "Go" — Black start, THE IN-FLIGHT PAYMENT COLLECT; Phase 0 of Lightning pays on-chain and the Push Key fix; docs/design/black-start/in-flight-collect-v0.1.md): every payment in flight on a channel's latest commitment (a Push Key's lock, a held payment, any send or receive caught mid-flight) gets a leg in the kit's channel entry under `htlcs` — the signed return (going out; valid from its expiry block) or claim (coming in, secret known; valid at once), its block, its wait after confirming (to_self_delay), and two pre-signed collects of its output to fresh m/84 addresses after the taproot coins' — by the same signer call as the close's collect, because BOLT 3 gives the HTLC transaction's output the to_local script (the LiJ patch's lij_htlc_legs beside lij_export_escape; lij-core's inflight.rs). `htlc_tx_hexes` stays for older /recover copies. No state format change; the fingerprint is unchanged (a commitment txid already moves with every HTLC). // v359 (S65 Wed 2026-10-28, DP's UX list — items 8/10 and the Register name): (1) THE BACKUP-DIRTY FLAG REMEMBERS ACROSS A RELOAD — storage::DirtyFlag mirrors the flag in storage (lij:backup_pending, written on the rising edge, deleted when taken; loaded at boot) with AtomicBool's method names, so every writer is unchanged; backup_pending() reads it, backup_take() takes it (the device save with the cloud copy Off) — the erase screen can say whether the last backup file is behind this phone. (2) "lnurl-display" joins PROOF_ACTIONS — a Register mode shop name travels to the provider under the node key's proof over "display:<name>:<sha256 hex of the UTF-8 text>" (adapter 0.119.1 puts it into the pay terms' text/plain; every sending wallet then shows the shop's own name). No state format change.
     // "phase11-v358".to_string()  // v358 (S64 Tue 2026-10-27, Kimi K3.1 Pro round 2 — F13 / F24 / K6a, DP's "then 3"): SIGNED WRITES SIGN THEIR EFFECT. (F13) the channel record's proof binds the whole canonical record (registry_client::channel_record_id — "<channel_id>:<sha256 over the other fields>", was the channel id alone); the push subscription's proof binds the subscription (push_subscription_record_id — "sub:<sha256 over endpoint, p256dh, auth>", bound nothing before); the Lightning-address registration's record covers each entry whole (hash:secret:expires:index per line, was the hash alone). (F24) "tapedrop" joins PROOF_ACTIONS — a tape is filed under a wallet's key only with that key's proof over "tapedrop:<tape_id>:<sha256 of the tape text>" (the page sends tape_json + the proof from v1074). (K6a) the cloud-copy push signs lij-backup-v2: the digest carries the copy's fingerprint and its number (storage::backup_digest_v2; the body says auth_v 2). Twins: adapter 0.119.0 (accepts the old forms for one release — it rides BEFORE this engine), worker 0.18.0 (v1 and v2). Vectors pinned on every side.
@@ -364,6 +368,31 @@ fn route_answer_hops(response_text: &str) -> Vec<(String, u64, u64)> {
             h.get("amt_to_forward_msat").and_then(|a| a.as_str()).and_then(|a| a.parse::<u64>().ok()).or_else(|| h.get("amt_to_forward_msat").and_then(|a| a.as_u64())).unwrap_or(0),
         )).collect())
         .unwrap_or_default()
+}
+/// v368: the part sizes (whole sats) a provider put into a "no route" answer — each fits one of the receiving wallet's channels.
+fn route_answer_parts_sats(response_text: &str) -> Option<Vec<u64>> {
+    let v: serde_json::Value = serde_json::from_str(response_text).ok()?;
+    let a = v.get("parts_sats").or_else(|| v.get("lijox_parts_sats"))?.as_array()?;
+    let out: Vec<u64> = a.iter().filter_map(|x| x.as_u64()).collect();
+    if out.len() >= 2 && out.len() == a.len() { Some(out) } else { None }
+}
+/// v368: one route request for the WHOLE amount, read only for its parts_sats, laid over this wallet's channels.
+async fn refit_ask(
+    inner: &Arc<std::sync::Mutex<LijWallet>>, bolt11: &str, route_endpoint: &str, route_macaroon_hex: &str,
+    total_sats: u64, amount_sats_override: Option<u64>,
+) -> Option<Vec<lij_core::node::MppPart>> {
+    let (url, body) = {
+        let wallet = inner.lock().ok()?;
+        let p = wallet.node().prepare_lsp_route_request(bolt11, route_endpoint, &[], Some(total_sats)).ok()?;
+        (p.url, p.request_body)
+    };
+    let resp = lij_core::node::fetch_post_with_macaroon(&url, route_macaroon_hex, &body).await.ok()?;
+    let sizes = route_answer_parts_sats(&resp)?;
+    let wallet = inner.lock().ok()?;
+    match wallet.node().mpp_refit(bolt11, amount_sats_override, &sizes) {
+        Ok(p) => Some(p),
+        Err(e) => { log::warn!("[v368] the provider's part sizes {:?} could not be laid over our channels: {}", sizes, e); None }
+    }
 }
 fn route_answer_count(response_text: &str) -> usize {
     serde_json::from_str::<serde_json::Value>(response_text).ok()
@@ -984,6 +1013,40 @@ impl LijWalletHandle {
         let n = LijWallet::import_backup_file(mnemonic, &config, &storage, &blob)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         Ok(format!("{{\"channels\":{n}}}"))
+    }
+
+    /// v365 (S68, the channel state file): write a held file's manager and records into storage with the words alone,
+    /// no wallet built — see LijWallet::apply_channel_state_file. Returns {"records":n}.
+    #[wasm_bindgen]
+    pub fn apply_channel_state_file(mnemonic: &str, config_json: &str, file_hex: &str) -> Result<String, JsValue> {
+        let config: WalletConfig = serde_json::from_str(config_json)
+            .map_err(|e| JsValue::from_str(&format!("Invalid config: {e}")))?;
+        let file = hex::decode(file_hex.trim()).map_err(|_| JsValue::from_str("channel state file: not hex"))?;
+        let storage = LocalStorage;
+        let n = LijWallet::apply_channel_state_file(mnemonic, &config, &storage, &file)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(format!("{{\"records\":{n}}}"))
+    }
+
+    /// v365: this copy's channel state fingerprint ("" = no channel state yet). Read-only.
+    #[wasm_bindgen]
+    pub fn channel_state_fp(&self) -> Result<String, JsValue> {
+        let wallet = match self.inner.try_lock() { Ok(w) => w, Err(_) => return Err(JsValue::from_str("WALLET_BUSY")) };
+        wallet.node().channel_state_fp().map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// v365: build the channel state file now — see node::channel_state_file_build_json. Saves the manager first.
+    #[wasm_bindgen]
+    pub fn channel_state_file_build_json(&self, min_version: f64) -> Result<String, JsValue> {
+        let wallet = match self.inner.try_lock() { Ok(w) => w, Err(_) => return Err(JsValue::from_str("WALLET_BUSY")) };
+        wallet.node().channel_state_file_build_json(if min_version.is_finite() && min_version > 0.0 { min_version as u64 } else { 0 }).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// v365: a held file against this copy — see channel_state_file::compare. Read-only.
+    #[wasm_bindgen]
+    pub fn channel_state_file_compare_json(&self, file_hex: String) -> Result<String, JsValue> {
+        let wallet = match self.inner.try_lock() { Ok(w) => w, Err(_) => return Err(JsValue::from_str("WALLET_BUSY")) };
+        wallet.node().channel_state_file_compare_json(&file_hex).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     #[wasm_bindgen]
@@ -4020,7 +4083,10 @@ async fn send_loop(
     let mut mem = send_memory_get(&hash_hex).unwrap_or_else(|| SendMemory { started_ms: js_sys::Date::now(), ..Default::default() });
     mem.ended_ms = 0.0;
     send_memory_put(&hash_hex, mem.clone());
-    {
+    // v368: the provider's part sizes, laid over our channels — set once, then the send starts again on the split path
+    let mut forced_parts: Option<Vec<lij_core::node::MppPart>> = None;
+    let mut refitted = false;
+    'refit: loop {
             use lij_core::node::PaymentOutcome;
 
             // v10: emit progress events to JS so the wallet UI can render
@@ -4040,7 +4106,9 @@ async fn send_loop(
             // the unchanged retry loop below; every other outcome is handled and
             // RETURNS here. Multipath assembles one shard per usable channel and
             // submits a single send_payment_with_route (one payment_hash).
-            let mpp_decision = {
+            let mpp_decision = if let Some(p) = forced_parts.take() {
+                Ok(lij_core::node::MppDecision::Multi(p))   // v368
+            } else {
                 let wallet = inner.lock()
                     .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
                 wallet.node().mpp_decision(&bolt11, amount_sats_override)
@@ -4065,11 +4133,20 @@ async fn send_loop(
                     log::info!("[MPP] multipath send: {} shard(s)", shard_count);
                     emit(format!(r#"{{"phase":"mpp_start","shards":{}}}"#, shard_count));
                     let mut responses: Vec<(String, u64)> = Vec::with_capacity(shard_count);
+                    // v366 (S68, DP's field find 2026-11-11): the payee is the provider itself (a Lightning-address
+                    // invoice) — no route is asked; each part is one hop over its own channel (send_mpp_internal).
+                    let mpp_internal = {
+                        let wallet = inner.lock()
+                            .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                        wallet.node().mpp_dest_is_lsp(&bolt11)
+                    };
+                    if mpp_internal { log::info!("[MPP] v366: destination is the provider — {} one-hop shard(s), no route asked", shard_count); }
                     for (i, part) in parts.iter().enumerate() {
                         let part_sats = part.part_msat / 1000;
                         emit(format!(
                             r#"{{"phase":"mpp_shard","shard":{},"shards":{},"sats":{}}}"#,
                             i + 1, shard_count, part_sats));
+                        if mpp_internal { continue; }
                         // lock: build THIS shard's route-build body (part amount)
                         let (url, body) = {
                             let wallet = inner.lock()
@@ -4096,6 +4173,18 @@ async fn send_loop(
                                     format!("MPP shard {} HTTP error: {}", i + 1, e))));
                             }
                         };
+                        // v368: no route for this part — the receiving wallet may have no ONE channel for it. Ask once
+                        // for the whole amount; if the provider answers with sizes that fit, start again with them.
+                        if !refitted && route_answer_count(&resp) == 0 {
+                            let total_sats: u64 = parts.iter().map(|p| p.part_msat / 1000).sum();
+                            if let Some(fit) = refit_ask(&inner, &bolt11, &route_endpoint, &route_macaroon_hex, total_sats, amount_sats_override).await {
+                                log::info!("[v368] shard {} had no route — the provider's sizes give {} part(s); starting the split again", i + 1, fit.len());
+                                emit(format!(r#"{{"phase":"mpp_refit","shards":{}}}"#, fit.len()));
+                                refitted = true;
+                                forced_parts = Some(fit);
+                                continue 'refit;
+                            }
+                        }
                         responses.push((resp, part.scid));
                     }
                     // lock: assemble all shards + send as ONE payment.
@@ -4105,7 +4194,8 @@ async fn send_loop(
                         let wallet = inner.lock()
                             .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
                         (
-                            wallet.node().send_mpp_from_responses(responses, &bolt11),
+                            if mpp_internal { wallet.node().send_mpp_internal(&parts, &bolt11) }   // v366
+                            else { wallet.node().send_mpp_from_responses(responses, &bolt11) },
                             wallet.node().payment_outcomes_handle(),
                         )
                     };
@@ -4378,6 +4468,27 @@ async fn send_loop(
                 }
                 break (prep, dest_is_lsp, lsp_height, response_text);
                 };
+                // v368: no route for the whole amount, and the provider says the sizes that fit the receiving wallet's
+                // channels — nothing has been sent; go to the split path with those sizes over our own channels
+                if !dest_is_lsp && !refitted && route_answer_count(&response_text) == 0 {
+                    if let Some(sizes) = route_answer_parts_sats(&response_text) {
+                        let fit = {
+                            let wallet = inner.lock()
+                                .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                            wallet.node().mpp_refit(&bolt11, amount_sats_override, &sizes)
+                        };
+                        match fit {
+                            Ok(p) => {
+                                log::info!("[v368] no route for the whole amount — the provider's sizes {:?} give {} part(s); going to the split path", sizes, p.len());
+                                emit(format!(r#"{{"phase":"mpp_refit","shards":{}}}"#, p.len()));
+                                refitted = true;
+                                forced_parts = Some(p);
+                                continue 'refit;
+                            }
+                            Err(e) => log::warn!("[v368] the provider's part sizes {:?} could not be laid over our channels: {}", sizes, e),
+                        }
+                    }
+                }
                 let payment_id = prep.payment_id;
                 // v353 (§3b): this try's route on record — the hops as the provider answered them (an internal send
                 // has no route answer: its one hop is the provider)
@@ -4702,8 +4813,8 @@ async fn send_loop(
 
             // Loop fell through (shouldn't happen — every branch returns).
             send_memory_put(&hash_hex, mem.clone());
-            Ok(payment_result_json(false, None, None,
-                last_error.or_else(|| Some("retry loop exhausted".into()))))
+            return Ok(payment_result_json(false, None, None,
+                last_error.or_else(|| Some("retry loop exhausted".into()))));
     }
 }
 

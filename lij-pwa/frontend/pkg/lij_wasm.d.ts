@@ -39,6 +39,11 @@ export class LijWalletHandle {
      * or "CORRUPT: …" (the copy does not open — nothing was written).
      */
     static adopt_cloud_backup(mnemonic: string, config_json: string): Promise<any>;
+    /**
+     * v365 (S68, the channel state file): write a held file's manager and records into storage with the words alone,
+     * no wallet built — see LijWallet::apply_channel_state_file. Returns {"records":n}.
+     */
+    static apply_channel_state_file(mnemonic: string, config_json: string, file_hex: string): string;
     background_tick(tick_count: bigint): void;
     backup(): Promise<any>;
     /**
@@ -127,6 +132,18 @@ export class LijWalletHandle {
      * observations, with heights). Read-only diagnosis surface.
      */
     chain_events_json(limit: number): string;
+    /**
+     * v365: build the channel state file now — see node::channel_state_file_build_json. Saves the manager first.
+     */
+    channel_state_file_build_json(min_version: number): string;
+    /**
+     * v365: a held file against this copy — see channel_state_file::compare. Read-only.
+     */
+    channel_state_file_compare_json(file_hex: string): string;
+    /**
+     * v365: this copy's channel state fingerprint ("" = no channel state yet). Read-only.
+     */
+    channel_state_fp(): string;
     /**
      * v302 (S54): the Address watcher row's Save check — resolves to the server's tip height when `base` is a
      * clean https address answering as an Esplora server (/blocks/tip/height, then /address/<a never-funded probe
@@ -1436,6 +1453,7 @@ export interface InitOutput {
     readonly lijwallethandle_abandon_payment_by_id: (a: number, b: number, c: number) => [number, number];
     readonly lijwallethandle_active_lsp_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_adopt_cloud_backup: (a: number, b: number, c: number, d: number) => any;
+    readonly lijwallethandle_apply_channel_state_file: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly lijwallethandle_background_tick: (a: number, b: bigint) => [number, number];
     readonly lijwallethandle_backup: (a: number) => any;
     readonly lijwallethandle_backup_adopt_own: (a: number) => bigint;
@@ -1452,6 +1470,9 @@ export interface InitOutput {
     readonly lijwallethandle_black_start_merge_plan_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_bump_onchain_send: (a: number, b: number, c: number, d: number) => any;
     readonly lijwallethandle_chain_events_json: (a: number, b: number) => [number, number, number, number];
+    readonly lijwallethandle_channel_state_file_build_json: (a: number, b: number) => [number, number, number, number];
+    readonly lijwallethandle_channel_state_file_compare_json: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_channel_state_fp: (a: number) => [number, number, number, number];
     readonly lijwallethandle_check_watch_server: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_claimed_payments_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_close_channel: (a: number, b: number, c: number) => [number, number];
@@ -1660,8 +1681,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_229: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_230: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_233: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_234: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
