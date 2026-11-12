@@ -1,0 +1,48 @@
+# tag-release — after a release reaches main, GitHub itself tags that commit with the release's own number:
+#   the adapter repositories: v<version in package.json>                      (v0.127.2)
+#   the wallet repository:    page-v<page version>-engine-v<engine version>   (page-v1108-engine-v368)
+# It publishes nothing: the commit is already on main; this only names it. A tag that exists is never moved or
+# remade. It uses the run's own token (contents: write) — no secret is added. DP 2026-11-12 ("Go. 1.").
+name: tag-release
+on:
+  push:
+    branches: [main]
+    paths:
+      - package.json
+      - docs/releases.md
+      - lij-pwa/frontend/wallet/index.html
+      - .github/workflows/tag-release.yml
+permissions:
+  contents: write
+concurrency:
+  group: tag-release
+  cancel-in-progress: false
+jobs:
+  tag:
+    if: github.repository == 'dav1dpgit/lijox-adapter' || github.repository == 'dav1dpgit/lijox-lnd-adapter' || github.repository == 'dav1dpgit/lightninginajar'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: tag this commit with the release's number, if the tag does not exist
+        run: |
+          set -euo pipefail
+          if [ -f lij-pwa/frontend/wallet/index.html ]; then
+            P=$(grep -o "LIJ_FRONTEND_VERSION = 'phase11-v[0-9]\+'" lij-pwa/frontend/wallet/index.html | head -1 | grep -o 'v[0-9]\+' | tail -1)
+            E=$(grep -m1 -o '^    "phase11-v[0-9]\+"\.to_string()' lij/lij-wasm/src/lib.rs | grep -o 'v[0-9]\+' | tail -1)
+            TAG="page-${P}-engine-${E}"
+            echo "$TAG" | grep -Eq '^page-v[0-9]+-engine-v[0-9]+$' || { echo "could not read the versions (got '$TAG')"; exit 1; }
+          else
+            V=$(grep -m1 -o '"version": *"[0-9]\+\.[0-9]\+\.[0-9]\+"' package.json | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+')
+            TAG="v${V}"
+            echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || { echo "could not read the version (got '$TAG')"; exit 1; }
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "tag ${TAG} exists — left as it is"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${TAG}" -m "${TAG}" "${GITHUB_SHA}"
+          git push origin "refs/tags/${TAG}"
+          echo "tagged ${GITHUB_SHA} as ${TAG}"
