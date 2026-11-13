@@ -197,6 +197,12 @@ pub fn parse(key: &[u8; 32], file: &[u8]) -> LijResult<Parsed> {
 ///   file_newer_incomplete — the file is ahead but a record that is ahead is only a line: this copy is older than the
 ///                    channels and the bytes to continue are not here
 ///   conflict       — each side is ahead on some channel
+/// v369 (S68 Thu 2026-11-12, DP "Build the next engine. Go" — his phone showed "This copy is older than your channels" for a
+/// channel closed long ago): ONLY RECORDS THIS COPY TRACKS ARE COMPARED. A record is tracked when the running wallet gives
+/// it an update number above 0 (`ids` holds the live monitors' numbers). v365 read a record that is in the file but not
+/// kept here — or kept but not counted (number 0) — as "ahead in the file": a put-away record of a closed channel made a
+/// healthy phone look behind. Such a record now says nothing either way (its row carries "tracked": false). A copy that
+/// never knew a channel is caught by the provider check, which asks the provider for its channel list.
 pub fn compare(storage: &dyn LijStorage, key: &[u8; 32], ids: &HashMap<String, u64>, file: &[u8]) -> LijResult<serde_json::Value> {
     let f = parse(key, file)?;
     let (_, recs) = read_local(storage, key)?.ok_or_else(|| err("this copy has no channel state"))?;
@@ -205,18 +211,19 @@ pub fn compare(storage: &dyn LijStorage, key: &[u8; 32], ids: &HashMap<String, u
     let mut rows = Vec::new();
     for l in &f.lines {
         let loc = local.get(&l.name);
-        let file_ahead = match loc { Some((id, _)) => l.update_id > *id, None => true };
-        let local_ahead = matches!(loc, Some((id, _)) if *id > l.update_id);
+        let tracked = matches!(loc, Some((id, _)) if *id > 0);
+        let file_ahead = matches!(loc, Some((id, _)) if tracked && l.update_id > *id);
+        let local_ahead = matches!(loc, Some((id, _)) if tracked && *id > l.update_id);
         let same_bytes = matches!(loc, Some((_, h)) if *h == l.sha);
         if file_ahead { ahead_f = true; if l.body.is_none() { usable = false; } }
         if local_ahead { ahead_l = true; }
-        if l.body.is_none() && !same_bytes && !local_ahead { usable = false; }
-        rows.push(serde_json::json!({ "record": l.name, "file_update": l.update_id, "local_update": loc.map(|x| x.0), "in_file": l.body.is_some(), "same_bytes": same_bytes }));
+        if loc.is_some() && l.body.is_none() && !same_bytes && !local_ahead { usable = false; }   // apply's own rule: a kept record that is only a line must be the same bytes
+        rows.push(serde_json::json!({ "record": l.name, "file_update": l.update_id, "local_update": loc.map(|x| x.0), "in_file": l.body.is_some(), "same_bytes": same_bytes, "tracked": tracked }));
     }
     for (n, (id, _)) in &local {
         if !f.lines.iter().any(|l| &l.name == n) {
-            ahead_l = true;
-            rows.push(serde_json::json!({ "record": n, "file_update": null, "local_update": id, "in_file": false, "same_bytes": false }));
+            if *id > 0 { ahead_l = true; }   // a channel this copy tracks and the file does not have
+            rows.push(serde_json::json!({ "record": n, "file_update": null, "local_update": id, "in_file": false, "same_bytes": false, "tracked": *id > 0 }));
         }
     }
     let kind = match (ahead_f, ahead_l) {
@@ -237,13 +244,16 @@ pub fn apply(storage: &dyn LijStorage, key: &[u8; 32], file: &[u8]) -> LijResult
     let manager = f.manager.as_ref().ok_or_else(|| err("the manager is not in the file — nothing can resume from it"))?;
     let (_, recs) = read_local(storage, key)?.ok_or_else(|| err("this copy has no channel state"))?;
     let local: HashMap<String, [u8; 32]> = recs.iter().map(|(n, b)| (n.clone(), sha(b))).collect();
+    // v369: a record this copy does not keep is never made from the file (a put-away record of a closed channel stays
+    // put away), and a line for such a record refuses nothing
     for l in &f.lines {
-        if l.body.is_none() && local.get(&l.name) != Some(&l.sha) {
+        if l.body.is_none() && local.contains_key(&l.name) && local.get(&l.name) != Some(&l.sha) {
             return Err(err(format!("record {} is only a line in the file and this copy's record is not the same — not applied", l.name)));
         }
     }
     let mut n = 0u32;
     for l in &f.lines {
+        if !local.contains_key(&l.name) { continue; }
         if let Some(b) = &l.body {
             let ct = persist::encrypt(key, b).map_err(|e| err(format!("encrypt: {e}")))?;
             storage.set(&format!("{MONITOR_KEY_PREFIX}{}", l.name), &ct)?;
@@ -362,12 +372,38 @@ mod tests {
         put(&phone, Some("cc:0"), &body(5, 100));
         assert_eq!(kind(&phone, &ids(&[("aa:0", 7), ("bb:1", 300), ("cc:0", 1)])), "local_newer");
         assert_eq!(kind(&r2, &ids(&[("aa:0", 9), ("bb:1", 290)])), "conflict");
-        // a copy that does not have a channel the file has (in the file whole) → can be applied
+        // v369: a copy that does not keep a record the file has (a closed channel's record, put away) is NOT behind
         let r3 = MemoryStorage::new();
         put(&r3, None, &body(8, 4900)); put(&r3, Some("bb:1"), &body(3, 58_000));
-        assert_eq!(kind(&r3, &ids(&[("bb:1", 300)])), "file_newer");
-        assert_eq!(apply(&r3, &K, &file.file).unwrap(), 1);
-        assert_eq!(get(&r3, Some("aa:0")), body(2, 6000));
+        assert_eq!(kind(&r3, &ids(&[("bb:1", 300)])), "same", "v365 answered file_newer here and the page restarted to load the file");
+        // v369 — DP's phone, 2026-11-12: the file's record of a closed channel is only a line; this copy put that record away
+        let r4 = MemoryStorage::new();
+        put(&r4, None, &body(8, 4900)); put(&r4, Some("aa:0"), &body(2, 6000));
+        let c4 = compare(&r4, &K, &ids(&[("aa:0", 7)]), &file.file).unwrap();
+        assert_eq!(c4["kind"], "same", "v365 answered file_newer_incomplete: the false 'older than your channels' card");
+        let row = c4["records"].as_array().unwrap().iter().find(|r| r["record"] == "bb:1").unwrap().clone();
+        assert_eq!((row["tracked"].as_bool(), row["local_update"].is_null(), row["file_update"].as_u64()), (Some(false), true, Some(300)));
+        // … and with this copy ahead on the channel it does track
+        assert_eq!(kind(&r4, &ids(&[("aa:0", 9)])), "local_newer", "v365 answered conflict");
+        // a record kept here but not counted (its number reads 0) is not compared either
+        let r5 = MemoryStorage::new();
+        put(&r5, None, &body(8, 4900)); put(&r5, Some("aa:0"), &body(2, 6000)); put(&r5, Some("bb:1"), &body(4, 57_000));
+        assert_eq!(kind(&r5, &ids(&[("aa:0", 7)])), "same");
+        assert_eq!(kind(&r5, &ids(&[("aa:0", 7), ("bb:1", 0)])), "same");
+        // a record only this copy keeps, not counted, does not make this copy "ahead"
+        put(&r5, Some("zz:0"), &body(6, 50));
+        assert_eq!(kind(&r5, &ids(&[("aa:0", 7)])), "same");
+        // the real case still holds: a channel this copy TRACKS with a lower number → behind
+        assert_eq!(kind(&r5, &ids(&[("aa:0", 6)])), "file_newer_incomplete", "bb is kept here, differs, and is only a line in the file");
+        assert_eq!(kind(&r4, &ids(&[("aa:0", 6)])), "file_newer", "bb is not kept here: it stops nothing");
+        // apply never makes a record this copy does not keep, and a line for one refuses nothing
+        assert_eq!(apply(&r4, &K, &file.file).unwrap(), 1);
+        assert_eq!((get(&r4, None), get(&r4, Some("aa:0"))), (body(1, 5000), body(2, 6000)));
+        assert!(r4.get(&format!("{MONITOR_KEY_PREFIX}bb:1")).unwrap().is_none(), "the put-away record stays put away");
+        let r6 = MemoryStorage::new();
+        put(&r6, None, &body(8, 4900)); put(&r6, Some("bb:1"), &body(3, 58_000));
+        assert_eq!(apply(&r6, &K, &file.file).unwrap(), 0, "aa is whole in the file but not kept here: not written");
+        assert!(r6.get(&format!("{MONITOR_KEY_PREFIX}aa:0")).unwrap().is_none());
         // garbage and another wallet's file
         assert!(compare(&phone, &K, &ids(&[]), &[1, 2, 3]).is_err());
         assert!(apply(&phone, &[9u8; 32], &file.file).is_err());

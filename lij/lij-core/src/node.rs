@@ -807,6 +807,80 @@ pub(crate) fn mpp_internal_part_amounts(planned_msat: &[u64], invoice_msat: Opti
     out
 }
 
+/// v371: a route answered for whole sats, a payment of `exact_msat`. `fees` mirrors the path's hops (LDK's form: each
+/// hop's fee, the LAST entry the amount delivered). When the payment is under one sat above what the route delivers,
+/// the last entry becomes the exact amount and every hop before it gets one more millisat. Anything else (equal, a
+/// route that delivers more, a gap of a sat or more — not this rounding) is left alone. True when changed.
+pub(crate) fn route_apply_exact_msat(fees: &mut [u64], exact_msat: u64) -> bool {
+    let n = fees.len();
+    if n == 0 { return false; }
+    let last = fees[n - 1];
+    if exact_msat <= last || exact_msat - last >= 1000 { return false; }
+    fees[n - 1] = exact_msat;
+    for f in fees[..n - 1].iter_mut() { *f += 1; }
+    true
+}
+
+#[cfg(test)]
+mod v371_exact_msat_tests {
+    use super::route_apply_exact_msat as f;
+    #[test]
+    fn v371_the_dropped_part_of_a_sat_goes_onto_the_last_hop() {
+        // DP's send: the invoice 4,493,506 msat, the route answered for 4,493 sats, one hop beyond the provider
+        let mut one = vec![4_493_000u64];
+        assert!(f(&mut one, 4_493_506));
+        assert_eq!(one, vec![4_493_506]);
+        // a longer route: the hops before the last get one more millisat of fee each
+        let mut three = vec![1_200u64, 450, 4_493_000];
+        assert!(f(&mut three, 4_493_999));
+        assert_eq!(three, vec![1_201, 451, 4_493_999]);
+    }
+    #[test]
+    fn v371_everything_else_is_left_alone() {
+        let mut whole = vec![300u64, 5_000_000];
+        assert!(!f(&mut whole, 5_000_000), "a whole-sat payment: nothing to add");
+        assert_eq!(whole, vec![300, 5_000_000]);
+        let mut more = vec![5_000_000u64];
+        assert!(!f(&mut more, 4_999_500), "the route delivers more than the payment: untouched");
+        let mut gap = vec![5_000_000u64];
+        assert!(!f(&mut gap, 5_001_000), "a gap of a whole sat is not this rounding");
+        assert_eq!(gap, vec![5_000_000]);
+        assert!(!f(&mut [], 1));
+    }
+}
+
+/// v370: does one piece carry this amount? `largest` is the largest channel's per-HTLC ceiling, `largest_after_fee`
+/// the most it delivers once the provider's forwarding fee rides on top. With one channel, or for a payment to the
+/// provider itself, the old rule stands (amount ≤ ceiling). With several channels and a forwarded payment, the fee
+/// must fit too — otherwise the split takes it.
+pub(crate) fn mpp_single_fits(amount_msat: u64, largest: u64, largest_after_fee: u64, channels: usize, internal: bool) -> bool {
+    if amount_msat > largest { return false; }
+    if channels <= 1 || internal { return true; }
+    amount_msat <= largest_after_fee
+}
+
+#[cfg(test)]
+mod v370_single_fits_tests {
+    use super::mpp_single_fits as f;
+    #[test]
+    fn v370_the_band_between_the_ceiling_less_its_fee_and_the_ceiling() {
+        // a 210,000-sat ceiling at 0.1 %: it delivers 209,790 sats in one piece
+        let (cap, after) = (210_000_000u64, 209_790_209u64);
+        assert!(f(209_790_000, cap, after, 2, false), "under the fee-adjusted ceiling: one piece");
+        assert!(!f(209_900_000, cap, after, 2, false), "inside the band with a second channel: the split takes it (v369 sent one piece, refused at submission)");
+        assert!(!f(210_000_000, cap, after, 3, false));
+        assert!(!f(210_000_001, cap, after, 2, false), "over the ceiling: the split, as before");
+    }
+    #[test]
+    fn v370_one_channel_and_payments_to_the_provider_are_unchanged() {
+        let (cap, after) = (210_000_000u64, 209_790_209u64);
+        assert!(f(209_900_000, cap, after, 1, false), "one channel: nothing to split over — the single path, as before");
+        assert!(f(210_000_000, cap, after, 2, true), "to the provider itself: no forwarding fee, the whole ceiling");
+        assert!(!f(210_000_001, cap, after, 2, true));
+        assert!(!f(1, 0, 0, 0, false), "no channel");
+    }
+}
+
 /// v368 (S68 Wed 2026-11-11, DP 21:46 "Go with the engine build now" — his field find: a 420,002-sat invoice of
 /// a wallet whose two channels had 269,029 sats of room at most, "LND returned no routes"): THE PARTS THAT FIT BOTH
 /// ENDS. The provider (adapter 0.127.1) answers a route request no one channel of the receiving wallet can carry with
@@ -6145,6 +6219,21 @@ impl LijNode {
         }
 
         let mut route = parse_lnd_route_response(response_text, prep.final_cltv_delta)?;
+        // v371 (S68 Thu 2026-11-12, DP's test: MAX from a wallet on one provider to an address on another — "the
+        // recipient's wallet declined it"; the receiving provider's journal: "minted hold invoice 4493506 msat", never
+        // ACCEPTED): THE EXACT MILLISATS ON A FORWARDED ROUTE. The route is asked in whole sats (the provider's API),
+        // so its last hop carried 4,493,000 msat against an invoice of 4,493,506 — an underpayment, which the payee
+        // refuses. The payment to the provider itself has carried prep.amount_msat since v238; a forwarded route never
+        // did. Now the part of a sat the request dropped goes onto the last hop, and each hop before it gets one more
+        // millisat of fee (its fee on the larger amount can be one millisat higher, never more at these sizes).
+        if let Some(path) = route.paths.get_mut(0) {
+            let mut fees: Vec<u64> = path.hops.iter().map(|h| h.fee_msat).collect();
+            if route_apply_exact_msat(&mut fees, prep.amount_msat) {
+                log::info!("Phase10b (v371): the route delivered {} msat for a payment of {} msat — the last hop raised to the exact amount",
+                    path.hops.last().map(|h| h.fee_msat).unwrap_or(0), prep.amount_msat);
+                for (h, f) in path.hops.iter_mut().zip(fees.iter()) { h.fee_msat = *f; }
+            }
+        }
         log::info!("Phase10b: route from LSP has {} path(s), {} hop(s) before prepend",
             route.paths.len(),
             route.paths.first().map(|p| p.hops.len()).unwrap_or(0));
@@ -6323,7 +6412,13 @@ impl LijNode {
         // that band into MPP strictly adds successes. Sends that previously
         // worked single-path still go Single. Fee headroom still lives only in
         // the split math (mpp_plan).
-        if amount_msat <= largest {
+        // v370 (S68 Thu 2026-11-12, DP "Agree with your order" — read in the code, not seen failing): with TWO OR MORE
+        // channels, an amount within the provider's fee of the largest channel's ceiling passed the test above the
+        // old line (`amount <= largest`, the amount WITHOUT the fee), went out in one piece, and was refused at
+        // submission — the piece plus its fee is over the channel. Such an amount now goes to the split, which sizes
+        // every part with its fee. One channel: unchanged (nothing to split over). A payment to the provider itself
+        // (an address invoice): unchanged — it pays no forwarding fee, so the whole ceiling is usable.
+        if mpp_single_fits(amount_msat, largest, fee_adjusted_deliverable_msat(largest), outbounds.len(), self.mpp_dest_is_lsp(bolt11)) {
             return Ok(MppDecision::Single);
         }
 
