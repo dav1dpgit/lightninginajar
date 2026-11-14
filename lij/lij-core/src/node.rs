@@ -1266,7 +1266,7 @@ impl LijNode {
             backup_dirty.clone(),
             manager_dirty.clone(),
             persist_seq.clone(),
-        ));
+        ).with_tower(Self::tower_queue(storage.clone(), enc_key, fee_estimator_typed.clone(), signer_provider.clone(), keys_manager.clone())));
         let chain_monitor: Arc<LijChainMonitor> = Arc::new(ChainMonitor::new(
             Some(chain_filter.clone()),
             broadcaster.clone(),
@@ -1620,7 +1620,7 @@ impl LijNode {
             self.backup_dirty.clone(),
             self.manager_dirty.clone(),
             self.persist_seq.clone(),
-        ));
+        ).with_tower(Self::tower_queue(self.storage.clone(), self.root_key.encryption_key(), self.fee_estimator.clone(), self.signer_provider.clone(), self.keys_manager.clone())));
 
         let chain_monitor: Arc<LijChainMonitor> = Arc::new(ChainMonitor::new(
             Some(chain_filter), broadcaster.clone(), logger.clone(), fee_estimator.clone(), persister,
@@ -1736,6 +1736,45 @@ impl LijNode {
 
     /// v221 (device-file import): read-only accessors for the import path.
     pub fn storage_ref(&self) -> &dyn LijStorage { self.storage.as_ref() }
+
+    // ── v372 (S69): LIJOX watch duty W2 — the wallet's side of the tower (tower.rs) ──────────────────────────────
+    /// What the monitor persister feeds: the next-block fee rate (the urgent rate the wallet already keeps), one
+    /// address of the wallet's own per channel (the BIP84 receive chain the closes pay to), 16 random bytes.
+    fn tower_queue(
+        storage: Arc<dyn LijStorage>, enc_key: [u8; 32], fee: Arc<LijFeeEstimator>,
+        signer_provider: Arc<LijSignerProvider>, keys_manager: Arc<KeysManager>,
+    ) -> Arc<crate::tower::TowerQueue> {
+        use lightning::chain::chaininterface::{ConfirmationTarget, FeeEstimator};
+        use lightning::sign::{EntropySource, SignerProvider};
+        Arc::new(crate::tower::TowerQueue::new(
+            storage, enc_key,
+            Arc::new(move || fee.get_est_sat_per_1000_weight(ConfirmationTarget::UrgentOnChainSweep)),
+            Arc::new(move || signer_provider.get_destination_script([0u8; 32]).ok()),
+            Arc::new(move || { let r = keys_manager.get_secure_random_bytes(); let mut g = [0u8; 16]; g.copy_from_slice(&r[..16]); g }),
+        ))
+    }
+    pub fn tower_set_on(&self, on: bool) -> LijResult<()> { crate::tower::set_on(self.storage.as_ref(), on) }
+    pub fn tower_summary_json(&self) -> LijResult<String> { crate::tower::summary(self.storage.as_ref()) }
+    /// The next put for that tower, or "null" when nothing waits for it.
+    pub fn tower_put_request_json(&self, tower_id_hex: &str, now_s: u64) -> LijResult<String> {
+        Ok(crate::tower::put_request(self.storage.as_ref(), &self.root_key, tower_id_hex, now_s)?.unwrap_or_else(|| "null".to_string()))
+    }
+    pub fn tower_put_ack(&self, ids_json: &str, chan: &str, tower_id_hex: &str, now_s: u64) -> LijResult<()> {
+        let ids: Vec<String> = serde_json::from_str(ids_json).map_err(|e| LijError::Node(format!("tower: ids {e}")))?;
+        crate::tower::put_ack(self.storage.as_ref(), &ids, chan, tower_id_hex, now_s)
+    }
+    /// v373: the towers a channel's items go to (a JSON list of node keys, two at most). → the picks as kept (JSON).
+    pub fn tower_set_picks(&self, chan: &str, picks_json: &str) -> LijResult<String> {
+        let picks: Vec<String> = serde_json::from_str(picks_json).map_err(|e| LijError::Node(format!("tower: picks {e}")))?;
+        let kept = crate::tower::set_picks(self.storage.as_ref(), chan, &picks)?;
+        serde_json::to_string(&kept).map_err(|e| LijError::Node(format!("tower: encode {e}")))
+    }
+    /// The next drop for that tower, or "null".
+    pub fn tower_drop_request_json(&self, tower_id_hex: &str, now_s: u64) -> LijResult<String> {
+        Ok(crate::tower::drop_request(self.storage.as_ref(), &self.root_key, tower_id_hex, now_s)?.unwrap_or_else(|| "null".to_string()))
+    }
+    pub fn tower_drop_ack(&self, chan: &str, tower_id_hex: &str) -> LijResult<()> { crate::tower::drop_ack(self.storage.as_ref(), chan, tower_id_hex) }
+    pub fn tower_status_request_json(&self, tower_id_hex: &str, now_s: u64) -> LijResult<String> { crate::tower::status_request(&self.root_key, tower_id_hex, now_s) }
     pub fn root_key_ref(&self) -> &RootKey { self.root_key.as_ref() }
 
     /// Allocate a new socket id. Called by lij-wasm when opening a new WebSocket.

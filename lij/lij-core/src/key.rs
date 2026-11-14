@@ -237,6 +237,29 @@ impl RootKey {
             .private_key)
     }
 
+    /// v372 (S69 Fri 2026-11-13, DP "Go on suggestions — a unique Tower Public Key"): THE KEY THIS WALLET SIGNS IN TO ONE
+    /// TOWER WITH (LIJOX watch duty W2, tower.rs). DERIVED like the Tatara key (HKDF-SHA256 over the master secret)
+    /// under its OWN salt, with the tower's id (its provider's node key) as info — so every tower sees a different
+    /// key, none of them is the node key, and no two towers can tell they serve the same wallet. Never stored: a
+    /// wallet restored from its 12 words finds the same key for the same tower again. A secp256k1 secret: the
+    /// counter moves on in the (≈2⁻¹²⁸) case an output is zero or not below the curve order.
+    pub fn tower_key(&self, tower_id: &[u8]) -> [u8; 32] {
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+        let hk = Hkdf::<Sha256>::new(Some(b"LiJ-Tower-key-v1"), &self.master_xprv.private_key.secret_bytes());
+        let mut n: u32 = 0;
+        loop {
+            let mut out = [0u8; 32];
+            let mut info = tower_id.to_vec();
+            info.extend_from_slice(&n.to_be_bytes());
+            hk.expand(&info, &mut out).expect("32 bytes is well within HKDF-SHA256's output limit");
+            if bitcoin::secp256k1::SecretKey::from_slice(&out).is_ok() {
+                return out;
+            }
+            n += 1;
+        }
+    }
+
     /// v323 (S58, Mix step 7 — DP 2026-10-12 23:21 "Agreed the Tatara key comes from the 12 words on a path of its
     /// own"): the Tatara key — this wallet's place in its provider's weekly ring of Mix-on wallets (door 1). DERIVED like
     /// the LNURLp and push preimages (HKDF-SHA256 over the master secret) under its OWN salt, so it is apart from every

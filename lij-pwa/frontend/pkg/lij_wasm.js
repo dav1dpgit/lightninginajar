@@ -4100,6 +4100,177 @@ export class LijWalletHandle {
         }
     }
     /**
+     * @param {string} chan
+     * @param {string} tower_id_hex
+     */
+    tower_drop_ack(chan, tower_id_hex) {
+        const ptr0 = passStringToWasm0(chan, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(tower_id_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_tower_drop_ack(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * The next drop for that tower (a closed channel whose items it holds): {"body","chan"} or "null".
+     * @param {string} tower_id_hex
+     * @param {number} now_s
+     * @returns {string}
+     */
+    tower_drop_request_json(tower_id_hex, now_s) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(tower_id_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_tower_drop_request_json(this.__wbg_ptr, ptr0, len0, now_s);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * @param {string} ids_json
+     * @param {string} chan
+     * @param {string} tower_id_hex
+     * @param {number} now_s
+     */
+    tower_put_ack(ids_json, chan, tower_id_hex, now_s) {
+        const ptr0 = passStringToWasm0(ids_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(chan, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(tower_id_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_tower_put_ack(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, now_s);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * The next put for the tower of that provider (its node key, hex): {"body","ids","chan"} or "null".
+     * @param {string} tower_id_hex
+     * @param {number} now_s
+     * @returns {string}
+     */
+    tower_put_request_json(tower_id_hex, now_s) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(tower_id_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_tower_put_request_json(this.__wbg_ptr, ptr0, len0, now_s);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Turn the tower uploads on or off. Off empties what waits.
+     * @param {boolean} on
+     */
+    tower_set_on(on) {
+        const ret = wasm.lijwallethandle_tower_set_on(this.__wbg_ptr, on);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * v373: set the towers a channel's items go to — a JSON list of provider node keys, two at most, never the
+     * channel's own provider. Returns the picks as kept.
+     * @param {string} chan
+     * @param {string} picks_json
+     * @returns {string}
+     */
+    tower_set_picks(chan, picks_json) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(chan, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(picks_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_tower_set_picks(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * A signed status request for that tower.
+     * @param {string} tower_id_hex
+     * @param {number} now_s
+     * @returns {string}
+     */
+    tower_status_request_json(tower_id_hex, now_s) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(tower_id_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_tower_status_request_json(this.__wbg_ptr, ptr0, len0, now_s);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * {"on","queued","lost","out_max","channels":[{"chan","lsp","towers","uploaded","last_s","closed","waiting"}]}
+     * @returns {string}
+     */
+    tower_summary_json() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_tower_summary_json(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * v261 (DP: the on-chain drill-down): everything the panel shows for one transaction — fee (sats,
      * sat/vB), the inputs and outputs with which are ours, the counterparty address, the output type, mempool
      * or block (with the header time). Answers JSON:
@@ -5206,7 +5377,7 @@ function __wbg_get_imports() {
             console.warn(arg0, arg1, arg2, arg3);
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2607, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2621, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed);
             return ret;
         },
@@ -5217,16 +5388,16 @@ function __wbg_get_imports() {
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("ErrorEvent")], shim_idx: 9, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_233);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_241);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 9, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_234);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_242);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 2313, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 2327, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f);
             return ret;
         },
@@ -5269,12 +5440,12 @@ function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_233(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_233(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_241(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_241(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_234(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_234(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_242(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_242(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed(arg0, arg1, arg2) {

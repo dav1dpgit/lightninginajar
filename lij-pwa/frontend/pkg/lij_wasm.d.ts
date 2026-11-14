@@ -1194,6 +1194,33 @@ export class LijWalletHandle {
      * re-walk takes; the next completed sync restores full truth.
      */
     tier2_rescan_from(from_height: number): string;
+    tower_drop_ack(chan: string, tower_id_hex: string): void;
+    /**
+     * The next drop for that tower (a closed channel whose items it holds): {"body","chan"} or "null".
+     */
+    tower_drop_request_json(tower_id_hex: string, now_s: number): string;
+    tower_put_ack(ids_json: string, chan: string, tower_id_hex: string, now_s: number): void;
+    /**
+     * The next put for the tower of that provider (its node key, hex): {"body","ids","chan"} or "null".
+     */
+    tower_put_request_json(tower_id_hex: string, now_s: number): string;
+    /**
+     * Turn the tower uploads on or off. Off empties what waits.
+     */
+    tower_set_on(on: boolean): void;
+    /**
+     * v373: set the towers a channel's items go to — a JSON list of provider node keys, two at most, never the
+     * channel's own provider. Returns the picks as kept.
+     */
+    tower_set_picks(chan: string, picks_json: string): string;
+    /**
+     * A signed status request for that tower.
+     */
+    tower_status_request_json(tower_id_hex: string, now_s: number): string;
+    /**
+     * {"on","queued","lost","out_max","channels":[{"chan","lsp","towers","uploaded","last_s","closed","waiting"}]}
+     */
+    tower_summary_json(): string;
     /**
      * v261 (DP: the on-chain drill-down): everything the panel shows for one transaction — fee (sats,
      * sat/vB), the inputs and outputs with which are ours, the counterparty address, the output type, mempool
@@ -1644,6 +1671,14 @@ export interface InitOutput {
     readonly lijwallethandle_switch_lsp_with: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_tier2_onchain_sync: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
     readonly lijwallethandle_tier2_rescan_from: (a: number, b: number) => [number, number, number, number];
+    readonly lijwallethandle_tower_drop_ack: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly lijwallethandle_tower_drop_request_json: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly lijwallethandle_tower_put_ack: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
+    readonly lijwallethandle_tower_put_request_json: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly lijwallethandle_tower_set_on: (a: number, b: number) => [number, number];
+    readonly lijwallethandle_tower_set_picks: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly lijwallethandle_tower_status_request_json: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly lijwallethandle_tower_summary_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_tx_details: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly lijwallethandle_tx_keep_drop_before: (a: number, b: number) => [number, number, number];
     readonly lijwallethandle_tx_keep_set_cap: (a: number, b: number) => [number, number, number, number];
@@ -1681,8 +1716,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_233: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_234: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_241: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_242: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

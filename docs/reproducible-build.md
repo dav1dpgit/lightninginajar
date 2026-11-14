@@ -27,6 +27,8 @@ Before v710 the workflow installed the latest wasm-pack from its installer scrip
 
 The remaining variable is the runner image (`ubuntu-latest`: its clang is recorded in the `producers` section too, `Ubuntu clang 18.1.3`). The workflow's `cargo clean -p lij-wasm` before each build keeps the crate's own objects fresh; the vendored dependencies come from the runner's cargo cache.
 
+**2026-11-14 — the runner image is now pinned (`ubuntu-24.04`) in lij-build and lij-engine-build.** `ubuntu-latest` began handing out ubuntu-26.04 between two page builds of the same engine source (v372): run 43536974281 on ubuntu-24.04 rebuilt the committed wasm byte for byte; run 43542778878 on ubuntu-26.04 produced different bytes and the stamp guard stopped the deploy. The image moves only together with an engine build.
+
 ## Checking what you are served
 
 Every release row in [releases.md](releases.md) carries the sha256 of the engine binary, the glue, the wallet page and the service worker as committed here. To compare against what your browser loads:

@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # S69 (2026-11-14): PINNED. 'ubuntu-latest' moved this job to ubuntu-26.04 between two builds of the same engine source; its newer clang compiles libsecp256k1's C to different bytes, the rebuilt wasm (1b16e554…) no longer matched the committed one (3af6e765…) and the stamp guard stopped the deploy. The image is part of the build recipe; move it only together with an engine build.
     steps:
       - uses: actions/checkout@v4
 

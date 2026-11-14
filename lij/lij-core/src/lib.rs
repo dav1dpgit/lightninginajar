@@ -66,4 +66,5 @@ pub mod cancelled_open;   // v277 (S48, DP): the cancelled-open sweep's honest p
 pub mod inflight;   // v360 (S66, DP 21:28 "Go"): Black start — the in-flight payment collect (the kit's `htlcs` leg); docs/design/black-start/in-flight-collect-v0.1.md
 pub mod jit_funding;   // v363 (S67, DP 2026-11-04 "Go on all"): wallet trusts LSP — the never-funded JIT channel rule, the audit, the watch; docs/design/jit-trust/wallet-trusts-lsp-v0.1.md §6
 pub mod onchain_pay;   // v361 (S66, DP 23:12 "Go on Phase 1"): Lightning pays on-chain — the wallet's pure half (the hand-over script, the release, the record); docs/design/onchain-pay/lightning-paying-onchain-v0.6.md
+pub mod tower;   // v372 (S69, DP "Go on both"): LIJOX watch duty W2 — the wallet's side of the tower: penalty transactions at two fee rates, encrypted for a tower (teos-v1), the upload queue, a key per tower from the 12 words; docs/lijox-watch-standard-r1.md §2
 

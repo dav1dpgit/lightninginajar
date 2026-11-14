@@ -178,9 +178,49 @@ pub struct LijChannelMonitorPersister {
     /// lij:seq:mon (manager writes record lij:seq:cm); mon > cm at load means
     /// an interrupted save. Best-effort — never fails a monitor ack.
     persist_seq: Arc<AtomicU64>,
+    /// v372 (S69): LIJOX watch duty W2 — when set, and turned on by the page, every counterparty state is noted and,
+    /// once replaced, turned into penalty items for a tower (tower.rs). It runs AFTER the monitor is written and can
+    /// neither fail nor change the answer LDK gets.
+    tower: Option<Arc<crate::tower::TowerQueue>>,
 }
 
 impl LijChannelMonitorPersister {
+    pub fn with_tower(mut self, tower: Arc<crate::tower::TowerQueue>) -> Self {
+        self.tower = Some(tower);
+        self
+    }
+
+    /// The name a channel goes by in tower.rs: the monitor's own storage name without the prefix.
+    fn tower_chan(name: &MonitorName) -> String {
+        Self::key_for(name)[MONITOR_KEY_PREFIX.len()..].to_string()
+    }
+
+    /// One counterparty state → what tower.rs needs to build its penalty later. None when the state has no main
+    /// output for the provider (below dust) — there is then nothing to take.
+    fn tower_state(ctx: &lightning::ln::chan_utils::CommitmentTransaction) -> Option<crate::tower::PendingState> {
+        let trusted = ctx.trust();
+        let idx = trusted.revokeable_output_index()?;
+        let value = trusted.built_transaction().transaction.output.get(idx)?.value.to_sat();
+        Some(crate::tower::PendingState { txid: trusted.txid().to_string(), vout: idx as u32, value, number: ctx.commitment_number() })
+    }
+
+    fn tower_after_write<S: EcdsaChannelSigner>(&self, name: &MonitorName, update: Option<&ChannelMonitorUpdate>, monitor: &ChannelMonitor<S>, first: bool) {
+        let Some(t) = &self.tower else { return };
+        if !t.on() { return; }
+        let chan = Self::tower_chan(name);
+        let lsp = monitor.get_counterparty_node_id().to_string();
+        if first {
+            if let Some(st) = monitor.initial_counterparty_commitment_tx().as_ref().and_then(Self::tower_state) { t.note_state(&chan, &lsp, st); }
+            return;
+        }
+        let Some(update) = update else { return };
+        for ctx in monitor.counterparty_commitment_txs_from_update(update) {
+            if let Some(st) = Self::tower_state(&ctx) { t.note_state(&chan, &lsp, st); }
+        }
+        let n = t.try_sign(&chan, &|tx, value, number| monitor.sign_to_local_justice_tx(tx, 0, value, number));
+        if n > 0 { log::info!("[TOWER] {n} penalty item(s) queued for {chan}"); }
+    }
+
     pub fn new(
         storage: Arc<dyn LijStorage>,
         key: [u8; 32],
@@ -188,7 +228,7 @@ impl LijChannelMonitorPersister {
         manager_dirty: Arc<AtomicBool>,
         persist_seq: Arc<AtomicU64>,
     ) -> Self {
-        Self { storage, key, backup_dirty, manager_dirty, persist_seq }
+        Self { storage, key, backup_dirty, manager_dirty, persist_seq, tower: None }
     }
 
     pub fn monitor_key(outpoint: &OutPoint) -> String {
@@ -249,6 +289,7 @@ impl<S: EcdsaChannelSigner> Persist<S> for LijChannelMonitorPersister {
                 let s = self.persist_seq.fetch_add(1, Ordering::Relaxed) + 1;
                 let _ = self.storage.set(SEQ_MON_KEY, &s.to_be_bytes());
                 log::info!("ChannelMonitor persisted: {key}");
+                self.tower_after_write(&monitor_name, None, monitor, true);
                 ChannelMonitorUpdateStatus::Completed
             }
             Err(e) => {
@@ -261,7 +302,7 @@ impl<S: EcdsaChannelSigner> Persist<S> for LijChannelMonitorPersister {
     fn update_persisted_channel(
         &self,
         monitor_name: MonitorName,
-        _update: Option<&ChannelMonitorUpdate>,
+        update: Option<&ChannelMonitorUpdate>,
         monitor: &ChannelMonitor<S>,
     ) -> ChannelMonitorUpdateStatus {
         // Always persist the full monitor — simpler than batching incremental
@@ -273,6 +314,7 @@ impl<S: EcdsaChannelSigner> Persist<S> for LijChannelMonitorPersister {
                 self.manager_dirty.store(true, Ordering::Relaxed);
                 let s = self.persist_seq.fetch_add(1, Ordering::Relaxed) + 1;
                 let _ = self.storage.set(SEQ_MON_KEY, &s.to_be_bytes());
+                self.tower_after_write(&monitor_name, update, monitor, false);
                 ChannelMonitorUpdateStatus::Completed
             }
             Err(e) => {
@@ -283,6 +325,7 @@ impl<S: EcdsaChannelSigner> Persist<S> for LijChannelMonitorPersister {
     }
 
     fn archive_persisted_channel(&self, monitor_name: MonitorName) {
+        if let Some(t) = &self.tower { t.on_archive(&Self::tower_chan(&monitor_name)); }   // v372: its towers are told on the page's next visit
         let key = Self::key_for(&monitor_name);
         let archived_key = Self::archived_key_for(&monitor_name);
         match self.storage.get(&key) {

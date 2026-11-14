@@ -96,7 +96,9 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v371".to_string()  // v371 (S68 Thu 2026-11-12, DP's stepped test — MAX from a wallet on one provider to an address on another: "the recipient's wallet declined it … Yours did not leave"; the receiving provider's journal: "minted hold invoice 4493506 msat", never ACCEPTED; the same send at a whole-sat amount went through): THE EXACT MILLISATS ON A FORWARDED ROUTE. node.rs apply_lsp_route_and_send: the route is asked in whole sats, so its last hop carried the amount with the part of a sat dropped — less than the invoice, which the payee refuses. route_apply_exact_msat (2 native tests) puts the dropped part onto the last hop and one more millisat of fee onto each hop before it. This also pays any invoice whose amount is not a whole number of sats. The payment to the provider itself (v238) and the split (whole-sat parts, rounded up) are unchanged.
+    "phase11-v373".to_string()  // v373 (S69 Sat 2026-11-14, DP 09:52 "agreed" — "two towers per channel, picked at random once and then kept"): tower.rs — a channel's record carries its PICKS (the towers its items go to, two at most, never its own provider), set by the page with tower_set_picks; every waiting item goes to EACH pick and leaves the queue when all of them hold it (an item remembers which towers hold it); a put for a tower carries only items of channels that picked it and that it does not hold yet; replacing a pick sends what waits to the new one only; a closed channel is dropped at every tower that ever held its items. A channel with no picks yet behaves as v372 (any tower but its own provider's, one tower an item), so the page that is live keeps working until the page that picks is. summary carries picks and picks_max. 10 native tests (two_towers_a_channel_each_gets_every_item new).
+    // "phase11-v372".to_string()  // v372 (S69 Fri 2026-11-13, DP "Go on both … Get them all done in one shot" — LIJOX WATCH DUTY W2, docs/lijox-watch-standard-r1.md §2): THE WALLET'S SIDE OF THE TOWER. New module tower.rs: each time the provider replaces a channel state the monitor persister (persist.rs, AFTER the monitor is written; it cannot fail or delay the update) notes the new state and, once a state is replaced, builds its penalty transaction for the provider's main output (LDK's build_to_local_justice_tx shape) to one address of the wallet's own per channel, signs it (sign_to_local_justice_tx) at 2× and 5× the next-block rate, and encrypts each under the old state's id (teos-v1: ChaCha20-Poly1305, key SHA-256 of the id, zero nonce — own Poly1305, checked on RFC 8439's value and on The Eye of Satoshi's test value) into an upload queue (at most 400 items; the oldest dropped and counted). key.rs tower_key: a BIP-340 key per tower from the 12 words. Requests signed here for the page to post: tower_put_request_json / tower_put_ack, tower_drop_request_json / tower_drop_ack, tower_status_request_json, tower_summary_json, tower_set_on. OFF until the page turns it on. 9 native tests; the put was verified and opened by the adapter's own tower.js. Not covered: HTLC outputs; states replaced before it was turned on.
+    // "phase11-v371".to_string()  // v371 (S68 Thu 2026-11-12, DP's stepped test — MAX from a wallet on one provider to an address on another: "the recipient's wallet declined it … Yours did not leave"; the receiving provider's journal: "minted hold invoice 4493506 msat", never ACCEPTED; the same send at a whole-sat amount went through): THE EXACT MILLISATS ON A FORWARDED ROUTE. node.rs apply_lsp_route_and_send: the route is asked in whole sats, so its last hop carried the amount with the part of a sat dropped — less than the invoice, which the payee refuses. route_apply_exact_msat (2 native tests) puts the dropped part onto the last hop and one more millisat of fee onto each hop before it. This also pays any invoice whose amount is not a whole number of sats. The payment to the provider itself (v238) and the split (whole-sat parts, rounded up) are unchanged.
     // "phase11-v370".to_string()  // v370 (S68 Thu 2026-11-12, DP "Agree with your order" — found by reading, not seen failing): ONE PIECE MUST FIT WITH ITS FEE. node.rs mpp_decision chose the single path when the amount fitted the largest channel's ceiling WITHOUT the provider's forwarding fee; with two or more channels an amount inside that last fee's width passed Review (the total over all channels was enough), went out in one piece and was refused at submission, five times. mpp_single_fits (2 native tests): with several channels and a forwarded payment the fee must fit too, otherwise the split takes it; one channel and payments to the provider itself (no forwarding fee) are unchanged. No other change.
     // "phase11-v369".to_string()  // v369 (S68 Thu 2026-11-12, DP "Build the next engine. Go" — his phone, 08:37: "This copy is older than your channels" on a wallet with no channel activity, naming a channel closed long ago): THE CHANNEL STATE FILE'S COMPARISON, CORRECTED AT THE SOURCE (page v1109 filtered its answer). channel_state_file.rs compare(): only records this copy TRACKS (an update number above 0 from the live monitors) are compared — a record that is in the file but put away here, or kept but not counted, was read as "ahead in the file" (v365: `None => true`, `unwrap_or(&0)`); each row now carries "tracked". apply(): a record this copy does not keep is never made from the file, and a line for such a record refuses nothing. Tests in v365_compare_and_apply: the put-away record (same; local_newer when this copy is ahead elsewhere), the uncounted record, the real case still held (a tracked channel with a lower number), apply leaving a put-away record put away. No other change.
     // "phase11-v368".to_string()  // v368 (S68 Wed 2026-11-11, DP 21:46 "Go with the engine build now" — his field find: a 420,002-sat INVOICE of a wallet on the same provider whose two channels had 269,029 sats of room at most: "LND returned no routes" on every try; the UM890 journal: "[SYNTH] no channel … can carry 420002 (best spendable 270927 across 2)"): THE PARTS THAT FIT BOTH ENDS. Adapter 0.127.1 answers such a route request `no_route` with `parts_sats` — sizes that each fit one of the receiving wallet's channels. send_loop: (a) the single path, on an empty route answer that carries parts_sats, lays those sizes over this wallet's own channels (node.rs mpp_refit → mpp_refit_parts, 5 native tests) and runs the split path with them; (b) the split path, when a shard's route answer is empty, asks once for the WHOLE amount and does the same. Once per send (refitted). Each part still asks its own route; send_mpp_from_responses, build_mpp_path and the internal split (v366/v367) are untouched. An older adapter sends no parts_sats — every send behaves as before.
@@ -1036,6 +1038,55 @@ impl LijWalletHandle {
     pub fn channel_state_fp(&self) -> Result<String, JsValue> {
         let wallet = match self.inner.try_lock() { Ok(w) => w, Err(_) => return Err(JsValue::from_str("WALLET_BUSY")) };
         wallet.node().channel_state_fp().map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    // ── v372 (S69): LIJOX watch duty W2 — the wallet's side of the tower (lij-core tower.rs). The page does the HTTP. ──
+    /// Turn the tower uploads on or off. Off empties what waits.
+    #[wasm_bindgen]
+    pub fn tower_set_on(&self, on: bool) -> Result<(), JsValue> {
+        let wallet = match self.inner.try_lock() { Ok(w) => w, Err(_) => return Err(JsValue::from_str("WALLET_BUSY")) };
+        wallet.node().tower_set_on(on).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+    /// {"on","queued","lost","out_max","channels":[{"chan","lsp","towers","uploaded","last_s","closed","waiting"}]}
+    #[wasm_bindgen]
+    pub fn tower_summary_json(&self) -> Result<String, JsValue> {
+        let wallet = match self.inner.try_lock() { Ok(w) => w, Err(_) => return Err(JsValue::from_str("WALLET_BUSY")) };
+        wallet.node().tower_summary_json().map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+    /// The next put for the tower of that provider (its node key, hex): {"body","ids","chan"} or "null".
+    #[wasm_bindgen]
+    pub fn tower_put_request_json(&self, tower_id_hex: String, now_s: f64) -> Result<String, JsValue> {
+        let wallet = match self.inner.try_lock() { Ok(w) => w, Err(_) => return Err(JsValue::from_str("WALLET_BUSY")) };
+        wallet.node().tower_put_request_json(&tower_id_hex, now_s.max(0.0) as u64).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+    #[wasm_bindgen]
+    pub fn tower_put_ack(&self, ids_json: String, chan: String, tower_id_hex: String, now_s: f64) -> Result<(), JsValue> {
+        let wallet = match self.inner.try_lock() { Ok(w) => w, Err(_) => return Err(JsValue::from_str("WALLET_BUSY")) };
+        wallet.node().tower_put_ack(&ids_json, &chan, &tower_id_hex, now_s.max(0.0) as u64).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+    /// v373: set the towers a channel's items go to — a JSON list of provider node keys, two at most, never the
+    /// channel's own provider. Returns the picks as kept.
+    #[wasm_bindgen]
+    pub fn tower_set_picks(&self, chan: String, picks_json: String) -> Result<String, JsValue> {
+        let wallet = match self.inner.try_lock() { Ok(w) => w, Err(_) => return Err(JsValue::from_str("WALLET_BUSY")) };
+        wallet.node().tower_set_picks(&chan, &picks_json).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+    /// The next drop for that tower (a closed channel whose items it holds): {"body","chan"} or "null".
+    #[wasm_bindgen]
+    pub fn tower_drop_request_json(&self, tower_id_hex: String, now_s: f64) -> Result<String, JsValue> {
+        let wallet = match self.inner.try_lock() { Ok(w) => w, Err(_) => return Err(JsValue::from_str("WALLET_BUSY")) };
+        wallet.node().tower_drop_request_json(&tower_id_hex, now_s.max(0.0) as u64).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+    #[wasm_bindgen]
+    pub fn tower_drop_ack(&self, chan: String, tower_id_hex: String) -> Result<(), JsValue> {
+        let wallet = match self.inner.try_lock() { Ok(w) => w, Err(_) => return Err(JsValue::from_str("WALLET_BUSY")) };
+        wallet.node().tower_drop_ack(&chan, &tower_id_hex).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+    /// A signed status request for that tower.
+    #[wasm_bindgen]
+    pub fn tower_status_request_json(&self, tower_id_hex: String, now_s: f64) -> Result<String, JsValue> {
+        let wallet = match self.inner.try_lock() { Ok(w) => w, Err(_) => return Err(JsValue::from_str("WALLET_BUSY")) };
+        wallet.node().tower_status_request_json(&tower_id_hex, now_s.max(0.0) as u64).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// v365: build the channel state file now — see node::channel_state_file_build_json. Saves the manager first.
