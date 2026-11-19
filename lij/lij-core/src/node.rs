@@ -1774,7 +1774,11 @@ impl LijNode {
         Ok(crate::tower::drop_request(self.storage.as_ref(), &self.root_key, tower_id_hex, now_s)?.unwrap_or_else(|| "null".to_string()))
     }
     pub fn tower_drop_ack(&self, chan: &str, tower_id_hex: &str) -> LijResult<()> { crate::tower::drop_ack(self.storage.as_ref(), chan, tower_id_hex) }
-    pub fn tower_status_request_json(&self, tower_id_hex: &str, now_s: u64) -> LijResult<String> { crate::tower::status_request(&self.root_key, tower_id_hex, now_s) }
+    pub fn tower_status_request_json(&self, tower_id_hex: &str, now_s: u64) -> LijResult<String> { crate::tower::status_request(self.storage.as_ref(), &self.root_key, tower_id_hex, now_s) }
+    /// v374: the voucher (tower.rs) — this wallet's voucher key, what its provider answered, and what is held.
+    pub fn tower_voucher_key(&self) -> LijResult<String> { crate::tower::voucher_pubkey(&self.root_key) }
+    pub fn tower_voucher_set(&self, issuer_hex: &str, issuer_sig: &str) -> LijResult<()> { crate::tower::voucher_set(self.storage.as_ref(), &self.root_key, issuer_hex, issuer_sig) }
+    pub fn tower_voucher_json(&self) -> LijResult<String> { crate::tower::voucher_json(self.storage.as_ref(), &self.root_key) }
     pub fn root_key_ref(&self) -> &RootKey { self.root_key.as_ref() }
 
     /// Allocate a new socket id. Called by lij-wasm when opening a new WebSocket.

@@ -43,6 +43,10 @@ use crate::storage::LijStorage;
 pub const KEY_ON: &str = "lij:tower:on";
 pub const KEY_SEQ: &str = "lij:tower:seq";
 pub const KEY_LOST: &str = "lij:tower:lost";
+/// v374: the voucher this wallet's provider gave it — {"v": voucher key, "issuer": the provider's node key, "sig": its signature}.
+pub const KEY_VOUCHER: &str = "lij:tower:voucher";
+pub const VOUCHER_DOMAIN: &str = "lijox-voucher-v1";
+pub const VOUCHER_USE_DOMAIN: &str = "lijox-voucher-use-v1";
 pub const PREFIX_OUT: &str = "lij:tower:out:";
 pub const PREFIX_PEND: &str = "lij:tower:pend:";
 pub const PREFIX_CHAN: &str = "lij:tower:chan:";
@@ -400,6 +404,49 @@ pub fn tower_pubkey(root: &RootKey, tower_id_hex: &str) -> LijResult<String> {
     Ok(tower_keypair(root, tower_id_hex)?.1)
 }
 
+// ── v374: THE VOUCHER (docs/design/watchtower/watchtower-r5-voucher.md) ──────────────────────────────────────────────
+// A tower admits a wallet's key by a voucher. The wallet's provider signs `lijox-voucher-v1|tower|<voucher key>` with
+// its node key — once, at the wallet's first fee (the page asks it with the node key's proof, action "tower-voucher");
+// the page hands the answer to voucher_set. From then on every put and every status carries the voucher with a USE
+// LINE signed here by the voucher key: `lijox-voucher-use-v1|<the tower's node key>|<this wallet's key at that
+// tower>` (BIP-340 over its SHA-256, as every tower request). A tower that has admitted the key ignores it.
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct VoucherRecord { v: String, issuer: String, sig: String }
+
+fn voucher_keypair(root: &RootKey) -> LijResult<(Keypair, String)> {
+    let secp = Secp256k1::new();
+    let sk = SecretKey::from_slice(&root.voucher_key()).map_err(|e| LijError::Key(format!("voucher key: {e}")))?;
+    let kp = Keypair::from_secret_key(&secp, &sk);
+    let x = hex::encode(kp.x_only_public_key().0.serialize());
+    Ok((kp, x))
+}
+/// This wallet's voucher key (x-only, hex) — what its provider is asked to sign.
+pub fn voucher_pubkey(root: &RootKey) -> LijResult<String> { Ok(voucher_keypair(root)?.1) }
+/// Keep what the provider answered: its node key and its signature on this wallet's voucher key. The shapes are
+/// checked here; whether the signature is the provider's is the TOWER's check (it needs the provider's node software).
+pub fn voucher_set(storage: &dyn LijStorage, root: &RootKey, issuer_hex: &str, issuer_sig: &str) -> LijResult<()> {
+    let issuer = issuer_hex.to_ascii_lowercase();
+    let ok_issuer = issuer.len() == 66 && (issuer.starts_with("02") || issuer.starts_with("03")) && issuer.bytes().all(|b| b.is_ascii_hexdigit());
+    let ok_sig = issuer_sig.len() >= 40 && issuer_sig.len() <= 200 && issuer_sig.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+    if !ok_issuer || !ok_sig { return Err(LijError::Node("tower: the provider's voucher answer is not a node key and a signature".into())); }
+    set_json(storage, KEY_VOUCHER, &VoucherRecord { v: voucher_pubkey(root)?, issuer, sig: issuer_sig.to_string() })
+}
+/// {"key": this wallet's voucher key, "issuer": the provider that vouched or null}.
+pub fn voucher_json(storage: &dyn LijStorage, root: &RootKey) -> LijResult<String> {
+    let v = voucher_pubkey(root)?;
+    let rec = get_json::<VoucherRecord>(storage, KEY_VOUCHER).filter(|r| r.v == v);
+    Ok(serde_json::json!({ "key": v, "issuer": rec.map(|r| r.issuer) }).to_string())
+}
+/// The voucher as one tower is shown it (None until the provider has vouched): the use line names THAT tower and
+/// the key this wallet signs in to it with.
+fn voucher_for(storage: &dyn LijStorage, root: &RootKey, tower_id_hex: &str, tower_key_hex: &str) -> Option<serde_json::Value> {
+    let (kp, v) = voucher_keypair(root).ok()?;
+    let rec = get_json::<VoucherRecord>(storage, KEY_VOUCHER).filter(|r| r.v == v)?;
+    let use_sig = sign_text(&kp, &format!("{VOUCHER_USE_DOMAIN}|{}|{tower_key_hex}", tower_id_hex.to_ascii_lowercase()));
+    Some(serde_json::json!({ "key": v, "issuer": rec.issuer, "issuer_sig": rec.sig, "use_sig": use_sig }))
+}
+
 /// The next put for that tower: up to 64 waiting items of ONE channel whose provider is not that tower.
 /// → None when nothing waits for it; else {"body":{…the request…},"ids":[…storage keys…],"chan":"…"}.
 pub fn put_request(storage: &dyn LijStorage, root: &RootKey, tower_id_hex: &str, now_s: u64) -> LijResult<Option<String>> {
@@ -433,8 +480,9 @@ pub fn put_request(storage: &dyn LijStorage, root: &RootKey, tower_id_hex: &str,
     }
     let items_sha = hex::encode(sha256::Hash::from_engine(eng).to_byte_array());
     let sig = sign_text(&kp, &format!("{DOMAIN}|put|{key}|{group}|{now_s}|{items_sha}"));
-    let body = serde_json::json!({ "key": key, "group": group, "ts": now_s, "signature": sig,
+    let mut body = serde_json::json!({ "key": key, "group": group, "ts": now_s, "signature": sig,
         "items": items.iter().map(|(h, _, b64)| serde_json::json!({ "hint": h, "blob": b64 })).collect::<Vec<_>>() });
+    if let Some(v) = voucher_for(storage, root, tower_id_hex, &key) { body["voucher"] = v; }   // v374: the way in
     Ok(Some(serde_json::json!({ "body": body, "ids": ids, "chan": chan }).to_string()))
 }
 
@@ -509,10 +557,12 @@ pub fn drop_ack(storage: &dyn LijStorage, chan: &str, tower_id_hex: &str) -> Lij
 }
 
 /// A status request for that tower (what it holds for this wallet's key there).
-pub fn status_request(root: &RootKey, tower_id_hex: &str, now_s: u64) -> LijResult<String> {
+pub fn status_request(storage: &dyn LijStorage, root: &RootKey, tower_id_hex: &str, now_s: u64) -> LijResult<String> {
     let (kp, key) = tower_keypair(root, tower_id_hex)?;
     let sig = sign_text(&kp, &format!("{DOMAIN}|status|{key}||{now_s}"));
-    Ok(serde_json::json!({ "key": key, "ts": now_s, "signature": sig }).to_string())
+    let mut body = serde_json::json!({ "key": key, "ts": now_s, "signature": sig });
+    if let Some(v) = voucher_for(storage, root, tower_id_hex, &key) { body["voucher"] = v; }   // v374: a status can admit a key that has nothing new to send
+    Ok(body.to_string())
 }
 
 /// What the Safety screen reads: on or off, what waits, what was let go, and each channel's towers.
@@ -750,7 +800,7 @@ mod tests {
         assert!(s.list_with_prefix(PREFIX_OUT).unwrap().is_empty());
 
         // the status request
-        let stq: serde_json::Value = serde_json::from_str(&status_request(&r, TOWER_B, 1_794_550_200).unwrap()).unwrap();
+        let stq: serde_json::Value = serde_json::from_str(&status_request(&*s, &r, TOWER_B, 1_794_550_200).unwrap()).unwrap();
         let text = format!("lijox-tower-v1|status|{}||1794550200", stq["key"].as_str().unwrap());
         let sig = schnorr::Signature::from_slice(&hex::decode(stq["signature"].as_str().unwrap()).unwrap()).unwrap();
         secp.verify_schnorr(&sig, &Message::from_digest(sha256::Hash::hash(text.as_bytes()).to_byte_array()), &x).unwrap();
@@ -849,5 +899,87 @@ mod tests {
             assert!(!k.starts_with(crate::persist::MONITOR_KEY_PREFIX));
             assert!(!k.starts_with(crate::persist::ARCHIVED_MONITOR_KEY_PREFIX));
         }
+    }
+    // ── v374: the voucher ──
+    fn verify_text(sig_hex: &str, text: &str, xonly_hex: &str) -> bool {
+        let secp = Secp256k1::new();
+        let (Ok(sig), Ok(pk)) = (schnorr::Signature::from_slice(&hex::decode(sig_hex).unwrap()), XOnlyPublicKey::from_slice(&hex::decode(xonly_hex).unwrap())) else { return false };
+        secp.verify_schnorr(&sig, &Message::from_digest(sha256::Hash::hash(text.as_bytes()).to_byte_array()), &pk).is_ok()
+    }
+    const ISSUER: &str = "02c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1";
+    const ISSUER_SIG: &str = "d7mzepu1ybgs4a3e8yto5gkq1xn9tfw6ho3u1jdzc5i8rsp4mhq7bxa9k6y3wnfe5tgu1o8zr4dc7hms6ipb3jqy9xkaw5nefto4u1g8zd";
+    #[test]
+    fn the_voucher_key_is_one_key_of_its_own() {
+        let (r1, r2) = (root(W1), root(W2));
+        let v1 = voucher_pubkey(&r1).unwrap();
+        assert_eq!(v1, voucher_pubkey(&root(W1)).unwrap(), "the same words give the same voucher key");
+        assert_ne!(v1, voucher_pubkey(&r2).unwrap(), "other words, another voucher key");
+        assert_ne!(v1, tower_pubkey(&r1, TOWER_A).unwrap());
+        assert_ne!(v1, tower_pubkey(&r1, TOWER_B).unwrap());
+        assert_eq!(v1.len(), 64);
+    }
+    #[test]
+    fn nothing_carries_a_voucher_until_the_provider_has_vouched() {
+        let s = Arc::new(MemoryStorage::new());
+        let r = root(W1);
+        let st0: serde_json::Value = serde_json::from_str(&status_request(&*s, &r, TOWER_B, 10).unwrap()).unwrap();
+        assert!(st0.get("voucher").is_none());
+        assert_eq!(st0.as_object().unwrap().len(), 3, "key, ts, signature — the request of v373");
+        let j: serde_json::Value = serde_json::from_str(&voucher_json(&*s, &r).unwrap()).unwrap();
+        assert_eq!(j["key"], voucher_pubkey(&r).unwrap());
+        assert!(j["issuer"].is_null());
+        // what a provider's answer must look like
+        assert!(voucher_set(&*s, &r, "nonsense", ISSUER_SIG).is_err());
+        assert!(voucher_set(&*s, &r, &ISSUER[..64], ISSUER_SIG).is_err(), "a node key is 33 bytes");
+        assert!(voucher_set(&*s, &r, ISSUER, "short").is_err());
+        assert!(voucher_set(&*s, &r, ISSUER, &ISSUER_SIG.to_uppercase()).is_err(), "the node's signature is lower-case letters and digits");
+        assert!(s.get(KEY_VOUCHER).unwrap().is_none(), "a refused answer keeps nothing");
+    }
+    #[test]
+    fn a_voucher_rides_every_status_and_put_with_a_use_line_for_that_tower_and_that_key() {
+        let s = Arc::new(MemoryStorage::new());
+        let q = queue(s.clone(), 1000, Arc::new(AtomicU32::new(0)));
+        set_on(&*s, true).unwrap();
+        let r = root(W1);
+        voucher_set(&*s, &r, &ISSUER.to_uppercase(), ISSUER_SIG).unwrap();
+        let v = voucher_pubkey(&r).unwrap();
+        let j: serde_json::Value = serde_json::from_str(&voucher_json(&*s, &r).unwrap()).unwrap();
+        assert_eq!(j["issuer"], ISSUER, "kept in lower case");
+        let at = |tower: &str| -> serde_json::Value { serde_json::from_str::<serde_json::Value>(&status_request(&*s, &r, tower, 10).unwrap()).unwrap() };
+        let (b, c) = (at(TOWER_B), at(TOWER_C));
+        let (kb, kc) = (tower_pubkey(&r, TOWER_B).unwrap(), tower_pubkey(&r, TOWER_C).unwrap());
+        for (st, tower, key) in [(&b, TOWER_B, &kb), (&c, TOWER_C, &kc)] {
+            assert_eq!(st["voucher"]["key"], v.as_str());
+            assert_eq!(st["voucher"]["issuer"], ISSUER);
+            assert_eq!(st["voucher"]["issuer_sig"], ISSUER_SIG);
+            assert!(verify_text(st["voucher"]["use_sig"].as_str().unwrap(), &format!("lijox-voucher-use-v1|{tower}|{key}"), &v), "the use line names this tower and this wallet's key there");
+        }
+        let use_b = b["voucher"]["use_sig"].as_str().unwrap();
+        assert!(!verify_text(use_b, &format!("lijox-voucher-use-v1|{TOWER_C}|{kb}"), &v), "the use line made for one tower is no use line at another");
+        assert!(!verify_text(use_b, &format!("lijox-voucher-use-v1|{TOWER_B}|{kc}"), &v), "…nor for another key");
+        assert_ne!(use_b, c["voucher"]["use_sig"].as_str().unwrap());
+        // the tower request itself is signed as before (the voucher is beside it, not inside its signed text)
+        assert!(verify_text(b["signature"].as_str().unwrap(), &format!("{DOMAIN}|status|{kb}||10"), &kb));
+        // a put carries it too
+        q.note_state(CHAN, LSP, st(1, 70_000, 100));
+        assert_eq!(q.try_sign(CHAN, &signer(0)), 2);
+        let put: serde_json::Value = serde_json::from_str(&put_request(&*s, &r, TOWER_B, 10).unwrap().unwrap()).unwrap();
+        assert_eq!(put["body"]["voucher"]["key"], v.as_str());
+        assert!(verify_text(put["body"]["voucher"]["use_sig"].as_str().unwrap(), &format!("lijox-voucher-use-v1|{TOWER_B}|{kb}"), &v));
+        // the switch off empties the queue and keeps the voucher (every wallet has one, on or off)
+        set_on(&*s, false).unwrap();
+        assert!(at(TOWER_B).get("voucher").is_some());
+        // what the adapter's own code is handed in the cross-check (tower-admit.js): printed with --nocapture
+        println!("XCHECK {}", serde_json::json!({ "tower": TOWER_B, "key": kb, "voucher": b["voucher"] }));
+    }
+    #[test]
+    fn a_voucher_kept_for_other_words_is_not_shown() {
+        let s = Arc::new(MemoryStorage::new());
+        voucher_set(&*s, &root(W1), ISSUER, ISSUER_SIG).unwrap();
+        let other = root(W2);
+        let st: serde_json::Value = serde_json::from_str(&status_request(&*s, &other, TOWER_B, 10).unwrap()).unwrap();
+        assert!(st.get("voucher").is_none(), "a voucher is for one voucher key");
+        let j: serde_json::Value = serde_json::from_str(&voucher_json(&*s, &other).unwrap()).unwrap();
+        assert!(j["issuer"].is_null());
     }
 }

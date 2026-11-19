@@ -89,6 +89,10 @@ mod max_payment_path_len_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod monitor_tests;
+// LiJ (engine v376): the tests of LIJ PATCH v376 in chain/channelmonitor.rs — own sends wait 4,032 blocks
+#[cfg(test)]
+#[allow(unused_mut)]
+mod lij_own_send_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod offers_tests;

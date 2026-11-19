@@ -19,7 +19,7 @@ escape_kit = ["lightning/unsafe_revoked_tx_signing"]
 [dependencies]
 # ldk-0.2 (S45, DP GO 2026-09-11): LDK 0.0.123 → 0.2.6 (bitcoin 0.30 → 0.32). RGS and the
 # background processor were dependencies nothing referenced — dropped here.
-lightning = { version = "0.2.6" }   # 0.2: the max_level_* features are gone; log level is the logger's to filter
+lightning = { version = "0.2.7" }   # 0.2: the max_level_* features are gone; log level is the logger's to filter
 lightning-invoice = "0.34"
 
 bitcoin = { version = "0.32", features = ["rand"] }

@@ -6852,6 +6852,16 @@ where
 		Ok(())
 	}
 
+	/// Returns the amount received for an intercepted HTLC while it is pending.
+	#[doc(hidden)]
+	pub fn intercepted_htlc_inbound_amount_msat(&self, intercept_id: InterceptId) -> Option<u64> {
+		self.pending_intercepted_htlcs
+			.lock()
+			.unwrap()
+			.get(&intercept_id)
+			.and_then(|payment| payment.forward_info.incoming_amt_msat)
+	}
+
 	/// Fails the intercepted HTLC indicated by intercept_id. Should only be called in response to
 	/// an [`HTLCIntercepted`] event. See [`ChannelManager::forward_intercepted_htlc`].
 	///
@@ -16836,6 +16846,14 @@ where
 			let channel_id = channel.context.channel_id();
 			channel_id_set.insert(channel_id);
 			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&channel_id) {
+				// Blocked updates the `ChannelMonitor` has since applied must be dropped before
+				// checking whether we're stale, as force-closing a stale channel fails back the
+				// HTLCs added in its blocked updates, which the counterparty is committed to if
+				// the update was applied.
+				channel.on_startup_drop_completed_blocked_mon_updates_through(
+					&logger,
+					monitor.get_latest_update_id(),
+				);
 				if channel.get_cur_holder_commitment_transaction_number()
 					> monitor.get_cur_holder_commitment_number()
 					|| channel.get_revoked_counterparty_commitment_transaction_number()
@@ -16958,10 +16976,6 @@ where
 						}
 					}
 				} else {
-					channel.on_startup_drop_completed_blocked_mon_updates_through(
-						&logger,
-						monitor.get_latest_update_id(),
-					);
 					log_info!(logger, "Successfully loaded channel {} at update_id {} against monitor at update id {} with {} blocked updates",
 						&channel.context.channel_id(), channel.context.get_latest_monitor_update_id(),
 						monitor.get_latest_update_id(), channel.blocked_monitor_updates_pending());
@@ -17067,6 +17081,7 @@ where
 					update_id: monitor.get_latest_update_id().saturating_add(1),
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed {
 						should_broadcast: true,
+						counterparty_failed_htlcs: Vec::new(),
 					}],
 					channel_id: Some(monitor.channel_id()),
 				};

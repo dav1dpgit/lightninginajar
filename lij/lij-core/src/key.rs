@@ -260,6 +260,28 @@ impl RootKey {
         }
     }
 
+    /// v374 (S70 Sun 2026-11-15, DP "Agree, and go with the build" — docs/design/watchtower/watchtower-r5-voucher.md): THE
+    /// VOUCHER KEY. ONE key a wallet, shown at every tower it uses: its own provider signs this key once (the voucher),
+    /// and at each tower the wallet signs a use line with it that names that tower and the wallet's tower key there —
+    /// so a copied voucher is useless anywhere else. DERIVED like the tower keys (HKDF-SHA256 over the master secret)
+    /// under its OWN salt; it is not the node key and not a tower key, no coin ever sits on it, and a wallet restored
+    /// from its 12 words finds the same one again (its provider then hands back the same voucher). Said plainly: two
+    /// towers CAN tell by this key that they serve the same wallet — they could already, both hold the same items.
+    pub fn voucher_key(&self) -> [u8; 32] {
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+        let hk = Hkdf::<Sha256>::new(Some(b"LiJ-Voucher-key-v1"), &self.master_xprv.private_key.secret_bytes());
+        let mut n: u32 = 0;
+        loop {
+            let mut out = [0u8; 32];
+            hk.expand(&n.to_be_bytes(), &mut out).expect("32 bytes is well within HKDF-SHA256's output limit");
+            if bitcoin::secp256k1::SecretKey::from_slice(&out).is_ok() {
+                return out;
+            }
+            n += 1;
+        }
+    }
+
     /// v323 (S58, Mix step 7 — DP 2026-10-12 23:21 "Agreed the Tatara key comes from the 12 words on a path of its
     /// own"): the Tatara key — this wallet's place in its provider's weekly ring of Mix-on wallets (door 1). DERIVED like
     /// the LNURLp and push preimages (HKDF-SHA256 over the master secret) under its OWN salt, so it is apart from every

@@ -4271,6 +4271,66 @@ export class LijWalletHandle {
         }
     }
     /**
+     * v374: {"key": the voucher key, "issuer": the provider that vouched, or null}.
+     * @returns {string}
+     */
+    tower_voucher_json() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_tower_voucher_json(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * v374: this wallet's voucher key (x-only hex) — what its own provider is asked to sign, once (the ask is proven
+     * with lsp_proof, action "tower-voucher", record "voucher:<this key>").
+     * @returns {string}
+     */
+    tower_voucher_key() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_tower_voucher_key(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * v374: keep the provider's answer (its node key and its signature on the voucher key).
+     * @param {string} issuer_hex
+     * @param {string} issuer_sig
+     */
+    tower_voucher_set(issuer_hex, issuer_sig) {
+        const ptr0 = passStringToWasm0(issuer_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(issuer_sig, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_tower_voucher_set(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * v261 (DP: the on-chain drill-down): everything the panel shows for one transaction — fee (sats,
      * sat/vB), the inputs and outputs with which are ours, the counterparty address, the output type, mempool
      * or block (with the header time). Answers JSON:
@@ -5377,27 +5437,27 @@ function __wbg_get_imports() {
             console.warn(arg0, arg1, arg2, arg3);
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2621, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2625, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed);
             return ret;
         },
         __wbindgen_generic_0000000000000002: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("CloseEvent")], shim_idx: 9, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4);
             return ret;
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("ErrorEvent")], shim_idx: 9, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_241);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_244);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 9, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_242);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_245);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 2327, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 2330, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f);
             return ret;
         },
@@ -5436,16 +5496,16 @@ function wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f(arg0, arg1);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_241(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_241(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_244(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_244(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_242(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_242(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_245(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_245(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed(arg0, arg1, arg2) {

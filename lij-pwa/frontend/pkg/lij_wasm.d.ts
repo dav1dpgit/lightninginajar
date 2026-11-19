@@ -1222,6 +1222,19 @@ export class LijWalletHandle {
      */
     tower_summary_json(): string;
     /**
+     * v374: {"key": the voucher key, "issuer": the provider that vouched, or null}.
+     */
+    tower_voucher_json(): string;
+    /**
+     * v374: this wallet's voucher key (x-only hex) — what its own provider is asked to sign, once (the ask is proven
+     * with lsp_proof, action "tower-voucher", record "voucher:<this key>").
+     */
+    tower_voucher_key(): string;
+    /**
+     * v374: keep the provider's answer (its node key and its signature on the voucher key).
+     */
+    tower_voucher_set(issuer_hex: string, issuer_sig: string): void;
+    /**
      * v261 (DP: the on-chain drill-down): everything the panel shows for one transaction — fee (sats,
      * sat/vB), the inputs and outputs with which are ours, the counterparty address, the output type, mempool
      * or block (with the header time). Answers JSON:
@@ -1679,6 +1692,9 @@ export interface InitOutput {
     readonly lijwallethandle_tower_set_picks: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly lijwallethandle_tower_status_request_json: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly lijwallethandle_tower_summary_json: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_tower_voucher_json: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_tower_voucher_key: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_tower_voucher_set: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly lijwallethandle_tx_details: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly lijwallethandle_tx_keep_drop_before: (a: number, b: number) => [number, number, number];
     readonly lijwallethandle_tx_keep_set_cap: (a: number, b: number) => [number, number, number, number];
@@ -1715,9 +1731,9 @@ export interface InitOutput {
     readonly rustsecp256k1_v0_10_0_default_error_callback_fn: (a: number, b: number) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_241: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h18c08b67d63d4965_242: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_244: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_245: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

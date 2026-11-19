@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 name = "lightning"
-version = "0.2.6"
+version = "0.2.7"
 authors = ["Matt Corallo"]
 description = """
 A Complete Bitcoin Lightning Library in Rust.
