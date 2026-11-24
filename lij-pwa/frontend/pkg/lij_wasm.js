@@ -3160,6 +3160,29 @@ export class LijWalletHandle {
         return ret;
     }
     /**
+     * v379: both records emptied.
+     */
+    perf_clear() {
+        wasm.lijwallethandle_perf_clear(this.__wbg_ptr);
+    }
+    /**
+     * v379 (S71): the engine's own record of time — JSON {long_ms, stretches:[{at, ms, call, step}],
+     * sends:[{hash8, marks:[[what, at]]}], counts:{what: n}} (lij_core::perf). Read by Diagnostics → Performance.
+     * @returns {string}
+     */
+    perf_report() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.lijwallethandle_perf_report(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
      * S21 item 2 (persistence audit): true when load-time stamps showed the
      * manager stale vs monitors (interrupted save). Frontend surfaces honest
      * copy; LDK's protective FC is expected behavior in this state.
@@ -3968,6 +3991,915 @@ export class LijWalletHandle {
             return getStringFromWasm0(ret[0], ret[1]);
         } finally {
             wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * v382 (incident 2026-11-20 r2 §4.1): this wallet's signed statement of its channel records' update numbers at
+     * `at_ms` — the body of POST /v1/state ({"node_pubkey","at","channels","signature"}), or "null". The page adds
+     * "want_pass" and sends it to the provider before a Lightning connection and after a change of state. Read-only.
+     * @param {number} at_ms
+     * @returns {string}
+     */
+    state_statement_json(at_ms) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_state_statement_json(this.__wbg_ptr, at_ms);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Accept the change of terms the merchant offers, signed: {url, body}.
+     * @param {string} sub_key
+     * @returns {string}
+     */
+    subs_accept_body(sub_key) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(sub_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_accept_body(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * The merchant's answer to the accept: its receipt over the new terms must be the plan key's. The new terms
+     * then apply from their start, and never to a payment due before it. Answers the card.
+     * @param {string} sub_key
+     * @param {string} answer_json
+     * @returns {string}
+     */
+    subs_accept_done(sub_key, answer_json) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(sub_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(answer_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_accept_done(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * The plan fetched again (from the card's `plan_url`) holds the terms the merchant says this subscription is
+     * under: they become the record's. For a merchant whose sync answer does not carry the terms itself.
+     * @param {string} sub_key
+     * @param {string} plan_json
+     * @returns {string}
+     */
+    subs_adopt_terms(sub_key, plan_json) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(sub_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(plan_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_adopt_terms(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * The agreement, signed with this wallet's key for the plan: {url, body, c, sub_key}. Made when the wallet user
+     * taps Agree. No payment is made by agreeing.
+     * @param {string} code
+     * @param {string} plan_json
+     * @param {number} c
+     * @returns {string}
+     */
+    subs_agree_body(code, plan_json, c) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(code, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(plan_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_agree_body(this.__wbg_ptr, ptr0, len0, ptr1, len1, c);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * The merchant's answer to the agreement: its first due date must follow the terms and its receipt must be the
+     * plan key's; then the subscription is on record. Answers the card.
+     * @param {string} code
+     * @param {string} plan_json
+     * @param {number} c
+     * @param {string} answer_json
+     * @returns {string}
+     */
+    subs_agree_done(code, plan_json, c, answer_json) {
+        let deferred5_0;
+        let deferred5_1;
+        try {
+            const ptr0 = passStringToWasm0(code, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(plan_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(answer_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_agree_done(this.__wbg_ptr, ptr0, len0, ptr1, len1, c, ptr2, len2);
+            var ptr4 = ret[0];
+            var len4 = ret[1];
+            if (ret[3]) {
+                ptr4 = 0; len4 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred5_0 = ptr4;
+            deferred5_1 = len4;
+            return getStringFromWasm0(ptr4, len4);
+        } finally {
+            wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+        }
+    }
+    /**
+     * A scanned or pasted code. {"kind":"plan","url","host","signup"} for `lijoxsubs://…`;
+     * {"kind":"signin","host","path","k1","plan_id"} for `lijoxsubs-auth://…`.
+     * @param {string} code
+     * @returns {string}
+     */
+    subs_code(code) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(code, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_code(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * The same end, signed again with the time now — for the repeat at an open. {url, body}, or "null" when no end
+     * is waiting for the merchant's answer.
+     * @param {string} sub_key
+     * @returns {string}
+     */
+    subs_end_again(sub_key) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(sub_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_end_again(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * The end the wallet user asked for, signed: {url, body}. `when` is "now" or "paid_period_end"; `refund_to` is
+     * JSON {"lnaddr":…} | {"pr":…} | {"addr":…} or "" (only a plan whose terms refund unused time takes one). The
+     * request is kept on the record and made again by subs_end_again at each open until the merchant answers OK.
+     * @param {string} sub_key
+     * @param {string} when
+     * @param {string} refund_to
+     * @returns {string}
+     */
+    subs_end_body(sub_key, when, refund_to) {
+        let deferred5_0;
+        let deferred5_1;
+        try {
+            const ptr0 = passStringToWasm0(sub_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(when, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(refund_to, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_end_body(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+            var ptr4 = ret[0];
+            var len4 = ret[1];
+            if (ret[3]) {
+                ptr4 = 0; len4 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred5_0 = ptr4;
+            deferred5_1 = len4;
+            return getStringFromWasm0(ptr4, len4);
+        } finally {
+            wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+        }
+    }
+    /**
+     * The merchant's answer to the end. Answers the card.
+     * @param {string} sub_key
+     * @param {string} answer_json
+     * @returns {string}
+     */
+    subs_end_done(sub_key, answer_json) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(sub_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(answer_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_end_done(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * The wallet user took back an end the merchant has not answered. Answers the card.
+     * @param {string} sub_key
+     * @returns {string}
+     */
+    subs_end_take_back(sub_key) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(sub_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_end_take_back(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Lost records, words kept (format §10): the sync request for this wallet's key number `c` of the plan —
+     * {url, body}. The merchant answers UNKNOWN_SUBSCRIBER for a key it has never seen.
+     * @param {string} code
+     * @param {string} plan_json
+     * @param {number} c
+     * @returns {string}
+     */
+    subs_find_body(code, plan_json, c) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(code, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(plan_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_find_body(this.__wbg_ptr, ptr0, len0, ptr1, len1, c);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * The merchant's answer to subs_find_body. UNKNOWN_SUBSCRIBER → {"found":false}. A subscription the merchant
+     * holds under this key → its record is written again from the answer (the payments it lists as paid, the first
+     * due date, the terms it is under) and {"found":true,"card":…} is answered. Any other refusal is thrown.
+     * @param {string} code
+     * @param {string} plan_json
+     * @param {number} c
+     * @param {string} answer_json
+     * @returns {string}
+     */
+    subs_find_done(code, plan_json, c, answer_json) {
+        let deferred5_0;
+        let deferred5_1;
+        try {
+            const ptr0 = passStringToWasm0(code, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(plan_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(answer_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_find_done(this.__wbg_ptr, ptr0, len0, ptr1, len1, c, ptr2, len2);
+            var ptr4 = ret[0];
+            var len4 = ret[1];
+            if (ret[3]) {
+                ptr4 = 0; len4 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred5_0 = ptr4;
+            deferred5_1 = len4;
+            return getStringFromWasm0(ptr4, len4);
+        } finally {
+            wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+        }
+    }
+    /**
+     * An ended subscription is taken off the list. Answers the list.
+     * @param {string} sub_key
+     * @returns {string}
+     */
+    subs_forget(sub_key) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(sub_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_forget(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * The merchant's invoice answer put through THE SIX CHECKS (format §6), for Review. Nothing is recorded.
+     * Answers the checked invoice {pr, n, payment_hash, payee, amount_msat, price_unit, price_amount, sat_per_unit,
+     * period_from, period_to, hold_s, expires_at}; a failed check is thrown with the code INVOICE.
+     * @param {string} sub_key
+     * @param {string} answer_json
+     * @returns {string}
+     */
+    subs_invoice_check(sub_key, answer_json) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(sub_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(answer_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_invoice_check(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * The invoice request for the next unpaid payment — tagged: {url, n}. Refused here when Pay cannot be offered
+     * (the reason is the card's `why_not_pay`).
+     * @param {string} sub_key
+     * @returns {string}
+     */
+    subs_invoice_url(sub_key) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(sub_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_invoice_url(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Every subscription's card, with LDK's word folded in for a payment on its way: {"subs":[…],"now"}.
+     * @returns {string}
+     */
+    subs_list() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_subs_list(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * The wallet user tapped Pay on Review. The answer is checked AGAIN (never a page's copy of a check), and the
+     * payment number is recorded as on its way — refused when that number is paid or on its way already, and while
+     * the subscription waits for its sync after a restore. Answers {pr, payment_hash, amount_msat, n}: the page
+     * sends `pr` through the ordinary send. The outcome is then LDK's word (the record follows it by itself).
+     * @param {string} sub_key
+     * @param {string} answer_json
+     * @returns {string}
+     */
+    subs_pay_begin(sub_key, answer_json) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(sub_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(answer_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_pay_begin(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * The page's report that a send ended without paying. true when the record was turned back at once (LDK holds
+     * nothing on that hash and no try is running); false when it stays on its way.
+     * @param {string} payment_hash
+     * @returns {boolean}
+     */
+    subs_pay_failed(payment_hash) {
+        const ptr0 = passStringToWasm0(payment_hash, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_subs_pay_failed(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
+    }
+    /**
+     * The plan the page fetched from a plan code, checked, with what Review shows: {plan, host, signup, c, sub_key,
+     * terms_digest, existing:[{sub_key,c,state}], first_due_preview, schedule:[{n,due,price}], find:[c…]}.
+     * `c` is the count this wallet would use for a NEW subscription; `find` lists the counts (0–2) the wallet holds
+     * no record for — the page asks the merchant about each (subs_find_body) before Agree is offered, so a
+     * subscription whose records were lost is found again instead of made twice (format §10).
+     * @param {string} code
+     * @param {string} plan_json
+     * @returns {string}
+     */
+    subs_plan_review(code, plan_json) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(code, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(plan_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_plan_review(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * A subscriber's end, checked before the seller is shown a refund to pay: {when, refund_to}. The end must carry
+     * the subscription key's own signature — the sidecar's word alone moves no money.
+     * @param {string} plan_id
+     * @param {string} end_json
+     * @returns {string}
+     */
+    subs_seller_check_end(plan_id, end_json) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(plan_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(end_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_seller_check_end(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * A plan stops (or again starts) taking new subscribers. The subscribers it has are not touched.
+     * @param {string} plan_id
+     * @param {boolean} closed
+     */
+    subs_seller_close_plan(plan_id, closed) {
+        const ptr0 = passStringToWasm0(plan_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_subs_seller_close_plan(this.__wbg_ptr, ptr0, len0, closed);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * The seller's side as the page shows it: {on, plan_key, next_index, plans:[{plan_id, closed, versions:[{terms,
+     * terms_sig, terms_digest, made_at}]}], subscribers, waiting, received}.
+     * @returns {string}
+     */
+    subs_seller_info() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_subs_seller_info(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * `count` new selling hashes for the provider, each signed with the selling key: JSON [{hash, secret, expires,
+     * index, sig}]. The page registers them under the wallet's selling name (lnurlp_auth, action lnurl-register).
+     * @param {number} count
+     * @param {number | null} [start_hint]
+     * @returns {string}
+     */
+    subs_seller_prepare_hashes(count, start_hint) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_subs_seller_prepare_hashes(this.__wbg_ptr, count, isLikeNone(start_hint) ? Number.MAX_SAFE_INTEGER : (start_hint) >>> 0);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * @param {boolean} on
+     */
+    subs_seller_set_on(on) {
+        const ret = wasm.lijwallethandle_subs_seller_set_on(this.__wbg_ptr, on);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * A new plan, or a new version of one, signed with the selling key. `terms_json` is the draft (its version, its
+     * pay_by and its nodes are set here: a LiJ seller's plan is paid by Lightning to `provider_node`). Answers what
+     * the sidecar publishes: {plan_id, plan_key, terms, terms_sig, terms_digest}.
+     * @param {string} plan_id
+     * @param {string} terms_json
+     * @param {string} provider_node
+     * @returns {string}
+     */
+    subs_seller_sign_plan(plan_id, terms_json, provider_node) {
+        let deferred5_0;
+        let deferred5_1;
+        try {
+            const ptr0 = passStringToWasm0(plan_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(terms_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(provider_node, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_seller_sign_plan(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+            var ptr4 = ret[0];
+            var len4 = ret[1];
+            if (ret[3]) {
+                ptr4 = 0; len4 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred5_0 = ptr4;
+            deferred5_1 = len4;
+            return getStringFromWasm0(ptr4, len4);
+        } finally {
+            wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+        }
+    }
+    /**
+     * THE SELLER'S DECISION on a payment held on a selling hash: taken only when `description` (what the provider
+     * says the invoice on that hash was) carries a known subscriber's tag for a payment number that subscriber has
+     * not paid; else sent back to the payer. `description` empty = the provider named none. JSON as
+     * lij_core::node::subs_seller_take.
+     * @param {string} hash
+     * @param {string} description
+     * @param {number} invoice_msat
+     * @param {boolean} last
+     * @returns {string}
+     */
+    subs_seller_take(hash, description, invoice_msat, last) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(hash, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(description, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_seller_take(this.__wbg_ptr, ptr0, len0, ptr1, len1, invoice_msat, last);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * The sidecar's list of this seller's subscribers, checked one by one (each agreement's own signature, under
+     * terms this phone signed), and the work that follows: {plan_key, receipts:[…], tags:[…], refused:[…],
+     * subscribers}. The page hands `receipts` and `tags` back to the sidecar.
+     * @param {string} state_json
+     * @returns {string}
+     */
+    subs_seller_work(state_json) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(state_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_seller_work(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Sign-in on the merchant's website (format §11): the code the page showed, answered with this wallet's key for
+     * that plan — {url, merchant_name, plan_name}; the page calls the url. Only for a plan this wallet subscribes
+     * to, and only on that plan's own host.
+     * @param {string} code
+     * @returns {string}
+     */
+    subs_signin(code) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(code, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_signin(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * The merchant's status answer, taken in (a change of terms is kept only as an OFFER). Answers the card.
+     * UNKNOWN_TAG — the merchant's payment number is not this wallet's — marks the subscription for its sync and
+     * is thrown, so the page asks the sync next.
+     * @param {string} sub_key
+     * @param {string} answer_json
+     * @returns {string}
+     */
+    subs_status_done(sub_key, answer_json) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(sub_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(answer_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_status_done(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * The status request for one subscription — tagged, so it names no key: {url, n}. Asked at each notice and
+     * when Pay is tapped; nothing else is asked on a schedule (format §5).
+     * @param {string} sub_key
+     * @returns {string}
+     */
+    subs_status_url(sub_key) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(sub_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_status_url(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * The sync request, signed: {url, body}. Asked once per subscription after any restore, and when the merchant's
+     * payment number is not this wallet's.
+     * @param {string} sub_key
+     * @returns {string}
+     */
+    subs_sync_body(sub_key) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(sub_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_sync_body(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * The merchant's sync answer, taken in: what it holds as paid is paid here too, and Pay may be offered again.
+     * Answers the card.
+     * @param {string} sub_key
+     * @param {string} answer_json
+     * @returns {string}
+     */
+    subs_sync_done(sub_key, answer_json) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(sub_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(answer_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.lijwallethandle_subs_sync_done(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * The reminder times for the wallet's own provider (format §12): {times:[…], record_id}. `utc_offset_min` is the
+     * phone's offset east of UTC in minutes. The page signs `record_id` (lsp_proof, action wake-schedule) and posts
+     * the list; an empty list deletes what the provider holds. The provider is told times only.
+     * @param {number} utc_offset_min
+     * @returns {string}
+     */
+    subs_wake_times(utc_offset_min) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_subs_wake_times(this.__wbg_ptr, utc_offset_min);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
         }
     }
     /**
@@ -5025,6 +5957,25 @@ export function wrap_mnemonic(mnemonic, passphrase) {
 }
 
 /**
+ * v382 (incident 2026-11-20 r2 §4.1): the provider's PASS for the next Lightning connection to that provider (its
+ * node key in hex, the pass as 64 hex). The next socket opened toward that key presents it as a text frame
+ * ("lijox-pass:" + the pass) before the handshake's first bytes; the provider's tunnel takes it before anything is
+ * opened to its node (lijox-adapter 0.136.0). Given only to a provider that made the pass — an older adapter would
+ * take the frame for Lightning bytes. Good once; not presented when older than 75 s. false = not 64 hex, nothing kept.
+ * @param {string} pubkey_hex
+ * @param {string} pass_hex
+ * @returns {boolean}
+ */
+export function ws_pass(pubkey_hex, pass_hex) {
+    const ptr0 = passStringToWasm0(pubkey_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(pass_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.ws_pass(ptr0, len0, ptr1, len1);
+    return ret !== 0;
+}
+
+/**
  * v322 (S58, DP 2026-10-12 20:18 — the CHAIN dot): open the WebSocket to the provider at `wss_url` now, while the
  * start-up checks run; nothing is sent on it until connect_to_peer adopts it. Best-effort: an error is only logged by
  * the page, which then connects as before.
@@ -5338,6 +6289,9 @@ function __wbg_get_imports() {
             const ret = Promise.resolve(arg0);
             return ret;
         },
+        __wbg_send_2bc0d66d884817ad: function() { return handleError(function (arg0, arg1, arg2) {
+            arg0.send(getStringFromWasm0(arg1, arg2));
+        }, arguments); },
         __wbg_send_af811d92e7aea5c4: function() { return handleError(function (arg0, arg1, arg2) {
             arg0.send(getArrayU8FromWasm0(arg1, arg2));
         }, arguments); },
@@ -5437,7 +6391,7 @@ function __wbg_get_imports() {
             console.warn(arg0, arg1, arg2, arg3);
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2625, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2659, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed);
             return ret;
         },
@@ -5448,16 +6402,16 @@ function __wbg_get_imports() {
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("ErrorEvent")], shim_idx: 9, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_244);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_281);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 9, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_245);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_282);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 2330, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 2363, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f);
             return ret;
         },
@@ -5500,12 +6454,12 @@ function wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_244(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_244(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_281(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_281(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_245(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_245(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_282(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_282(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed(arg0, arg1, arg2) {

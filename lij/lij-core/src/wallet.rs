@@ -706,6 +706,16 @@ impl LijWallet {
                 monitors += 1;
             }
         }
+        // S71 (Subscriptions, format §10 — the structural fix for restored wallets, DP 09-21): after ANY restore every
+        // subscription waits for its sync before Pay is offered, so a payment made after this copy was taken is not
+        // paid a second time. Every restore passes through this function.
+        if bundle.contains_key(crate::subscriptions::SUBS_KEY) {
+            let enc = crate::tier2_wallet::encrypted(storage, enc_key);
+            match crate::subscriptions::load(&enc) {
+                Ok(mut s) => { s.mark_restored(); crate::subscriptions::save(&enc, &s)?; }
+                Err(e) => log::error!("[subs] the restored subscriptions could not be read: {e}"),
+            }
+        }
         // Resume the version counter from the restored backup, so this device's
         // next push is monotonically newer than what's already in KV. Without
         // this a restored device starts at v0 and the Worker rejects every push
@@ -714,6 +724,11 @@ impl LijWallet {
             crate::storage::KEY_BACKUP_VERSION,
             &blob.version.to_be_bytes(),
         )?;
+        // v380 (incident 2026-11-20, finding A): the phone now holds THIS copy's state — not the state its own
+        // unanswered uploads carried. The note of those uploads goes, so a cloud copy this phone sent BEFORE the load
+        // is never read as "this phone's own" after it (that reading takes the cloud's number with no warning, and
+        // the loaded state may be older than the cloud's). Every load passes through this function.
+        crate::storage::backup_inflight_clear(storage)?;
         Ok(monitors)
     }
 

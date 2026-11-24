@@ -889,6 +889,15 @@ export class LijWalletHandle {
      */
     pending_onchain_audit_json(): Promise<string>;
     /**
+     * v379: both records emptied.
+     */
+    perf_clear(): void;
+    /**
+     * v379 (S71): the engine's own record of time — JSON {long_ms, stretches:[{at, ms, call, step}],
+     * sends:[{hash8, marks:[[what, at]]}], counts:{what: n}} (lij_core::perf). Read by Diagnostics → Performance.
+     */
+    perf_report(): string;
+    /**
      * S21 item 2 (persistence audit): true when load-time stamps showed the
      * manager stale vs monitors (interrupted save). Frontend surfaces honest
      * copy; LDK's protective FC is expected behavior in this state.
@@ -1149,6 +1158,182 @@ export class LijWalletHandle {
      * (thread_local). Remove with the rest of the temp diagnostics.
      */
     spendable_outputs_log(): string;
+    /**
+     * v382 (incident 2026-11-20 r2 §4.1): this wallet's signed statement of its channel records' update numbers at
+     * `at_ms` — the body of POST /v1/state ({"node_pubkey","at","channels","signature"}), or "null". The page adds
+     * "want_pass" and sends it to the provider before a Lightning connection and after a change of state. Read-only.
+     */
+    state_statement_json(at_ms: number): string;
+    /**
+     * Accept the change of terms the merchant offers, signed: {url, body}.
+     */
+    subs_accept_body(sub_key: string): string;
+    /**
+     * The merchant's answer to the accept: its receipt over the new terms must be the plan key's. The new terms
+     * then apply from their start, and never to a payment due before it. Answers the card.
+     */
+    subs_accept_done(sub_key: string, answer_json: string): string;
+    /**
+     * The plan fetched again (from the card's `plan_url`) holds the terms the merchant says this subscription is
+     * under: they become the record's. For a merchant whose sync answer does not carry the terms itself.
+     */
+    subs_adopt_terms(sub_key: string, plan_json: string): string;
+    /**
+     * The agreement, signed with this wallet's key for the plan: {url, body, c, sub_key}. Made when the wallet user
+     * taps Agree. No payment is made by agreeing.
+     */
+    subs_agree_body(code: string, plan_json: string, c: number): string;
+    /**
+     * The merchant's answer to the agreement: its first due date must follow the terms and its receipt must be the
+     * plan key's; then the subscription is on record. Answers the card.
+     */
+    subs_agree_done(code: string, plan_json: string, c: number, answer_json: string): string;
+    /**
+     * A scanned or pasted code. {"kind":"plan","url","host","signup"} for `lijoxsubs://…`;
+     * {"kind":"signin","host","path","k1","plan_id"} for `lijoxsubs-auth://…`.
+     */
+    subs_code(code: string): string;
+    /**
+     * The same end, signed again with the time now — for the repeat at an open. {url, body}, or "null" when no end
+     * is waiting for the merchant's answer.
+     */
+    subs_end_again(sub_key: string): string;
+    /**
+     * The end the wallet user asked for, signed: {url, body}. `when` is "now" or "paid_period_end"; `refund_to` is
+     * JSON {"lnaddr":…} | {"pr":…} | {"addr":…} or "" (only a plan whose terms refund unused time takes one). The
+     * request is kept on the record and made again by subs_end_again at each open until the merchant answers OK.
+     */
+    subs_end_body(sub_key: string, when: string, refund_to: string): string;
+    /**
+     * The merchant's answer to the end. Answers the card.
+     */
+    subs_end_done(sub_key: string, answer_json: string): string;
+    /**
+     * The wallet user took back an end the merchant has not answered. Answers the card.
+     */
+    subs_end_take_back(sub_key: string): string;
+    /**
+     * Lost records, words kept (format §10): the sync request for this wallet's key number `c` of the plan —
+     * {url, body}. The merchant answers UNKNOWN_SUBSCRIBER for a key it has never seen.
+     */
+    subs_find_body(code: string, plan_json: string, c: number): string;
+    /**
+     * The merchant's answer to subs_find_body. UNKNOWN_SUBSCRIBER → {"found":false}. A subscription the merchant
+     * holds under this key → its record is written again from the answer (the payments it lists as paid, the first
+     * due date, the terms it is under) and {"found":true,"card":…} is answered. Any other refusal is thrown.
+     */
+    subs_find_done(code: string, plan_json: string, c: number, answer_json: string): string;
+    /**
+     * An ended subscription is taken off the list. Answers the list.
+     */
+    subs_forget(sub_key: string): string;
+    /**
+     * The merchant's invoice answer put through THE SIX CHECKS (format §6), for Review. Nothing is recorded.
+     * Answers the checked invoice {pr, n, payment_hash, payee, amount_msat, price_unit, price_amount, sat_per_unit,
+     * period_from, period_to, hold_s, expires_at}; a failed check is thrown with the code INVOICE.
+     */
+    subs_invoice_check(sub_key: string, answer_json: string): string;
+    /**
+     * The invoice request for the next unpaid payment — tagged: {url, n}. Refused here when Pay cannot be offered
+     * (the reason is the card's `why_not_pay`).
+     */
+    subs_invoice_url(sub_key: string): string;
+    /**
+     * Every subscription's card, with LDK's word folded in for a payment on its way: {"subs":[…],"now"}.
+     */
+    subs_list(): string;
+    /**
+     * The wallet user tapped Pay on Review. The answer is checked AGAIN (never a page's copy of a check), and the
+     * payment number is recorded as on its way — refused when that number is paid or on its way already, and while
+     * the subscription waits for its sync after a restore. Answers {pr, payment_hash, amount_msat, n}: the page
+     * sends `pr` through the ordinary send. The outcome is then LDK's word (the record follows it by itself).
+     */
+    subs_pay_begin(sub_key: string, answer_json: string): string;
+    /**
+     * The page's report that a send ended without paying. true when the record was turned back at once (LDK holds
+     * nothing on that hash and no try is running); false when it stays on its way.
+     */
+    subs_pay_failed(payment_hash: string): boolean;
+    /**
+     * The plan the page fetched from a plan code, checked, with what Review shows: {plan, host, signup, c, sub_key,
+     * terms_digest, existing:[{sub_key,c,state}], first_due_preview, schedule:[{n,due,price}], find:[c…]}.
+     * `c` is the count this wallet would use for a NEW subscription; `find` lists the counts (0–2) the wallet holds
+     * no record for — the page asks the merchant about each (subs_find_body) before Agree is offered, so a
+     * subscription whose records were lost is found again instead of made twice (format §10).
+     */
+    subs_plan_review(code: string, plan_json: string): string;
+    /**
+     * A subscriber's end, checked before the seller is shown a refund to pay: {when, refund_to}. The end must carry
+     * the subscription key's own signature — the sidecar's word alone moves no money.
+     */
+    subs_seller_check_end(plan_id: string, end_json: string): string;
+    /**
+     * A plan stops (or again starts) taking new subscribers. The subscribers it has are not touched.
+     */
+    subs_seller_close_plan(plan_id: string, closed: boolean): void;
+    /**
+     * The seller's side as the page shows it: {on, plan_key, next_index, plans:[{plan_id, closed, versions:[{terms,
+     * terms_sig, terms_digest, made_at}]}], subscribers, waiting, received}.
+     */
+    subs_seller_info(): string;
+    /**
+     * `count` new selling hashes for the provider, each signed with the selling key: JSON [{hash, secret, expires,
+     * index, sig}]. The page registers them under the wallet's selling name (lnurlp_auth, action lnurl-register).
+     */
+    subs_seller_prepare_hashes(count: number, start_hint?: number | null): string;
+    subs_seller_set_on(on: boolean): void;
+    /**
+     * A new plan, or a new version of one, signed with the selling key. `terms_json` is the draft (its version, its
+     * pay_by and its nodes are set here: a LiJ seller's plan is paid by Lightning to `provider_node`). Answers what
+     * the sidecar publishes: {plan_id, plan_key, terms, terms_sig, terms_digest}.
+     */
+    subs_seller_sign_plan(plan_id: string, terms_json: string, provider_node: string): string;
+    /**
+     * THE SELLER'S DECISION on a payment held on a selling hash: taken only when `description` (what the provider
+     * says the invoice on that hash was) carries a known subscriber's tag for a payment number that subscriber has
+     * not paid; else sent back to the payer. `description` empty = the provider named none. JSON as
+     * lij_core::node::subs_seller_take.
+     */
+    subs_seller_take(hash: string, description: string, invoice_msat: number, last: boolean): string;
+    /**
+     * The sidecar's list of this seller's subscribers, checked one by one (each agreement's own signature, under
+     * terms this phone signed), and the work that follows: {plan_key, receipts:[…], tags:[…], refused:[…],
+     * subscribers}. The page hands `receipts` and `tags` back to the sidecar.
+     */
+    subs_seller_work(state_json: string): string;
+    /**
+     * Sign-in on the merchant's website (format §11): the code the page showed, answered with this wallet's key for
+     * that plan — {url, merchant_name, plan_name}; the page calls the url. Only for a plan this wallet subscribes
+     * to, and only on that plan's own host.
+     */
+    subs_signin(code: string): string;
+    /**
+     * The merchant's status answer, taken in (a change of terms is kept only as an OFFER). Answers the card.
+     * UNKNOWN_TAG — the merchant's payment number is not this wallet's — marks the subscription for its sync and
+     * is thrown, so the page asks the sync next.
+     */
+    subs_status_done(sub_key: string, answer_json: string): string;
+    /**
+     * The status request for one subscription — tagged, so it names no key: {url, n}. Asked at each notice and
+     * when Pay is tapped; nothing else is asked on a schedule (format §5).
+     */
+    subs_status_url(sub_key: string): string;
+    /**
+     * The sync request, signed: {url, body}. Asked once per subscription after any restore, and when the merchant's
+     * payment number is not this wallet's.
+     */
+    subs_sync_body(sub_key: string): string;
+    /**
+     * The merchant's sync answer, taken in: what it holds as paid is paid here too, and Pay may be offered again.
+     * Answers the card.
+     */
+    subs_sync_done(sub_key: string, answer_json: string): string;
+    /**
+     * The reminder times for the wallet's own provider (format §12): {times:[…], record_id}. `utc_offset_min` is the
+     * phone's offset east of UTC in minutes. The page signs `record_id` (lsp_proof, action wake-schedule) and posts
+     * the list; an empty list deletes what the provider holds. The provider is told times only.
+     */
+    subs_wake_times(utc_offset_min: number): string;
     /**
      * TEMP diagnostic: why matured sweeps aren't broadcasting — broadcaster queue
      * depth + failures, and the sweeper's internal height vs the real tip.
@@ -1464,6 +1649,15 @@ export function wasm_build_version(): string;
 export function wrap_mnemonic(mnemonic: string, passphrase: string): string;
 
 /**
+ * v382 (incident 2026-11-20 r2 §4.1): the provider's PASS for the next Lightning connection to that provider (its
+ * node key in hex, the pass as 64 hex). The next socket opened toward that key presents it as a text frame
+ * ("lijox-pass:" + the pass) before the handshake's first bytes; the provider's tunnel takes it before anything is
+ * opened to its node (lijox-adapter 0.136.0). Given only to a provider that made the pass — an older adapter would
+ * take the frame for Lightning bytes. Good once; not presented when older than 75 s. false = not 64 hex, nothing kept.
+ */
+export function ws_pass(pubkey_hex: string, pass_hex: string): boolean;
+
+/**
  * v322 (S58, DP 2026-10-12 20:18 — the CHAIN dot): open the WebSocket to the provider at `wss_url` now, while the
  * start-up checks run; nothing is sent on it until connect_to_peer adopts it. Best-effort: an error is only logged by
  * the page, which then connects as before.
@@ -1640,6 +1834,8 @@ export interface InitOutput {
     readonly lijwallethandle_outstanding_close_attempts: (a: number) => [number, number, number, number];
     readonly lijwallethandle_peek_channel_index: (a: number) => [number, number, number];
     readonly lijwallethandle_pending_onchain_audit_json: (a: number) => any;
+    readonly lijwallethandle_perf_clear: (a: number) => void;
+    readonly lijwallethandle_perf_report: (a: number) => [number, number];
     readonly lijwallethandle_persist_skew_at_load: (a: number) => number;
     readonly lijwallethandle_pump_peer: (a: number, b: number) => [number, number];
     readonly lijwallethandle_purge_force_closed_monitor: (a: number, b: number, c: number, d: number) => [number, number, number];
@@ -1678,6 +1874,40 @@ export interface InitOutput {
     readonly lijwallethandle_sp_labels: (a: number) => [number, number, number, number];
     readonly lijwallethandle_sp_set_enabled: (a: number, b: number) => [number, number, number, number];
     readonly lijwallethandle_spendable_outputs_log: (a: number) => [number, number];
+    readonly lijwallethandle_state_statement_json: (a: number, b: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_accept_body: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_accept_done: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_adopt_terms: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_agree_body: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_agree_done: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_code: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_end_again: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_end_body: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_end_done: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_end_take_back: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_find_body: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_find_done: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_forget: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_invoice_check: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_invoice_url: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_list: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_pay_begin: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_pay_failed: (a: number, b: number, c: number) => [number, number, number];
+    readonly lijwallethandle_subs_plan_review: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_seller_check_end: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_seller_close_plan: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly lijwallethandle_subs_seller_info: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_seller_prepare_hashes: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_seller_set_on: (a: number, b: number) => [number, number];
+    readonly lijwallethandle_subs_seller_sign_plan: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_seller_take: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_seller_work: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_signin: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_status_done: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_status_url: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_sync_body: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_sync_done: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly lijwallethandle_subs_wake_times: (a: number, b: number) => [number, number, number, number];
     readonly lijwallethandle_sweeper_broadcast_diag: (a: number, b: number) => [number, number, number, number];
     readonly lijwallethandle_sweeper_spend_attempt_diag: (a: number, b: number) => [number, number, number, number];
     readonly lijwallethandle_switch_lsp: (a: number, b: number, c: number) => any;
@@ -1719,6 +1949,7 @@ export interface InitOutput {
     readonly validate_mnemonic: (a: number, b: number) => [number, number];
     readonly wasm_build_version: () => [number, number];
     readonly wrap_mnemonic: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly ws_pass: (a: number, b: number, c: number, d: number) => number;
     readonly ws_preopen: (a: number, b: number) => [number, number];
     readonly ws_preopen_drop: () => void;
     readonly rustsecp256k1_v0_11_context_create: (a: number) => number;
@@ -1732,8 +1963,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_244: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_245: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_281: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_282: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

@@ -187,6 +187,20 @@ impl RootKey {
         out
     }
 
+    /// S71 (Subscriptions, a LiJ wallet user who sells): the preimage of a SELLING hash — the hashes the seller's phone
+    /// registers with its provider for its subscribers' invoices. Derived like the LNURLp pool's, under its OWN salt, so
+    /// the address path's claim (which takes any payment on a pool hash) never finds one: a payment on a selling hash
+    /// is taken only by the path that first checks its subscription tag (format §13), and a restored wallet that has
+    /// not rebuilt its seller records lets such a payment go back to the payer.
+    pub fn subs_seller_preimage(&self, index: u32) -> [u8; 32] {
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+        let hk = Hkdf::<Sha256>::new(Some(b"LiJ-Subs-seller-preimage-v1"), &self.master_xprv.private_key.secret_bytes());
+        let mut out = [0u8; 32];
+        hk.expand(&index.to_be_bytes(), &mut out).expect("32 bytes is well within HKDF-SHA256's output limit");
+        out
+    }
+
     /// v280 (S49, DP GO — Push Key): the preimage a Push Key carries is DERIVED like the LNURLp
     /// pool's (HKDF-SHA256 over the master secret, the index as info) under its OWN salt, so a push
     /// index and an LNURLp index can never collide and a revealed Push Key says nothing about any
@@ -253,6 +267,50 @@ impl RootKey {
             let mut info = tower_id.to_vec();
             info.extend_from_slice(&n.to_be_bytes());
             hk.expand(&info, &mut out).expect("32 bytes is well within HKDF-SHA256's output limit");
+            if bitcoin::secp256k1::SecretKey::from_slice(&out).is_ok() {
+                return out;
+            }
+            n += 1;
+        }
+    }
+
+    /// S71 (DP 2026-11-19 13:43, question 1 "Yes" — docs/design/subscriptions/lijox-subscriptions-r2.md §2.2): THE
+    /// SUBSCRIPTION KEY. One key for each subscription, made from the 12 words AND the plan — HKDF-SHA256 over the master
+    /// secret under its OWN salt, info = the merchant's plan key ‖ the plan id ‖ c (0 for the wallet's first subscription
+    /// to that plan, counting up for a later one). The tower key's form: every plan sees a different key, so no merchant
+    /// is ever shown a key this wallet uses with another, and a wallet restored from its 12 words finds its key for a
+    /// plan from the plan code alone. No coin ever sits on it.
+    pub fn subs_key(&self, plan_key: &[u8; 32], plan_id: &str, c: u32) -> [u8; 32] {
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+        let hk = Hkdf::<Sha256>::new(Some(b"LiJ-Subs-key-v1"), &self.master_xprv.private_key.secret_bytes());
+        let mut n: u32 = 0;
+        loop {
+            let mut info = Vec::with_capacity(32 + plan_id.len() + 8);
+            info.extend_from_slice(plan_key);
+            info.extend_from_slice(plan_id.as_bytes());
+            info.extend_from_slice(&c.to_be_bytes());
+            info.extend_from_slice(&n.to_be_bytes());
+            let mut out = [0u8; 32];
+            hk.expand(&info, &mut out).expect("32 bytes is well within HKDF-SHA256's output limit");
+            if bitcoin::secp256k1::SecretKey::from_slice(&out).is_ok() {
+                return out;
+            }
+            n += 1;
+        }
+    }
+
+    /// S71 (lijox-subscriptions-r2.md §13): THE SELLING KEY — a LiJ wallet user who sells has ONE key for all its plans.
+    /// It signs the plans' terms, the receipts and each payment hash the wallet registers with its provider. HKDF under
+    /// its own salt; not the node key, not a subscription key.
+    pub fn subs_seller_key(&self) -> [u8; 32] {
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+        let hk = Hkdf::<Sha256>::new(Some(b"LiJ-Subs-seller-key-v1"), &self.master_xprv.private_key.secret_bytes());
+        let mut n: u32 = 0;
+        loop {
+            let mut out = [0u8; 32];
+            hk.expand(&n.to_be_bytes(), &mut out).expect("32 bytes is well within HKDF-SHA256's output limit");
             if bitcoin::secp256k1::SecretKey::from_slice(&out).is_ok() {
                 return out;
             }
@@ -396,6 +454,30 @@ mod tests {
         let pubkey_restored = restored.portable_pubkey_hex().unwrap();
 
         assert_eq!(pubkey_original, pubkey_restored);
+    }
+
+    // S71: a subscription key is its own derivation — stable across restores, one per plan and per count, apart from
+    // the selling key.
+    #[test]
+    fn s71_subscription_keys_are_derived_stably_one_per_plan() {
+        let mnemonic: Mnemonic = TEST_MNEMONIC.parse().unwrap();
+        let root = RootKey::from_mnemonic(&mnemonic, Network::Bitcoin).unwrap();
+        let again = RootKey::from_mnemonic(&mnemonic, Network::Bitcoin).unwrap();
+        let (plan_a, plan_b) = ([0x22u8; 32], [0x23u8; 32]);
+        let k = root.subs_key(&plan_a, "coffee-club", 0);
+        assert_eq!(k, again.subs_key(&plan_a, "coffee-club", 0), "a restore re-derives the same key from the 12 words and the plan");
+        assert_ne!(k, root.subs_key(&plan_b, "coffee-club", 0), "another merchant's plan key gives another key");
+        assert_ne!(k, root.subs_key(&plan_a, "coffee-club-2", 0), "another plan gives another key");
+        assert_ne!(k, root.subs_key(&plan_a, "coffee-club", 1), "a second subscription to the same plan gives another key");
+        assert_ne!(k, root.subs_seller_key(), "the selling key is apart");
+        assert_eq!(root.subs_seller_key(), again.subs_seller_key());
+        assert_eq!(hex::encode(k), "ea2c816b987117ee1f935997ffb63ee3f6a2c1bfb79702108842c80e7424c562");
+        assert_eq!(hex::encode(root.subs_seller_key()), "c204f6cf186f3d1ed39bc2b0db91e4fe7d2d31dd3dabe5d54a7507d4631b562b");
+        assert_ne!(root.subs_seller_preimage(0), root.lnurlp_preimage(0), "a selling hash is never an address-pool hash");
+        assert_ne!(root.subs_seller_preimage(0), root.subs_seller_preimage(1));
+        assert_eq!(root.subs_seller_preimage(0), again.subs_seller_preimage(0));
+        let secp = Secp256k1::new();
+        let _ = bitcoin::secp256k1::Keypair::from_seckey_slice(&secp, &k).unwrap();
     }
 
     // v280 (S49): a Push Key's preimage is its own derivation — stable across restores, distinct

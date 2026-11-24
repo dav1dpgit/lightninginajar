@@ -286,8 +286,10 @@ pub async fn sync_step(
     }
     let count = (tip_height - start + 1).min(batch.max(1));
 
+    crate::perf::step("filters: download and read 1 batch");   // v379
     let hdrs: HeadersResp = get_json(http, &format!("{base}/headers?start={start}&count={count}")).await?;
     let flts: FiltersResp = get_json(http, &format!("{base}/filters?start={start}&count={count}")).await?;
+    crate::perf::step("filters: check and match against the wallet's addresses");   // v379
 
     if hdrs.headers.is_empty() {
         return Ok(SyncOutcome {
@@ -386,8 +388,10 @@ pub async fn sync_step_down(
     }
     let start = low.saturating_sub(batch.max(1)).max(floor);
     let count = low - start + 1;   // includes `low` as the overlap block
+    crate::perf::step("filters: download and read 1 batch");   // v379
     let hdrs: HeadersResp = get_json(http, &format!("{base}/headers?start={start}&count={count}")).await?;
     let flts: FiltersResp = get_json(http, &format!("{base}/filters?start={start}&count={count}")).await?;
+    crate::perf::step("filters: check and match against the wallet's addresses");   // v379
     if hdrs.headers.len() as u32 != count || flts.filters.len() as u32 != count {
         return Err(LijError::Node(format!("down batch {start}..{low}: server returned {} headers / {} filters, wanted {count}", hdrs.headers.len(), flts.filters.len())));
     }

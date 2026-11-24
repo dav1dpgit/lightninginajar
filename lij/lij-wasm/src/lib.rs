@@ -9,6 +9,12 @@
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
+
+/// v379 (S71): a promise whose every go on the browser's thread is measured (lij_core::perf) under the call's name.
+fn timed_promise<F>(name: &'static str, fut: F) -> js_sys::Promise
+where F: std::future::Future<Output = Result<JsValue, JsValue>> + 'static {
+    future_to_promise(lij_core::perf::timed(name, fut))
+}
 use std::sync::Arc;
 
 use lij_core::{
@@ -56,6 +62,7 @@ fn schedule_early_event_pass() {
 }
 
 fn early_event_pass() {
+    let _perf = lij_core::perf::scope("early_event_pass");   // v379
     let inner = match current_wallet_inner() {
         Some(i) => i,
         None => return,
@@ -96,7 +103,13 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v376".to_string()  // v376 (S70 Wed 2026-11-18, DP 22:06 "Go" — docs/design/htlc/offline-sender-r1.md §4 B and -r2.md): A PAYMENT THIS WALLET SENT NO LONGER CLOSES ITS CHANNEL 3 BLOCKS PAST ITS EXPIRY. One change, in the LDK copy (lij/patches/lightning/src/chain/channelmonitor.rs, should_broadcast_holder_commitment_txn, LIJ PATCH v376): an outbound HTLC whose source is HTLCSource::OutboundRoute — a payment this node sent itself; a LiJ wallet never forwards, so every HTLC it sends — gets the grace LDK already gives an async payment, 4,032 blocks (about four weeks), before the wallet goes on-chain over it; LDK closes at 3 blocks (LATENCY_GRACE_PERIOD_BLOCKS). WHY: a wallet that was offline while its provider failed the payment back returned to a chain past the expiry and closed its own channel before the reconnect could deliver the fail (the new block number and the fail arrive on the same connection, in no fixed order); LDK gives the reason for that close as protecting the inbound HTLC behind a forward, and a wallet that only sends has none. A late fail returns the sats; a late settle means the payee was paid. UNCHANGED: a forwarded HTLC (PreviousHopData) keeps the 3-block rule; the wallet still goes on-chain to collect an incoming HTLC it holds the preimage for; the provider's own rule (LND collects on-chain 10 blocks below the expiry of a payment it has the preimage for while the wallet stays away) is the provider's and is not touched; nothing stored changes form. NOT COVERED: a wallet away longer than the expiry plus 4,032 blocks. TESTS in the LDK copy, ln/lij_own_send_tests.rs (5; four fail without the change): the late fail taken, dust included; the late settle taken; the close when the grace has run, not one block sooner; a forward still closes at 3. LDK's own suite on the copy: 14 of its tests assert the 3-block close for a sender's own payment and fail by design (listed in docs/ldk-patches.md); the one other failure is the old sweep one. No other engine file changed.
+    "phase11-v382".to_string()  // v382 (S71 Fri 2026-11-20, DP 09:45 "'The choices are: catch up, or close on purpose.' Agreed. Carry on and go beyond A-E — approved." · 11:30 "Let's go and fold in." — incident 2026-11-20 r2 §4.1): THE STATEMENT AND THE PASS. A provider's node closes a channel by force the moment a wallet reconnects with an older state, and the provider cannot read the wallet's reconnect message; what can decide is the wallet's own record. (1) state_statement.rs (NEW) + node state_statement_json(at_ms): each live channel record's update number, signed with the node key over "lijox-state-v1:<key>:<at>:<sha256 of the fixed form>" — the twin of lijox-adapter 0.136.0 state-marks.js, with its pinned vector. The provider keeps the highest number stated per channel; a wallet that states a lower one is behind and gets no pass. (2) ws_pass(provider key, pass): the next socket toward that provider presents the pass as a text frame ("lijox-pass:" + 64 hex) before the handshake's first bytes — on a fresh socket and on the pre-opened one (v322) alike; good once; not presented when older than 75 s. The page asks for the statement and the pass (POST /v1/state) before each Lightning connection. Tests v382_* x4.
+    // "phase11-v381".to_string()  // v381 (S71 Fri 2026-11-20, DP 09:45 "Carry on and go beyond A-E — approved" — incident 2026-11-20 r2): THE REFUSAL NAMES THE COPY THE REGISTRY HOLDS, AND THE PHONE READS IT. lij-worker 0.23.0 puts existing_fingerprint (and the number and date) beside the unchanged words of a refused upload. storage::parse_stale_refusal_fingerprint reads it; upload_copy settles a refusal from that one answer — the copy held is one of this phone's unanswered uploads: no conflict, a fresh copy goes up as the next number; any other copy: the conflict — with no second question (v380's question after a refusal could be answered from the registry's 30-s cache with an older copy; it still stands for a registry before 0.23.0). Tests v381_* x4.
+    // "phase11-v380".to_string()  // v380 (S71 Fri 2026-11-20, DP 08:39 "Go ahead with the the writeup and A-E fixes" — incident 2026-11-20 r1, finding A): THE PHONE KNOWS ITS OWN UPLOAD WHILE IT STAYS OPEN. FOUND in the tapes of DP's phone: a routine cloud upload was stored as no. 7314 but its answer never reached the phone; the next upload, a new copy under the same number, replaced the note of the first and was refused; the refusal cleared the note; "Your cloud copy is newer than this phone" followed on a phone that held the newest state, and both channels were closed by force two taps later. (1) storage: the note keeps every copy sent under one number that got no answer (number + up to 8 fingerprints; one fingerprint is the v319 form byte for byte); backup_meta_is_own matches any of them; backup_unanswered, backup_refusal_may_be_own, backup_take_own. (2) storage::upload_copy (backup_now and maybe_backup both send through it; the steps are compiled and tested off the browser against a stand-in that keeps the registry's own rule) — before a copy goes up under a number that has an unanswered upload the cloud is asked what it holds (own: the number is taken, the copy goes up as the next number); a refusal naming that very number is asked about once more before it is a conflict (own: no conflict, a fresh copy goes up next; no usable answer — none at all, or a lower number because the registry reads through a cache of up to 30 s: no warning yet, asked again at the next upload, and the warning only once 8 uploads in a row brought no usable answer, the note kept for the next start); a copy that never left the phone (no challenge: no connection) leaves no note. maybe_backup's answer adds "own":N when a number was taken. (3) wallet::inject_state_blob drops the note — after any copy is loaded the cloud's copy is never read as this phone's own. A copy from another device still raises the warning. Tests v380_* x12.
+    // "phase11-v379".to_string()  // v379 (S71 Thu 2026-11-19, DP 22:08 "1, 2, & 3 are go ... and go on the finer report"): (1) a channel's record carries confirmations_required — how many confirmations the other node asked for — and funded_by_this_wallet (a channel he funded on another provider said "~1 block" and was usable at the third); (2) THE FINER PERFORMANCE RECORD, a diagnostic that changes nothing the wallet does (lij_core::perf): every go of the engine's async work on the browser's thread is measured, and a go of 50 ms or more is written down with its call and step; each Lightning send's timeline (called, the provider asked and answering, handed to the channel, taken by the provider, the provider's answer, the outcome); a count of frames from the provider dropped because the wallet was busy. perf_report() / perf_clear(). outbound_htlc_stage() reads where a payment's HTLC stands.
+    // "phase11-v378".to_string()  // v378 (S71 Thu 2026-11-19, DP 19:54 "Under the Plan name there should be an optional Plan description field, too."): LIJOX Subscriptions format round 4 — (1) a plan may carry a description, one line of up to 140 characters, INSIDE the signed terms as a seventeenth line of the terms string; a plan without one is signed exactly as before. (2) A change of terms that is offered and not accepted applies to every payment due at or after its start: the wallet pays none of those under the old terms (why_not_pay = "change_pending") — the code now does what the wallet's own words say ("If you do not accept, the plan ends when your paid month ends").
+    // "phase11-v377".to_string()  // v377 (S71 Thu 2026-11-19, DP 14:47 "lijox-subscriptions private repo created. Go on all subscription work; you don't need my confirmations as we have already designed it" — docs/design/subscriptions/lijox-subscriptions-r2.md, build-plan-r1.md): LIJOX SUBSCRIPTIONS IN THE ENGINE. A subscription is an agreement with a merchant; NOTHING is ever sent automatically — the wallet sends each payment only when the wallet user taps Pay. Lightning only in this pass. New modules: subscriptions.rs (the paying wallet: the tagged hash, the shared secret K, each payment's tag, the signed and the tagged messages, the terms with the format's limits and the sixteen-line string they are signed as, the plan code and the plan's checks, due dates by the calendar, THE SIX CHECKS on an invoice — the payee is a node the signed terms name, the number is payable, the price is the agreed price, the millisats follow from it, the invoice's own amount and tag, and the plan key's signature on the payment hash — the merchant's answers read and checked (first due date, receipts, a change of terms kept only as an offer and refused when it breaks the notice, the rhythm or a kept price), the records with ONE PAYMENT NUMBER SENT ONCE, the sync after any restore, ending, reminder times at 09:00 on the phone's clock) and subs_seller.rs (a wallet user who sells: plans and receipts signed on the phone with the one selling key, each selling hash signed, and a payment on a selling hash TAKEN ONLY with a known subscriber's tag for an unpaid number — else sent back to the payer). key.rs: subs_key (per plan and count, from the 12 words), subs_seller_key, subs_seller_preimage — each its own HKDF salt. node.rs: the paid latch on PaymentSent (the preimage is the receipt), subs_reconciled (LDK's word and the invoice's life decide a payment on its way), the selling hashes (apart from the address pool, so the address path's claim never takes one), a payment on a selling hash held at PaymentClaimable, subs_seller_take, the record at PaymentClaimed; both stores encrypted at rest and in every backup; wallet.rs inject_state_blob marks every restored subscription for its sync. registry_client.rs: proof actions wake-schedule and subs-seller. Wasm: subs_code / subs_plan_review / subs_find_body / subs_find_done / subs_agree_body / subs_agree_done / subs_list / subs_status_url / subs_status_done / subs_invoice_url / subs_invoice_check / subs_pay_begin / subs_pay_failed / subs_end_body / subs_end_again / subs_end_done / subs_end_take_back / subs_accept_body / subs_accept_done / subs_sync_body / subs_sync_done / subs_adopt_terms / subs_forget / subs_signin / subs_wake_times / subs_seller_info / subs_seller_set_on / subs_seller_sign_plan / subs_seller_close_plan / subs_seller_prepare_hashes / subs_seller_work / subs_seller_take / subs_seller_check_end. The keys, K, the tags, the mac, the terms digest and the signatures were worked out a second time in plain Python and agree (the vectors of format round 3). 589 tests green (554 before).
+    // "phase11-v376".to_string()  // v376 (S70 Wed 2026-11-18, DP 22:06 "Go" — docs/design/htlc/offline-sender-r1.md §4 B and -r2.md): A PAYMENT THIS WALLET SENT NO LONGER CLOSES ITS CHANNEL 3 BLOCKS PAST ITS EXPIRY. One change, in the LDK copy (lij/patches/lightning/src/chain/channelmonitor.rs, should_broadcast_holder_commitment_txn, LIJ PATCH v376): an outbound HTLC whose source is HTLCSource::OutboundRoute — a payment this node sent itself; a LiJ wallet never forwards, so every HTLC it sends — gets the grace LDK already gives an async payment, 4,032 blocks (about four weeks), before the wallet goes on-chain over it; LDK closes at 3 blocks (LATENCY_GRACE_PERIOD_BLOCKS). WHY: a wallet that was offline while its provider failed the payment back returned to a chain past the expiry and closed its own channel before the reconnect could deliver the fail (the new block number and the fail arrive on the same connection, in no fixed order); LDK gives the reason for that close as protecting the inbound HTLC behind a forward, and a wallet that only sends has none. A late fail returns the sats; a late settle means the payee was paid. UNCHANGED: a forwarded HTLC (PreviousHopData) keeps the 3-block rule; the wallet still goes on-chain to collect an incoming HTLC it holds the preimage for; the provider's own rule (LND collects on-chain 10 blocks below the expiry of a payment it has the preimage for while the wallet stays away) is the provider's and is not touched; nothing stored changes form. NOT COVERED: a wallet away longer than the expiry plus 4,032 blocks. TESTS in the LDK copy, ln/lij_own_send_tests.rs (5; four fail without the change): the late fail taken, dust included; the late settle taken; the close when the grace has run, not one block sooner; a forward still closes at 3. LDK's own suite on the copy: 14 of its tests assert the 3-block close for a sender's own payment and fail by design (listed in docs/ldk-patches.md); the one other failure is the old sweep one. No other engine file changed.
     // "phase11-v375".to_string()  // v375 (S70 Tue 2026-11-17, DP 11-16 07:55 "Some items to get fixing" — LDK 0.2.7 among them; brief S70-01 Task 1, branch ldk-027, docs/design/ldk/ldk-027-r1.md): LDK lightning 0.2.6 → 0.2.7. lij/patches/lightning is now the 0.2.7 crate (sha256 982ffb82…, equal to the crates.io index) with LiJ's own 16-file patch applied unchanged (363 lines added, 38 removed; no hunk rejected; the sorted change lines hash e6fe32b8… on 0.2.6 and on 0.2.7) and the same 4 js-sys lines in its Cargo.toml; lij-core and lij-wasm name 0.2.7; Cargo.lock moved by the one version line, vendor/ not at all. WHY: 0.2.7 fixes #5057 — a channel peer that acknowledged a state update, reconnected and pretended it had not, could make the node sign a second commitment at the same number (ln/channel.rs channel_reestablish, code this wallet runs against its provider). ALSO IN 0.2.7, read in the code: a force close now hands the monitor the HTLCs the peer had already failed (monitor_pending_failures, #5050) — on the no-broadcast close too: the list is applied before should_broadcast is looked at; a stale manager drops the blocked updates its monitor already applied before the stale check (#5046); HTLC-failed monitor events wait while an update is still being stored (never here: persist.rs answers Completed or UnrecoverableError, never InProgress). STORED STATE: one new odd field, (1, counterparty_failed_htlcs, optional_vec), on ChannelMonitorUpdateStep::ChannelForceClosed — state written by 0.2.6 reads in 0.2.7 (the field is optional) and state written by 0.2.7 reads in 0.2.6 (an unknown odd field is skipped); the monitor persister writes whole monitors only. No engine code changed. Checked: lij-core 554 tests pass (554 at v374), lij-core and lij-wasm check natively, gate-storage-keys passes; the wasm32 check and build are the branch harness's.
     // "phase11-v374".to_string()  // v374 (S70 Sun 2026-11-15, DP "Agree, and go with the build" — docs/design/watchtower/watchtower-r4-spam.md and -r5-voucher.md): THE VOUCHER — the wallet's side of who may use a tower. key.rs voucher_key: ONE key a wallet from the 12 words (HKDF, its own salt "LiJ-Voucher-key-v1"; not the node key, not a tower key). The wallet's own provider signs it once, at the wallet's first fee (the page asks with lsp_proof, the new action "tower-voucher", record "voucher:<voucher key>", and hands the answer to tower_voucher_set). tower.rs: every put and every status then carries `voucher: { key, issuer, issuer_sig, use_sig }`, the use line `lijox-voucher-use-v1|<the tower's node key>|<this wallet's key at that tower>` signed by the voucher key (BIP-340 over its SHA-256) — so a copied voucher is useless at any other tower or for any other key. New: tower_voucher_key, tower_voucher_set, tower_voucher_json. Nothing changes until a provider has vouched: with no voucher kept the requests are v373's, byte for byte. 14 tower tests (4 new); the use line was checked by the adapter's own tower-admit.js.
     // "phase11-v373".to_string()  // v373 (S69 Sat 2026-11-14, DP 09:52 "agreed" — "two towers per channel, picked at random once and then kept"): tower.rs — a channel's record carries its PICKS (the towers its items go to, two at most, never its own provider), set by the page with tower_set_picks; every waiting item goes to EACH pick and leaves the queue when all of them hold it (an item remembers which towers hold it); a put for a tower carries only items of channels that picked it and that it does not hold yet; replacing a pick sends what waits to the new one only; a closed channel is dropped at every tower that ever held its items. A channel with no picks yet behaves as v372 (any tower but its own provider's, one tower an item), so the page that is live keeps working until the page that picks is. summary carries picks and picks_max. 10 native tests (two_towers_a_channel_each_gets_every_item new).
@@ -277,6 +290,16 @@ pub fn ws_preopen_drop() {
     ws_transport::drop_preopen();
 }
 
+/// v382 (incident 2026-11-20 r2 §4.1): the provider's PASS for the next Lightning connection to that provider (its
+/// node key in hex, the pass as 64 hex). The next socket opened toward that key presents it as a text frame
+/// ("lijox-pass:" + the pass) before the handshake's first bytes; the provider's tunnel takes it before anything is
+/// opened to its node (lijox-adapter 0.136.0). Given only to a provider that made the pass — an older adapter would
+/// take the frame for Lightning bytes. Good once; not presented when older than 75 s. false = not 64 hex, nothing kept.
+#[wasm_bindgen]
+pub fn ws_pass(pubkey_hex: &str, pass_hex: &str) -> bool {
+    ws_transport::set_pass(pubkey_hex, pass_hex)
+}
+
 /// v303 (S54, DP): what a BOLT11 invoice says, read and signature-checked — {"payee","amount_msat"|null,"payment_hash",
 /// "network","expires_at"}; an error names why it does not decode. The page checks an invoice with it before paying.
 #[wasm_bindgen]
@@ -299,20 +322,30 @@ pub static BACKUP_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 /// v309 (S56): the cloud's number when it refused this phone's copy as older (0 = no refusal). While set, the
 /// automatic uploads stop; the page shows it and the person decides (adopt the cloud copy, or replace it).
 pub static BACKUP_CONFLICT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// v309: one sink's answer read for a refusal — the cloud's number kept, the uploads stopped. true = refused as older.
-fn note_push_refusal(err: &str) -> bool {
-    match lij_core::storage::parse_stale_refusal(err) {
-        Some(n) => { BACKUP_CONFLICT.store(n, std::sync::atomic::Ordering::Relaxed); true }
-        None => false,
+// v309: one sink's answer is read for a refusal — the cloud's number kept, the uploads stopped. (v380: read inside
+// upload_copy, where a refusal is first asked about when the cloud's copy can be this phone's own.)
+// v319 (S57, DP 2026-10-08 14:40 "Go"): before a copy goes up, its number and fingerprint are noted on the phone — if
+// the OK never comes back (the app put away mid-upload), the next open can tell the cloud's copy is this phone's own.
+// (v380: the note is made inside lij_core::storage::upload_copy.)
+
+// ── v380 (S71 Fri 2026-11-20, incident 2026-11-20 finding A): ONE UPLOAD, WITH THE PHONE'S OWN UNANSWERED UPLOADS KNOWN.
+// backup_now and maybe_backup both send through this. The steps are lij_core::storage::upload_copy (compiled and
+// tested off the browser); here only BACKUP_CONFLICT is kept in step with what it found. ──
+async fn upload_copy(
+    blob: lij_core::storage::StateBlob,
+    signer: &lij_core::key::RootKey,
+    sinks: &[lij_core::storage::BackupSink],
+    client: &lij_core::storage::KvBackupClient,
+) -> lij_core::storage::Uploaded {
+    let cloud = lij_core::storage::WalletCloud { sinks, client, signer };
+    let up = lij_core::storage::upload_copy(&LocalStorage, blob, &cloud).await;
+    if up.ok > 0 || up.again {
+        BACKUP_CONFLICT.store(0, std::sync::atomic::Ordering::Relaxed);
+    } else if up.conflict > 0 {
+        // v309: the cloud's number kept, the automatic uploads stopped — the person decides
+        BACKUP_CONFLICT.store(up.conflict, std::sync::atomic::Ordering::Relaxed);
     }
-}
-/// v319 (S57, DP 2026-10-08 14:40 "Go"): before a copy goes up, its number and fingerprint are noted on the phone — if
-/// the OK never comes back (the app put away mid-upload), the next open can tell the cloud's copy is this phone's own.
-fn note_inflight(blob: &lij_core::storage::StateBlob) {
-    let fp = lij_core::storage::backup_fingerprint(blob);
-    if let Err(e) = lij_core::storage::backup_inflight_note(&LocalStorage, blob.version, &fp) {
-        log::warn!("[v319] in-flight note not written: {e}");
-    }
+    up
 }
 /// v302 (S54): the last receive-watch check's report (watch_report) — kept outside the wallet lock.
 static WATCH_REPORT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
@@ -424,6 +457,74 @@ fn payment_result_json_with_memory(hash_hex: &str, success: bool, preimage: Opti
 }
 /// v256 (S46, DP: "Encrypt it"): the tier-2 ledger and the pending list live encrypted
 /// at rest under the wallet's persistence key — the same key the channel blobs use.
+// ── S71: LIJOX Subscriptions — helpers of the wasm surface ──
+/// A refusal as the page reads it: JSON text {"code","reason"}.
+fn subs_err(code: &str, reason: impl std::fmt::Display) -> JsValue {
+    JsValue::from_str(&serde_json::json!({ "code": code, "reason": reason.to_string() }).to_string())
+}
+/// Is the send loop still trying this payment hash? (Its memory exists and has no end time.)
+fn subs_in_run(hash_hex: &str) -> bool { send_memory_get(hash_hex).map(|m| m.ended_ms == 0.0).unwrap_or(false) }
+fn subs_plan_key_bytes(plan_key_hex: &str) -> Result<[u8; 32], JsValue> {
+    let mut b = [0u8; 32];
+    hex::decode_to_slice(plan_key_hex, &mut b).map_err(|e| subs_err("PLAN", format!("the plan key does not read: {e}")))?;
+    Ok(b)
+}
+/// The plan code and the plan fetched from it, both checked.
+fn subs_checked_plan(code: &str, plan_json: &str) -> Result<(lij_core::subscriptions::PlanCode, lij_core::subscriptions::Plan), JsValue> {
+    let pc = lij_core::subscriptions::parse_plan_code(code).map_err(|e| subs_err("PLAN", e))?;
+    let plan = lij_core::subscriptions::check_plan(plan_json, &pc.host).map_err(|e| subs_err("PLAN", e))?;
+    Ok((pc, plan))
+}
+/// K for a record: this wallet's key for the plan and the plan key.
+fn subs_k(root_key: &lij_core::key::RootKey, r: &lij_core::subscriptions::SubRecord) -> Result<[u8; 32], JsValue> {
+    let sk = root_key.subs_key(&subs_plan_key_bytes(&r.plan.plan_key)?, &r.plan.plan_id, r.c);
+    lij_core::subscriptions::shared_secret(&sk, &r.plan.plan_key).map_err(|e| subs_err("WALLET", e))
+}
+/// The six checks on the merchant's invoice answer for the record's next unpaid payment, under the terms that
+/// payment is paid under. The merchant's own error code is passed on; a failed check is the code INVOICE.
+fn subs_check_invoice(root_key: &lij_core::key::RootKey, s: &lij_core::subscriptions::Store, sub_key: &str, answer_json: &str) -> Result<lij_core::subscriptions::CheckedInvoice, JsValue> {
+    let r = s.find(sub_key).ok_or_else(|| subs_err("WALLET", "no such subscription"))?;
+    lij_core::subscriptions::read_answer(answer_json).map_err(|e| subs_err(&e.code, e.reason))?;
+    let now = lij_core::tier2_wallet::now_ms() / 1000;
+    if let Some(why) = r.why_not_pay(now) { return Err(subs_err("WALLET", why)); }
+    let n = r.first_unpaid();
+    let due = r.due(n).ok_or_else(|| subs_err("WALLET", "this payment has no due date"))?;
+    let k = subs_k(root_key, r)?;
+    lij_core::subscriptions::check_invoice(&r.plan.plan_id, &r.plan.plan_key, r.terms_at(n), &k, n, due, now, answer_json).map_err(|e| subs_err("INVOICE", e))
+}
+/// `lijoxsubs-auth://<merchant-host>/<path>?k1=<64 hex>&plan_id=…` → (host, path, k1, plan_id).
+fn subs_signin_parts(code: &str) -> Result<(String, String, String, String), String> {
+    if code.len() > 512 || code.chars().any(|c| c.is_control() || c.is_whitespace()) { return Err("not a sign-in code".into()); }
+    let rest = if code.len() >= 17 && code[..17].eq_ignore_ascii_case("lijoxsubs-auth://") { &code[17..] } else { return Err("not a sign-in code".into()) };
+    let (hp, query) = rest.split_once('?').ok_or("the sign-in code carries no k1")?;
+    let (host, path) = match hp.find('/') { Some(i) => (&hp[..i], &hp[i..]), None => (hp, "/") };
+    let host = host.to_ascii_lowercase();
+    if host.is_empty() || host.contains('@') || !host.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b':') { return Err("the sign-in code names no host".into()); }
+    if !path.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.' | b'~')) { return Err("the sign-in code's path does not read".into()); }
+    let get = |k: &str| query.split('&').find_map(|kv| kv.strip_prefix(k).and_then(|v| v.strip_prefix('='))).unwrap_or("").to_string();
+    let (k1, plan_id) = (get("k1").to_ascii_lowercase(), get("plan_id"));
+    if k1.len() != 64 || !k1.bytes().all(|b| b.is_ascii_hexdigit()) { return Err("the sign-in code's k1 is not 64 hex characters".into()); }
+    if !lij_core::subscriptions::name_ok(&plan_id, 40) { return Err("the sign-in code names no plan".into()); }
+    Ok((host, path.to_string(), k1, plan_id))
+}
+impl LijWalletHandle {
+    /// The root key and the wallet's encrypted storage.
+    fn subs_handles(&self) -> Result<(Arc<lij_core::key::RootKey>, Arc<dyn lij_core::storage::LijStorage>), JsValue> {
+        let (root_key, _i, _n) = self.inner.lock().map_err(|e| subs_err("WALLET", format!("Lock error: {e}")))?.onchain_handles();
+        let storage = t2_storage(&root_key);
+        Ok((root_key, storage))
+    }
+    /// One change to the subscriptions, saved; answers the card of `sub_key`.
+    fn subs_edit(&self, sub_key: &str, f: impl FnOnce(&mut lij_core::subscriptions::Store, u64) -> Result<(), String>) -> Result<String, JsValue> {
+        let (_root_key, storage) = self.subs_handles()?;
+        let now = lij_core::tier2_wallet::now_ms() / 1000;
+        let mut s = lij_core::subscriptions::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        f(&mut s, now).map_err(|e| subs_err("WALLET", e))?;
+        lij_core::subscriptions::save(storage.as_ref(), &s).map_err(|e| subs_err("WALLET", e))?;
+        Ok(s.find(sub_key).map(|r| r.card(now)).unwrap_or(serde_json::Value::Null).to_string())
+    }
+}
+
 fn t2_storage(root_key: &lij_core::key::RootKey) -> Arc<dyn lij_core::storage::LijStorage> {
     Arc::new(lij_core::tier2_wallet::encrypted(LocalStorage, root_key.encryption_key()))   // v263: one key list, shared with node.rs
 }
@@ -815,7 +916,7 @@ pub fn pubkey_from_mnemonic(mnemonic: &str, network: &str) -> Result<String, JsV
 pub fn lsps2_get_info(endpoint: &str, route_macaroon: &str) -> js_sys::Promise {
     let endpoint = endpoint.to_string();
     let route_macaroon = route_macaroon.to_string();
-    future_to_promise(async move {
+    timed_promise("lsps2_get_info", async move {
         let info = lij_core::lsps2::fetch_lsps2_info(&endpoint, &route_macaroon)
             .await
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -855,7 +956,7 @@ pub fn lsps2_buy_promise(
     let endpoint = endpoint.to_string();
     let route_macaroon = route_macaroon.to_string();
     let client_pubkey = client_pubkey.to_string();
-    future_to_promise(async move {
+    timed_promise("lsps2_buy_promise", async move {
         let resp = lij_core::lsps2::lsps2_buy(&endpoint, &route_macaroon, Some(payment_size_msat), &client_pubkey)
             .await
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -878,7 +979,7 @@ impl LijWalletHandle {
     pub fn create(config_json: &str) -> js_sys::Promise {
         let config_json = config_json.to_string();
 
-        future_to_promise(async move {
+        timed_promise("create", async move {
             let config: WalletConfig = serde_json::from_str(&config_json)
                 .map_err(|e| JsValue::from_str(&format!("Invalid config: {e}")))?;
 
@@ -923,7 +1024,7 @@ impl LijWalletHandle {
         let mnemonic = mnemonic.to_string();
         let config_json = config_json.to_string();
 
-        future_to_promise(async move {
+        timed_promise("restore", async move {
             let config: WalletConfig = serde_json::from_str(&config_json)
                 .map_err(|e| JsValue::from_str(&format!("Invalid config: {e}")))?;
 
@@ -972,7 +1073,7 @@ impl LijWalletHandle {
     pub fn backup_probe(mnemonic: &str, config_json: &str) -> js_sys::Promise {
         let mnemonic = mnemonic.to_string();
         let config_json = config_json.to_string();
-        future_to_promise(async move {
+        timed_promise("backup_probe", async move {
             let config: WalletConfig = serde_json::from_str(&config_json)
                 .map_err(|e| JsValue::from_str(&format!("Invalid config: {e}")))?;
             let r = LijWallet::backup_probe(&mnemonic, &config)
@@ -995,7 +1096,7 @@ impl LijWalletHandle {
     pub fn adopt_cloud_backup(mnemonic: &str, config_json: &str) -> js_sys::Promise {
         let mnemonic = mnemonic.to_string();
         let config_json = config_json.to_string();
-        future_to_promise(async move {
+        timed_promise("adopt_cloud_backup", async move {
             let config: WalletConfig = serde_json::from_str(&config_json)
                 .map_err(|e| JsValue::from_str(&format!("Invalid config: {e}")))?;
             let storage = LocalStorage;
@@ -1041,6 +1142,15 @@ impl LijWalletHandle {
     pub fn channel_state_fp(&self) -> Result<String, JsValue> {
         let wallet = match self.inner.try_lock() { Ok(w) => w, Err(_) => return Err(JsValue::from_str("WALLET_BUSY")) };
         wallet.node().channel_state_fp().map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// v382 (incident 2026-11-20 r2 §4.1): this wallet's signed statement of its channel records' update numbers at
+    /// `at_ms` — the body of POST /v1/state ({"node_pubkey","at","channels","signature"}), or "null". The page adds
+    /// "want_pass" and sends it to the provider before a Lightning connection and after a change of state. Read-only.
+    #[wasm_bindgen]
+    pub fn state_statement_json(&self, at_ms: f64) -> Result<String, JsValue> {
+        let wallet = match self.inner.try_lock() { Ok(w) => w, Err(_) => return Err(JsValue::from_str("WALLET_BUSY")) };
+        wallet.node().state_statement_json(at_ms.max(0.0) as u64).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     // ── v372 (S69): LIJOX watch duty W2 — the wallet's side of the tower (lij-core tower.rs). The page does the HTTP. ──
@@ -1128,7 +1238,7 @@ impl LijWalletHandle {
     #[wasm_bindgen]
     pub fn get_balance(&self) -> js_sys::Promise {
         let inner = self.inner.clone();
-        future_to_promise(async move {
+        timed_promise("get_balance", async move {
             let wallet = inner.lock()
                 .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
             let balance = wallet.get_balance()
@@ -1143,7 +1253,7 @@ impl LijWalletHandle {
     pub fn send_payment(&self, bolt11: &str) -> js_sys::Promise {
         let inner = self.inner.clone();
         let bolt11 = bolt11.to_string();
-        future_to_promise(async move {
+        timed_promise("send_payment", async move {
             let wallet = inner.lock()
                 .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
             let result = wallet.send_payment(&bolt11)
@@ -1162,40 +1272,39 @@ impl LijWalletHandle {
     #[wasm_bindgen]
     pub fn backup_now(&self) -> js_sys::Promise {
         let inner = self.inner.clone();
-        future_to_promise(async move {
+        timed_promise("backup_now", async move {
             // Snapshot what the push needs while holding the lock, then RELEASE
             // it before any network I/O. Holding the wallet mutex across the
             // push's `.await` lets a background tick re-enter and panic the
             // single-threaded WASM mutex.
-            let prep = {
-                let wallet = inner
-                    .lock()
-                    .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
-                wallet
-                    .prepare_backup()
-                    .map_err(|e| JsValue::from_str(&e.to_string()))?
-            };
-            let (blob, signer, sinks) = match prep {
-                Some(t) => t,
-                None => return Ok(JsValue::from_str("{\"ok\":true,\"pushed\":0}")),
-            };
-            // Network push happens with NO wallet lock held.
-            note_inflight(&blob);   // v319: the number and fingerprint of the copy on its way, before it goes
+            // v380: the copy goes up through upload_copy (the phone's own unanswered uploads are known there). When
+            // the cloud's copy turned out to be this phone's own only after this copy was refused, a fresh copy is
+            // taken and sent once more — the person asked for an upload now.
             let mut ok = 0u32;
             let mut last_err: Option<String> = None;
-            let mut refused = false;
-            for sink in &sinks {
-                match sink.push(&blob, &*signer).await {
-                    Ok(()) => ok += 1,
-                    Err(e) => { let s = e.to_string(); if note_push_refusal(&s) { refused = true; } last_err = Some(s); }
-                }
+            for round in 0..2 {
+                let (prep, client) = {
+                    let wallet = inner
+                        .lock()
+                        .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+                    (
+                        wallet
+                            .prepare_backup()
+                            .map_err(|e| JsValue::from_str(&e.to_string()))?,
+                        wallet.backup_client_and_signer().0,
+                    )
+                };
+                let (blob, signer, sinks) = match prep {
+                    Some(t) => t,
+                    None => return Ok(JsValue::from_str("{\"ok\":true,\"pushed\":0}")),
+                };
+                // Network push happens with NO wallet lock held.
+                let up = upload_copy(blob, &signer, &sinks, &client).await;
+                let again = up.again;
+                ok = up.ok;
+                last_err = up.last_err;
+                if !(again && round == 0) { break; }
             }
-            if ok > 0 {
-                // v309: the number is the phone's only once the cloud accepted it
-                let _ = lij_core::storage::backup_version_commit(&LocalStorage, blob.version);
-                BACKUP_CONFLICT.store(0, std::sync::atomic::Ordering::Relaxed);
-            }
-            if ok > 0 || refused { let _ = lij_core::storage::backup_inflight_clear(&LocalStorage); }   // v319: the cloud answered
             if ok == 0 {
                 if let Some(e) = last_err {
                     return Err(JsValue::from_str(&format!("backup: all sinks failed: {e}")));
@@ -1229,7 +1338,7 @@ impl LijWalletHandle {
     #[wasm_bindgen]
     pub fn cloud_backup_info(&self) -> js_sys::Promise {
         let inner = self.inner.clone();
-        future_to_promise(async move {
+        timed_promise("cloud_backup_info", async move {
             let (client, signer) = {
                 let wallet = inner
                     .lock()
@@ -1257,7 +1366,7 @@ impl LijWalletHandle {
     #[wasm_bindgen]
     pub fn cloud_backup_meta(&self) -> js_sys::Promise {
         let inner = self.inner.clone();
-        future_to_promise(async move {
+        timed_promise("cloud_backup_meta", async move {
             let (client, signer) = {
                 let wallet = inner
                     .lock()
@@ -1309,7 +1418,7 @@ impl LijWalletHandle {
     #[wasm_bindgen]
     pub fn forget_cloud_backup(&self) -> js_sys::Promise {
         let inner = self.inner.clone();
-        future_to_promise(async move {
+        timed_promise("forget_cloud_backup", async move {
             let (signer, sinks) = {
                 let wallet = inner
                     .lock()
@@ -1369,14 +1478,17 @@ impl LijWalletHandle {
             return js_sys::Promise::resolve(&JsValue::from_str(&format!("{{\"ok\":false,\"conflict\":{conflict}}}")));
         }
         let inner = self.inner.clone();
-        future_to_promise(async move {
-            let prep = {
+        timed_promise("maybe_backup", async move {
+            let (prep, client) = {
                 let wallet = inner
                     .lock()
                     .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
-                wallet
-                    .prepare_backup_if_dirty()
-                    .map_err(|e| JsValue::from_str(&e.to_string()))?
+                (
+                    wallet
+                        .prepare_backup_if_dirty()
+                        .map_err(|e| JsValue::from_str(&e.to_string()))?,
+                    wallet.backup_client_and_signer().0,
+                )
             };
             let (blob, signer, sinks, dirty) = match prep {
                 Some(t) => t,
@@ -1385,26 +1497,12 @@ impl LijWalletHandle {
             // Push with NO wallet lock held. On failure re-mark dirty to retry
             // next tick; on success leave it as cleared at snapshot (a concurrent
             // state change during the push will already have re-dirtied it).
-            note_inflight(&blob);   // v319: the number and fingerprint of the copy on its way, before it goes
-            let mut ok = 0u32;
-            let mut refused = false;
-            for sink in &sinks {
-                match sink.push(&blob, &*signer).await {
-                    Ok(()) => ok += 1,
-                    Err(e) => {
-                        // v309: a refusal as older is NOT retried — the person decides; anything else is retried next tick
-                        if note_push_refusal(&e.to_string()) { refused = true; }
-                        else { dirty.store(true, std::sync::atomic::Ordering::Relaxed); }
-                    }
-                }
-            }
-            if ok > 0 {
-                let _ = lij_core::storage::backup_version_commit(&LocalStorage, blob.version);   // v309: accepted — the number is the phone's now
-                BACKUP_CONFLICT.store(0, std::sync::atomic::Ordering::Relaxed);
-            }
-            if ok > 0 || refused { let _ = lij_core::storage::backup_inflight_clear(&LocalStorage); }   // v319: the cloud answered; a lost answer keeps the note
-            let conflict = if refused { BACKUP_CONFLICT.load(std::sync::atomic::Ordering::Relaxed) } else { 0 };
-            Ok(JsValue::from_str(&format!("{{\"ok\":true,\"pushed\":{ok},\"conflict\":{conflict}}}")))
+            // v380: through upload_copy — the phone's own unanswered uploads are known there. `again` = the cloud's
+            // copy was this phone's own, found after this copy was refused: a fresh copy goes up at the next tick.
+            let up = upload_copy(blob, &signer, &sinks, &client).await;
+            if up.unanswered || up.again { dirty.store(true, std::sync::atomic::Ordering::Relaxed); }
+            let own = if up.own > 0 { format!(",\"own\":{}", up.own) } else { String::new() };
+            Ok(JsValue::from_str(&format!("{{\"ok\":true,\"pushed\":{},\"conflict\":{}{own}}}", up.ok, up.conflict)))
         })
     }
 
@@ -1429,7 +1527,7 @@ impl LijWalletHandle {
     #[wasm_bindgen]
     pub fn onchain_summary(&self) -> js_sys::Promise {
         let inner = self.inner.clone();
-        future_to_promise(async move {
+        timed_promise("onchain_summary", async move {
             let (root_key, independent, network) = {
                 let wallet = inner
                     .lock()
@@ -1463,7 +1561,7 @@ impl LijWalletHandle {
     #[wasm_bindgen]
     pub fn tier2_onchain_sync(&self, birthday: f64, filter_base: Option<String>, sp_base: Option<String>) -> js_sys::Promise {
         let inner = self.inner.clone();
-        future_to_promise(async move {
+        timed_promise("tier2_onchain_sync", async move {
             let (root_key, network, live_funding, live_closing, handover_extras, handover_rewalk) = {
                 let wallet = inner
                     .lock()
@@ -1493,6 +1591,7 @@ impl LijWalletHandle {
                 Arc::new(WasmEsploraHttp::for_filter_walk());   // v264: 60 s per request, errors name the filter server
             let storage: Arc<dyn lij_core::storage::LijStorage> = t2_storage(&root_key);   // v256: encrypted at rest
 
+            lij_core::perf::step("read the stored on-chain record");   // v379
             let mut view = lij_core::tier2_wallet::load_view(storage.as_ref())
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
             if lij_core::tier2_wallet::birth(&mut view, birthday as u32) {   // v348: the silent-payment floor is written at birth, before the walk moves
@@ -1535,6 +1634,7 @@ impl LijWalletHandle {
 
             let pending = lij_core::tier2_wallet::load_pending(storage.as_ref());
             // v256: the fixed net — every branch watched from index 0 to net_width (2,500).
+            lij_core::perf::step("make the wallet's addresses to look for");   // v379
             let scripts = t2_scripts(&root_key, network, view.net_width).await?;
             // v361: plus the hand-over scripts (a new set; the cached net is shared and untouched)
             let scripts = if handover_extras.is_empty() { scripts } else { Arc::new(scripts.with_extras(&handover_extras)) };
@@ -1547,6 +1647,7 @@ impl LijWalletHandle {
                 if let Ok(w) = inner.lock() { w.node().onchain_pay_rewalk_done(); }
             }
 
+            lij_core::perf::step("ask the filter server for the newest block");   // v379
             let tip = match lij_core::tier2_sync::fetch_tip(&http, base).await {
                 Ok(t) => t,
                 Err(e) => {
@@ -1574,6 +1675,7 @@ impl LijWalletHandle {
             }
             if view.last_tail_verify_ms == 0 { view.last_tail_verify_ms = now_ms; }
 
+            lij_core::perf::step("walk the block filters");   // v379
             // v257: ONE walk, newest-first; up to 8 batches per call; every call leaves a note
             // (the tape and the face read it), success or failure.
             let t0 = js_sys::Date::now();
@@ -1608,6 +1710,7 @@ impl LijWalletHandle {
                 }
             };
 
+            lij_core::perf::step("silent payments: scan");   // v379
             // v287 (S50, SILENT PAYMENTS — RECEIVE): the silent-payment SCAN rides the same call, after
             // the walk. The provider is asked once per call whether it serves a tweak index (/sp/info;
             // 404 = no silent-payment receive here, nothing else happens); then up to 100 blocks (200
@@ -1660,6 +1763,7 @@ impl LijWalletHandle {
                 }
             }
 
+            lij_core::perf::step("after the walk: the widen rule and the checks");   // v379
             // v257: the widen rule — a coin within NET_WIDEN_MARGIN of the net's far edge on any
             // branch means blocks already read may hold coins past it: widen and rebuild.
             let walk_done = view.down.as_ref().map(|d| d.done).unwrap_or(false);
@@ -1694,6 +1798,7 @@ impl LijWalletHandle {
                 );
             }
 
+            lij_core::perf::step("reconcile the sweeper");   // v379
             // v102: reconcile the OutputSweeper against confirmed sweep txs.
             //
             // The sweeper regenerates each unconfirmed sweep every block (locktime
@@ -1744,6 +1849,7 @@ impl LijWalletHandle {
             }
             let pending = lij_core::tier2_wallet::load_pending(storage.as_ref());
 
+            lij_core::perf::step("coin checks");   // v379
             // v190 (S29): UTXO-set invariant — heal duplicates (keep first),
             // witness-log the cull, persist the healed view, and surface the
             // count to the audit line. A clean view is a no-op.
@@ -1764,6 +1870,7 @@ impl LijWalletHandle {
                     if n > 0 { log::info!("[tier2] v361: {n} on-chain pay record(s) moved by the walk"); }
                 }
             }
+            lij_core::perf::step("build the answer for the page");   // v379
             let marks = lij_core::tier2_wallet::load_marks(storage.as_ref()).unwrap_or_default();   // v281: freezes and notes onto the rows
             let mut sum = lij_core::tier2_wallet::summary(&view, &pending, tip.height, &marks);
             // v306: each received line's address, named from the wallet's own scripts (cached per width)
@@ -1801,7 +1908,7 @@ impl LijWalletHandle {
     pub fn coop_cpfp(&self, channel_id_hex: &str, send: bool) -> js_sys::Promise {
         let inner = self.inner.clone();
         let cid = channel_id_hex.to_string();
-        future_to_promise(async move {
+        timed_promise("coop_cpfp", async move {
             let h = {
                 let wallet = inner
                     .lock()
@@ -1827,7 +1934,7 @@ impl LijWalletHandle {
     ) -> js_sys::Promise {
         let inner = self.inner.clone();
         let dest = dest.to_string();
-        future_to_promise(async move {
+        timed_promise("send_onchain", async move {
             if !(amount_sats.is_finite() && amount_sats >= 1.0) {
                 return Err(JsValue::from_str(
                     "amount must be a positive whole number of sats",
@@ -1918,7 +2025,7 @@ impl LijWalletHandle {
     pub fn send_onchain_all(&self, dest: &str, fee_rate_sat_per_kw: u32) -> js_sys::Promise {
         let inner = self.inner.clone();
         let dest = dest.to_string();
-        future_to_promise(async move {
+        timed_promise("send_onchain_all", async move {
             let (root_key, independent, network) = {
                 let wallet = inner
                     .lock()
@@ -1993,7 +2100,7 @@ impl LijWalletHandle {
     pub fn send_onchain_with(&self, req: &str) -> js_sys::Promise {
         let inner = self.inner.clone();
         let req = req.to_string();
-        future_to_promise(async move {
+        timed_promise("send_onchain_with", async move {
             #[derive(serde::Deserialize)]
             struct Pin { txid: String, vout: u32 }
             #[derive(serde::Deserialize)]
@@ -2070,7 +2177,7 @@ impl LijWalletHandle {
     pub fn send_onchain_multi(&self, req: &str) -> js_sys::Promise {
         let inner = self.inner.clone();
         let req = req.to_string();
-        future_to_promise(async move {
+        timed_promise("send_onchain_multi", async move {
             #[derive(serde::Deserialize)]
             struct Pin { txid: String, vout: u32 }
             #[derive(serde::Deserialize)]
@@ -2385,7 +2492,7 @@ impl LijWalletHandle {
             Err(_) => return js_sys::Promise::reject(&JsValue::from_str("WALLET_BUSY")),
         };
         let inner = self.inner.clone();
-        future_to_promise(async move {
+        timed_promise("mix_settle", async move {
             let storage = t2_storage(&root_key);
             let recs = lij_core::tatara::records::load(storage.as_ref()).map_err(|e| JsValue::from_str(&e.to_string()))?;
             if recs.is_empty() {
@@ -2762,7 +2869,7 @@ impl LijWalletHandle {
         };
         let inner = self.inner.clone();
         let attempt_id = attempt_id.to_string();
-        future_to_promise(async move {
+        timed_promise("mix_attempt_coin_quorum", async move {
             let txid = a.txid.to_ascii_lowercase();
             // v341 (the security review's recommendation 1): two explorers must agree; one alone, or a split, is no answer
             let ok: Option<bool> = independent.coin_check_agreed(&txid, a.vout, a.amount_sat, &a.script_pubkey_hex).await;
@@ -2916,7 +3023,7 @@ impl LijWalletHandle {
     pub fn mix_keep_out(&self, req: &str) -> js_sys::Promise {
         let inner = self.inner.clone();
         let req = req.to_string();
-        future_to_promise(async move {
+        timed_promise("mix_keep_out", async move {
             #[derive(serde::Deserialize)]
             struct Req { coins: Vec<(String, u32)>, fee_rate_sat_per_kw: u32 }
             let r: Req = serde_json::from_str(&req).map_err(|e| JsValue::from_str(&format!("mix_keep_out: bad request: {e}")))?;
@@ -3025,7 +3132,7 @@ impl LijWalletHandle {
             Ok(w) => { let (r, i, _) = w.onchain_handles(); (r, i) },
             Err(_) => return js_sys::Promise::reject(&JsValue::from_str("WALLET_BUSY")),
         };
-        future_to_promise(async move {
+        timed_promise("mix_bump_quote", async move {
             let storage = t2_storage(&root_key);
             let q = mix_bump_quote_inner(storage.as_ref(), independent, &id, target_sat_vb).await?;
             Ok(JsValue::from_str(&serde_json::to_string(&q).map_err(|e| JsValue::from_str(&e.to_string()))?))
@@ -3043,7 +3150,7 @@ impl LijWalletHandle {
             Ok(w) => { let (r, i, n) = w.onchain_handles(); (r, i, n, w.node().backup_dirty_handle()) },
             Err(_) => return js_sys::Promise::reject(&JsValue::from_str("WALLET_BUSY")),
         };
-        future_to_promise(async move {
+        timed_promise("mix_bump", async move {
             let storage = t2_storage(&root_key);
             let q = mix_bump_quote_inner(storage.as_ref(), independent.clone(), &id, target_sat_vb).await?;
             if let Some(p) = &q.problem { return Err(JsValue::from_str(p)); }
@@ -3111,7 +3218,7 @@ impl LijWalletHandle {
             Ok(w) => w.onchain_handles().1,
             Err(_) => return js_sys::Promise::reject(&JsValue::from_str("WALLET_BUSY")),
         };
-        future_to_promise(async move {
+        timed_promise("mix_tx_status", async move {
             let known = independent.tx_known(&txid).await;
             let (confirmed, height) = if known == Some(true) {
                 match independent.fetch_tx(&txid).await { Ok(t) => (t.confirmed, t.block_height), Err(_) => (false, None) }
@@ -3129,7 +3236,7 @@ impl LijWalletHandle {
             Ok(w) => w.onchain_handles().1,
             Err(_) => return js_sys::Promise::reject(&JsValue::from_str("WALLET_BUSY")),
         };
-        future_to_promise(async move {
+        timed_promise("mix_send", async move {
             let mut out: Vec<serde_json::Value> = Vec::new();
             for h in &list {
                 let Ok(bytes) = hex::decode(h) else { out.push(serde_json::json!({ "ok": false, "error": "not hex" })); break };
@@ -3417,6 +3524,448 @@ impl LijWalletHandle {
         Ok(serde_json::json!({ "paid_today_sats": (s.paid_today_msat(now) + 999) / 1000 }).to_string())
     }
 
+    // ── S71 (DP 2026-11-19 14:47 "Go on all subscription work"): LIJOX SUBSCRIPTIONS — the engine's surface ──────────
+    // The page carries every request to the merchant's server and to the provider; every key, every signature, every
+    // check and every record stays here. A refusal is thrown as JSON text {"code","reason"}: the merchant's own code
+    // (format §15) when its server refused, WALLET when this wallet did, PLAN / INVOICE when what the merchant sent
+    // does not pass the wallet's checks. Nothing here sends a payment: the page sends the checked invoice through
+    // the ordinary send, and only after the wallet user tapped Pay.
+
+    /// A scanned or pasted code. {"kind":"plan","url","host","signup"} for `lijoxsubs://…`;
+    /// {"kind":"signin","host","path","k1","plan_id"} for `lijoxsubs-auth://…`.
+    pub fn subs_code(&self, code: &str) -> Result<String, JsValue> {
+        let t = code.trim();
+        if t.len() >= 17 && t[..17].eq_ignore_ascii_case("lijoxsubs-auth://") {
+            let (host, path, k1, plan_id) = subs_signin_parts(t).map_err(|e| subs_err("WALLET", e))?;
+            return Ok(serde_json::json!({ "kind": "signin", "host": host, "path": path, "k1": k1, "plan_id": plan_id }).to_string());
+        }
+        let c = lij_core::subscriptions::parse_plan_code(t).map_err(|e| subs_err("WALLET", e))?;
+        Ok(serde_json::json!({ "kind": "plan", "url": c.url, "host": c.host, "signup": c.signup }).to_string())
+    }
+
+    /// The plan the page fetched from a plan code, checked, with what Review shows: {plan, host, signup, c, sub_key,
+    /// terms_digest, existing:[{sub_key,c,state}], first_due_preview, schedule:[{n,due,price}], find:[c…]}.
+    /// `c` is the count this wallet would use for a NEW subscription; `find` lists the counts (0–2) the wallet holds
+    /// no record for — the page asks the merchant about each (subs_find_body) before Agree is offered, so a
+    /// subscription whose records were lost is found again instead of made twice (format §10).
+    pub fn subs_plan_review(&self, code: &str, plan_json: &str) -> Result<String, JsValue> {
+        let (root_key, storage) = self.subs_handles()?;
+        let (pc, plan) = subs_checked_plan(code, plan_json)?;
+        let s = lij_core::subscriptions::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        let mine: Vec<&lij_core::subscriptions::SubRecord> = s.subs.iter().filter(|r| r.plan.plan_key == plan.plan_key && r.plan.plan_id == plan.plan_id).collect();
+        let mut c = 0u32; while mine.iter().any(|r| r.c == c) { c += 1; }
+        let pk = subs_plan_key_bytes(&plan.plan_key)?;
+        let sub_key = lij_core::subscriptions::public_hex(&root_key.subs_key(&pk, &plan.plan_id, c)).map_err(|e| subs_err("WALLET", e))?;
+        let now = lij_core::tier2_wallet::now_ms() / 1000;
+        let fp = &plan.terms.first_payment;
+        let first_due = match fp.rule.as_str() { "on_date" => fp.date.unwrap_or(now), "after_days" => now + fp.days.unwrap_or(0) as u64 * 86_400, _ => now };
+        let schedule: Vec<serde_json::Value> = (1..=4u32).filter(|n| plan.terms.payments.map(|p| *n <= p).unwrap_or(true))
+            .map(|n| serde_json::json!({ "n": n, "due": lij_core::subscriptions::due(first_due, &plan.terms.every, n), "price": { "unit": plan.terms.price.unit, "amount": plan.terms.price_for(n) } })).collect();
+        Ok(serde_json::json!({
+            "plan": plan, "host": pc.host, "signup": pc.signup, "c": c, "sub_key": sub_key, "terms_digest": plan.terms.digest_hex(),
+            "existing": mine.iter().map(|r| serde_json::json!({ "sub_key": r.sub_key, "c": r.c, "state": r.state })).collect::<Vec<_>>(),
+            "first_due_preview": first_due, "schedule": schedule,
+            "find": (0..=2u32).filter(|i| !mine.iter().any(|r| r.c == *i)).collect::<Vec<_>>(),
+        }).to_string())
+    }
+
+    /// Lost records, words kept (format §10): the sync request for this wallet's key number `c` of the plan —
+    /// {url, body}. The merchant answers UNKNOWN_SUBSCRIBER for a key it has never seen.
+    pub fn subs_find_body(&self, code: &str, plan_json: &str, c: u32) -> Result<String, JsValue> {
+        let (root_key, _storage) = self.subs_handles()?;
+        let (_pc, plan) = subs_checked_plan(code, plan_json)?;
+        if c > 2 { return Err(subs_err("WALLET", "the wallet looks for a lost subscription under its first three keys for a plan")); }
+        let sk = root_key.subs_key(&subs_plan_key_bytes(&plan.plan_key)?, &plan.plan_id, c);
+        let body = lij_core::subscriptions::sync_body(&sk, &plan.plan_id, lij_core::tier2_wallet::now_ms() / 1000).map_err(|e| subs_err("WALLET", e))?;
+        Ok(serde_json::json!({ "url": format!("{}/sync", plan.server), "body": body }).to_string())
+    }
+
+    /// The merchant's answer to subs_find_body. UNKNOWN_SUBSCRIBER → {"found":false}. A subscription the merchant
+    /// holds under this key → its record is written again from the answer (the payments it lists as paid, the first
+    /// due date, the terms it is under) and {"found":true,"card":…} is answered. Any other refusal is thrown.
+    pub fn subs_find_done(&self, code: &str, plan_json: &str, c: u32, answer_json: &str) -> Result<String, JsValue> {
+        let (root_key, storage) = self.subs_handles()?;
+        let (pc, plan) = subs_checked_plan(code, plan_json)?;
+        let v = match lij_core::subscriptions::read_answer(answer_json) {
+            Ok(v) => v,
+            Err(e) if e.code == "UNKNOWN_SUBSCRIBER" => return Ok(serde_json::json!({ "found": false }).to_string()),
+            Err(e) => return Err(subs_err(&e.code, e.reason)),
+        };
+        let sk = root_key.subs_key(&subs_plan_key_bytes(&plan.plan_key)?, &plan.plan_id, c);
+        let sub_key = lij_core::subscriptions::public_hex(&sk).map_err(|e| subs_err("WALLET", e))?;
+        let view = lij_core::subscriptions::read_sync(&plan.plan_key, &v).map_err(|e| subs_err("BAD_ANSWER", e))?;
+        let now = lij_core::tier2_wallet::now_ms() / 1000;
+        let mut s = lij_core::subscriptions::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        if s.find(&sub_key).is_none() {
+            s.add(lij_core::subscriptions::SubRecord {
+                sub_key: sub_key.clone(), c, plan: plan.clone(), host: pc.host.clone(), signup: pc.signup.clone(), receipt: None, first_due: view.first_due, agreed_at: now,
+                state: "active".into(), payments: Vec::new(), needs_sync: true, plan_url: pc.url.clone(), last: None, change: None, accepted: None, terms_behind: None, end: None, past_terms: Vec::new(),
+            }).map_err(|e| subs_err("WALLET", e))?;
+        }
+        s.apply_sync_view(&sub_key, &view, now).map_err(|e| subs_err("WALLET", e))?;
+        s.tidy(now);
+        lij_core::subscriptions::save(storage.as_ref(), &s).map_err(|e| subs_err("WALLET", e))?;
+        log::info!("[subs] a subscription to {} was found again at the merchant under key {} of this wallet", plan.plan_id, c);
+        let card = s.find(&sub_key).map(|r| r.card(now)).unwrap_or(serde_json::Value::Null);
+        Ok(serde_json::json!({ "found": true, "card": card }).to_string())
+    }
+
+    /// The agreement, signed with this wallet's key for the plan: {url, body, c, sub_key}. Made when the wallet user
+    /// taps Agree. No payment is made by agreeing.
+    pub fn subs_agree_body(&self, code: &str, plan_json: &str, c: u32) -> Result<String, JsValue> {
+        let (root_key, storage) = self.subs_handles()?;
+        let (pc, plan) = subs_checked_plan(code, plan_json)?;
+        let sk = root_key.subs_key(&subs_plan_key_bytes(&plan.plan_key)?, &plan.plan_id, c);
+        let sub_key = lij_core::subscriptions::public_hex(&sk).map_err(|e| subs_err("WALLET", e))?;
+        let s = lij_core::subscriptions::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        if s.find(&sub_key).is_some() { return Err(subs_err("WALLET", "this wallet holds a subscription under this key already")); }
+        let body = lij_core::subscriptions::agree_body(&sk, &plan, pc.signup.as_deref(), lij_core::tier2_wallet::now_ms() / 1000).map_err(|e| subs_err("WALLET", e))?;
+        Ok(serde_json::json!({ "url": format!("{}/agree", plan.server), "body": body, "c": c, "sub_key": sub_key }).to_string())
+    }
+
+    /// The merchant's answer to the agreement: its first due date must follow the terms and its receipt must be the
+    /// plan key's; then the subscription is on record. Answers the card.
+    pub fn subs_agree_done(&self, code: &str, plan_json: &str, c: u32, answer_json: &str) -> Result<String, JsValue> {
+        let (root_key, storage) = self.subs_handles()?;
+        let (pc, plan) = subs_checked_plan(code, plan_json)?;
+        let v = lij_core::subscriptions::read_answer(answer_json).map_err(|e| subs_err(&e.code, e.reason))?;
+        let sk = root_key.subs_key(&subs_plan_key_bytes(&plan.plan_key)?, &plan.plan_id, c);
+        let sub_key = lij_core::subscriptions::public_hex(&sk).map_err(|e| subs_err("WALLET", e))?;
+        let now = lij_core::tier2_wallet::now_ms() / 1000;
+        let agreed = lij_core::subscriptions::check_agreed(&plan, &sub_key, &v, now).map_err(|e| subs_err("BAD_ANSWER", e))?;
+        let mut s = lij_core::subscriptions::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        s.add(lij_core::subscriptions::SubRecord {
+            sub_key: sub_key.clone(), c, plan: plan.clone(), host: pc.host, signup: pc.signup, receipt: agreed.receipt, first_due: agreed.first_due, agreed_at: now,
+            state: "active".into(), payments: Vec::new(), needs_sync: false, plan_url: pc.url, last: None, change: None, accepted: None, terms_behind: None, end: None, past_terms: Vec::new(),
+        }).map_err(|e| subs_err("WALLET", e))?;
+        lij_core::subscriptions::save(storage.as_ref(), &s).map_err(|e| subs_err("WALLET", e))?;
+        log::info!("[subs] agreed: {} at {} (key {} of this wallet for the plan)", plan.plan_id, plan.server, c);
+        Ok(s.find(&sub_key).map(|r| r.card(now)).unwrap_or(serde_json::Value::Null).to_string())
+    }
+
+    /// Every subscription's card, with LDK's word folded in for a payment on its way: {"subs":[…],"now"}.
+    pub fn subs_list(&self) -> Result<String, JsValue> {
+        let s = {
+            let wallet = self.inner.lock().map_err(|e| subs_err("WALLET", format!("Lock error: {e}")))?;
+            wallet.node().subs_reconciled(&subs_in_run).map_err(|e| subs_err("WALLET", e))?
+        };
+        let now = lij_core::tier2_wallet::now_ms() / 1000;
+        Ok(serde_json::json!({ "subs": s.subs.iter().map(|r| r.card(now)).collect::<Vec<_>>(), "now": now }).to_string())
+    }
+
+    /// The status request for one subscription — tagged, so it names no key: {url, n}. Asked at each notice and
+    /// when Pay is tapped; nothing else is asked on a schedule (format §5).
+    pub fn subs_status_url(&self, sub_key: &str) -> Result<String, JsValue> {
+        let (root_key, storage) = self.subs_handles()?;
+        let s = lij_core::subscriptions::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        let r = s.find(sub_key).ok_or_else(|| subs_err("WALLET", "no such subscription"))?;
+        let n = r.first_unpaid();
+        let k = subs_k(&root_key, r)?;
+        Ok(serde_json::json!({ "url": format!("{}/status?{}", r.plan.server, lij_core::subscriptions::tagged_query(&r.plan.plan_id, &k, n)), "n": n }).to_string())
+    }
+
+    /// The merchant's status answer, taken in (a change of terms is kept only as an OFFER). Answers the card.
+    /// UNKNOWN_TAG — the merchant's payment number is not this wallet's — marks the subscription for its sync and
+    /// is thrown, so the page asks the sync next.
+    pub fn subs_status_done(&self, sub_key: &str, answer_json: &str) -> Result<String, JsValue> {
+        let (_root_key, storage) = self.subs_handles()?;
+        let now = lij_core::tier2_wallet::now_ms() / 1000;
+        let mut s = lij_core::subscriptions::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        let v = match lij_core::subscriptions::read_answer(answer_json) {
+            Ok(v) => v,
+            Err(e) => {
+                if e.code == "UNKNOWN_TAG" || e.code == "ALREADY_PAID" {
+                    if let Some(r) = s.subs.iter_mut().find(|r| r.sub_key == sub_key) { r.needs_sync = true; }
+                    lij_core::subscriptions::save(storage.as_ref(), &s).map_err(|e| subs_err("WALLET", e))?;
+                }
+                return Err(subs_err(&e.code, e.reason));
+            }
+        };
+        let view = { let r = s.find(sub_key).ok_or_else(|| subs_err("WALLET", "no such subscription"))?; lij_core::subscriptions::read_status(&r.plan, &r.sub_key, r.first_due, &v).map_err(|e| subs_err("BAD_ANSWER", e))? };
+        s.apply_status(sub_key, &view, now).map_err(|e| subs_err("WALLET", e))?;
+        s.tidy(now);
+        lij_core::subscriptions::save(storage.as_ref(), &s).map_err(|e| subs_err("WALLET", e))?;
+        Ok(s.find(sub_key).map(|r| r.card(now)).unwrap_or(serde_json::Value::Null).to_string())
+    }
+
+    /// The invoice request for the next unpaid payment — tagged: {url, n}. Refused here when Pay cannot be offered
+    /// (the reason is the card's `why_not_pay`).
+    pub fn subs_invoice_url(&self, sub_key: &str) -> Result<String, JsValue> {
+        let (root_key, storage) = self.subs_handles()?;
+        let s = lij_core::subscriptions::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        let r = s.find(sub_key).ok_or_else(|| subs_err("WALLET", "no such subscription"))?;
+        if let Some(why) = r.why_not_pay(lij_core::tier2_wallet::now_ms() / 1000) { return Err(subs_err("WALLET", why)); }
+        let n = r.first_unpaid();
+        let k = subs_k(&root_key, r)?;
+        Ok(serde_json::json!({ "url": format!("{}/invoice?{}", r.plan.server, lij_core::subscriptions::tagged_query(&r.plan.plan_id, &k, n)), "n": n }).to_string())
+    }
+
+    /// The merchant's invoice answer put through THE SIX CHECKS (format §6), for Review. Nothing is recorded.
+    /// Answers the checked invoice {pr, n, payment_hash, payee, amount_msat, price_unit, price_amount, sat_per_unit,
+    /// period_from, period_to, hold_s, expires_at}; a failed check is thrown with the code INVOICE.
+    pub fn subs_invoice_check(&self, sub_key: &str, answer_json: &str) -> Result<String, JsValue> {
+        let (root_key, storage) = self.subs_handles()?;
+        let s = lij_core::subscriptions::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        let inv = subs_check_invoice(&root_key, &s, sub_key, answer_json)?;
+        serde_json::to_string(&inv).map_err(|e| subs_err("WALLET", e))
+    }
+
+    /// The wallet user tapped Pay on Review. The answer is checked AGAIN (never a page's copy of a check), and the
+    /// payment number is recorded as on its way — refused when that number is paid or on its way already, and while
+    /// the subscription waits for its sync after a restore. Answers {pr, payment_hash, amount_msat, n}: the page
+    /// sends `pr` through the ordinary send. The outcome is then LDK's word (the record follows it by itself).
+    pub fn subs_pay_begin(&self, sub_key: &str, answer_json: &str) -> Result<String, JsValue> {
+        let (root_key, storage) = self.subs_handles()?;
+        let mut s = lij_core::subscriptions::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        let inv = subs_check_invoice(&root_key, &s, sub_key, answer_json)?;
+        s.begin_payment(sub_key, &inv, lij_core::tier2_wallet::now_ms() / 1000).map_err(|e| subs_err("WALLET", e))?;
+        lij_core::subscriptions::save(storage.as_ref(), &s).map_err(|e| subs_err("WALLET", e))?;
+        log::info!("[subs] payment {} of {} is on its way (hash {}…)", inv.n, sub_key.get(..12).unwrap_or(sub_key), &inv.payment_hash[..16]);
+        Ok(serde_json::json!({ "pr": inv.pr, "payment_hash": inv.payment_hash, "amount_msat": inv.amount_msat, "n": inv.n }).to_string())
+    }
+
+    /// The page's report that a send ended without paying. true when the record was turned back at once (LDK holds
+    /// nothing on that hash and no try is running); false when it stays on its way.
+    pub fn subs_pay_failed(&self, payment_hash: &str) -> Result<bool, JsValue> {
+        let wallet = self.inner.lock().map_err(|e| subs_err("WALLET", format!("Lock error: {e}")))?;
+        wallet.node().subs_pay_failed(payment_hash, &subs_in_run).map_err(|e| subs_err("WALLET", e))
+    }
+
+    /// The end the wallet user asked for, signed: {url, body}. `when` is "now" or "paid_period_end"; `refund_to` is
+    /// JSON {"lnaddr":…} | {"pr":…} | {"addr":…} or "" (only a plan whose terms refund unused time takes one). The
+    /// request is kept on the record and made again by subs_end_again at each open until the merchant answers OK.
+    pub fn subs_end_body(&self, sub_key: &str, when: &str, refund_to: &str) -> Result<String, JsValue> {
+        let (root_key, storage) = self.subs_handles()?;
+        let now = lij_core::tier2_wallet::now_ms() / 1000;
+        let mut s = lij_core::subscriptions::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        let rt: Option<lij_core::subscriptions::RefundTo> = if refund_to.trim().is_empty() { None } else { Some(serde_json::from_str(refund_to).map_err(|e| subs_err("WALLET", format!("the refund address does not read: {e}")))?) };
+        let (url, body) = {
+            let r = s.find(sub_key).ok_or_else(|| subs_err("WALLET", "no such subscription"))?;
+            if rt.is_some() && r.plan.terms.ending.refund != "unused_time" { return Err(subs_err("WALLET", "this plan's terms give no refund")); }
+            let sk = root_key.subs_key(&subs_plan_key_bytes(&r.plan.plan_key)?, &r.plan.plan_id, r.c);
+            (format!("{}/end", r.plan.server), lij_core::subscriptions::end_body(&sk, &r.plan.plan_id, when, rt.as_ref(), now).map_err(|e| subs_err("WALLET", e))?)
+        };
+        // an end already on record: this is a NEW ADDRESS for a refund the merchant could not deliver (its status says
+        // `expired`); otherwise the end is asked for the first time
+        if s.find(sub_key).map(|r| r.end.is_some()).unwrap_or(false) {
+            let rt = rt.ok_or_else(|| subs_err("WALLET", "the end was asked for already"))?;
+            s.refund_readdress(sub_key, rt, now).map_err(|e| subs_err("WALLET", e))?;
+        } else {
+            s.end_asked(sub_key, when, rt, now).map_err(|e| subs_err("WALLET", e))?;
+        }
+        lij_core::subscriptions::save(storage.as_ref(), &s).map_err(|e| subs_err("WALLET", e))?;
+        Ok(serde_json::json!({ "url": url, "body": body }).to_string())
+    }
+
+    /// The same end, signed again with the time now — for the repeat at an open. {url, body}, or "null" when no end
+    /// is waiting for the merchant's answer.
+    pub fn subs_end_again(&self, sub_key: &str) -> Result<String, JsValue> {
+        let (root_key, storage) = self.subs_handles()?;
+        let s = lij_core::subscriptions::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        let r = s.find(sub_key).ok_or_else(|| subs_err("WALLET", "no such subscription"))?;
+        let Some(e) = r.end.as_ref().filter(|e| !e.acked) else { return Ok("null".into()) };
+        let sk = root_key.subs_key(&subs_plan_key_bytes(&r.plan.plan_key)?, &r.plan.plan_id, r.c);
+        let body = lij_core::subscriptions::end_body(&sk, &r.plan.plan_id, &e.when, e.refund_to.as_ref(), lij_core::tier2_wallet::now_ms() / 1000).map_err(|e| subs_err("WALLET", e))?;
+        Ok(serde_json::json!({ "url": format!("{}/end", r.plan.server), "body": body }).to_string())
+    }
+
+    /// The merchant's answer to the end. Answers the card.
+    pub fn subs_end_done(&self, sub_key: &str, answer_json: &str) -> Result<String, JsValue> {
+        let (_root_key, storage) = self.subs_handles()?;
+        let v = lij_core::subscriptions::read_answer(answer_json).map_err(|e| subs_err(&e.code, e.reason))?;
+        let (ends, refund) = lij_core::subscriptions::read_end(&v).map_err(|e| subs_err("BAD_ANSWER", e))?;
+        let now = lij_core::tier2_wallet::now_ms() / 1000;
+        let mut s = lij_core::subscriptions::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        s.end_acked(sub_key, ends, refund, now).map_err(|e| subs_err("WALLET", e))?;
+        lij_core::subscriptions::save(storage.as_ref(), &s).map_err(|e| subs_err("WALLET", e))?;
+        Ok(s.find(sub_key).map(|r| r.card(now)).unwrap_or(serde_json::Value::Null).to_string())
+    }
+
+    /// The wallet user took back an end the merchant has not answered. Answers the card.
+    pub fn subs_end_take_back(&self, sub_key: &str) -> Result<String, JsValue> {
+        self.subs_edit(sub_key, |s, _now| s.end_taken_back(sub_key))
+    }
+
+    /// Accept the change of terms the merchant offers, signed: {url, body}.
+    pub fn subs_accept_body(&self, sub_key: &str) -> Result<String, JsValue> {
+        let (root_key, storage) = self.subs_handles()?;
+        let s = lij_core::subscriptions::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        let r = s.find(sub_key).ok_or_else(|| subs_err("WALLET", "no such subscription"))?;
+        let c = r.change.as_ref().ok_or_else(|| subs_err("WALLET", "no change is offered"))?;
+        let sk = root_key.subs_key(&subs_plan_key_bytes(&r.plan.plan_key)?, &r.plan.plan_id, r.c);
+        let body = lij_core::subscriptions::accept_body(&sk, &r.plan.plan_id, &c.terms, lij_core::tier2_wallet::now_ms() / 1000).map_err(|e| subs_err("WALLET", e))?;
+        Ok(serde_json::json!({ "url": format!("{}/accept", r.plan.server), "body": body }).to_string())
+    }
+
+    /// The merchant's answer to the accept: its receipt over the new terms must be the plan key's. The new terms
+    /// then apply from their start, and never to a payment due before it. Answers the card.
+    pub fn subs_accept_done(&self, sub_key: &str, answer_json: &str) -> Result<String, JsValue> {
+        let (_root_key, storage) = self.subs_handles()?;
+        let v = lij_core::subscriptions::read_answer(answer_json).map_err(|e| subs_err(&e.code, e.reason))?;
+        let now = lij_core::tier2_wallet::now_ms() / 1000;
+        let mut s = lij_core::subscriptions::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        let receipt = {
+            let r = s.find(sub_key).ok_or_else(|| subs_err("WALLET", "no such subscription"))?;
+            let c = r.change.as_ref().ok_or_else(|| subs_err("WALLET", "no change is offered"))?;
+            lij_core::subscriptions::check_accepted(&r.plan.plan_id, &r.plan.plan_key, &c.terms, &r.sub_key, &v).map_err(|e| subs_err("BAD_ANSWER", e))?
+        };
+        s.accept_change(sub_key, receipt, now).map_err(|e| subs_err("WALLET", e))?;
+        lij_core::subscriptions::save(storage.as_ref(), &s).map_err(|e| subs_err("WALLET", e))?;
+        Ok(s.find(sub_key).map(|r| r.card(now)).unwrap_or(serde_json::Value::Null).to_string())
+    }
+
+    /// The sync request, signed: {url, body}. Asked once per subscription after any restore, and when the merchant's
+    /// payment number is not this wallet's.
+    pub fn subs_sync_body(&self, sub_key: &str) -> Result<String, JsValue> {
+        let (root_key, storage) = self.subs_handles()?;
+        let s = lij_core::subscriptions::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        let r = s.find(sub_key).ok_or_else(|| subs_err("WALLET", "no such subscription"))?;
+        let sk = root_key.subs_key(&subs_plan_key_bytes(&r.plan.plan_key)?, &r.plan.plan_id, r.c);
+        let body = lij_core::subscriptions::sync_body(&sk, &r.plan.plan_id, lij_core::tier2_wallet::now_ms() / 1000).map_err(|e| subs_err("WALLET", e))?;
+        Ok(serde_json::json!({ "url": format!("{}/sync", r.plan.server), "body": body }).to_string())
+    }
+
+    /// The merchant's sync answer, taken in: what it holds as paid is paid here too, and Pay may be offered again.
+    /// Answers the card.
+    pub fn subs_sync_done(&self, sub_key: &str, answer_json: &str) -> Result<String, JsValue> {
+        let (_root_key, storage) = self.subs_handles()?;
+        let v = lij_core::subscriptions::read_answer(answer_json).map_err(|e| subs_err(&e.code, e.reason))?;
+        let now = lij_core::tier2_wallet::now_ms() / 1000;
+        let mut s = lij_core::subscriptions::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        let view = { let r = s.find(sub_key).ok_or_else(|| subs_err("WALLET", "no such subscription"))?; lij_core::subscriptions::read_sync(&r.plan.plan_key, &v).map_err(|e| subs_err("BAD_ANSWER", e))? };
+        s.apply_sync_view(sub_key, &view, now).map_err(|e| subs_err("WALLET", e))?;
+        s.tidy(now);
+        lij_core::subscriptions::save(storage.as_ref(), &s).map_err(|e| subs_err("WALLET", e))?;
+        Ok(s.find(sub_key).map(|r| r.card(now)).unwrap_or(serde_json::Value::Null).to_string())
+    }
+
+    /// The plan fetched again (from the card's `plan_url`) holds the terms the merchant says this subscription is
+    /// under: they become the record's. For a merchant whose sync answer does not carry the terms itself.
+    pub fn subs_adopt_terms(&self, sub_key: &str, plan_json: &str) -> Result<String, JsValue> {
+        let host = { let (_k, storage) = self.subs_handles()?; lij_core::subscriptions::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?.find(sub_key).map(|r| r.host.clone()).ok_or_else(|| subs_err("WALLET", "no such subscription"))? };
+        let plan = lij_core::subscriptions::check_plan(plan_json, &host).map_err(|e| subs_err("PLAN", e))?;
+        self.subs_edit(sub_key, |s, now| s.adopt_terms(sub_key, &plan, now))
+    }
+
+    /// An ended subscription is taken off the list. Answers the list.
+    pub fn subs_forget(&self, sub_key: &str) -> Result<String, JsValue> {
+        let (_root_key, storage) = self.subs_handles()?;
+        let mut s = lij_core::subscriptions::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        s.forget(sub_key).map_err(|e| subs_err("WALLET", e))?;
+        lij_core::subscriptions::save(storage.as_ref(), &s).map_err(|e| subs_err("WALLET", e))?;
+        self.subs_list()
+    }
+
+    /// Sign-in on the merchant's website (format §11): the code the page showed, answered with this wallet's key for
+    /// that plan — {url, merchant_name, plan_name}; the page calls the url. Only for a plan this wallet subscribes
+    /// to, and only on that plan's own host.
+    pub fn subs_signin(&self, code: &str) -> Result<String, JsValue> {
+        let (root_key, storage) = self.subs_handles()?;
+        let (host, path, k1, plan_id) = subs_signin_parts(code.trim()).map_err(|e| subs_err("WALLET", e))?;
+        let s = lij_core::subscriptions::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        let r = s.subs.iter().filter(|r| r.host == host && r.plan.plan_id == plan_id).max_by_key(|r| (r.state != "ended", r.c))
+            .ok_or_else(|| subs_err("WALLET", "this wallet holds no subscription to that plan on that site"))?;
+        let sk = root_key.subs_key(&subs_plan_key_bytes(&r.plan.plan_key)?, &r.plan.plan_id, r.c);
+        let (sub_key, sig) = lij_core::subscriptions::signin(&sk, &host, &k1).map_err(|e| subs_err("WALLET", e))?;
+        Ok(serde_json::json!({ "url": format!("https://{host}{path}?k1={k1}&sub_key={sub_key}&sig={sig}"), "merchant_name": r.plan.terms.merchant_name, "plan_name": r.plan.terms.plan_name }).to_string())
+    }
+
+    /// The reminder times for the wallet's own provider (format §12): {times:[…], record_id}. `utc_offset_min` is the
+    /// phone's offset east of UTC in minutes. The page signs `record_id` (lsp_proof, action wake-schedule) and posts
+    /// the list; an empty list deletes what the provider holds. The provider is told times only.
+    pub fn subs_wake_times(&self, utc_offset_min: i32) -> Result<String, JsValue> {
+        use sha2::{Digest, Sha256};
+        let (_root_key, storage) = self.subs_handles()?;
+        let s = lij_core::subscriptions::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        let times = s.reminder_times(lij_core::tier2_wallet::now_ms() / 1000, utc_offset_min as i64 * 60);
+        let joined = times.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(",");
+        Ok(serde_json::json!({ "times": times, "record_id": format!("wake:{}:{}", times.len(), hex::encode(Sha256::digest(joined.as_bytes()))) }).to_string())
+    }
+
+    // ── A wallet user who sells ("Plans you sell", format §13) ──
+
+    /// The seller's side as the page shows it: {on, plan_key, next_index, plans:[{plan_id, closed, versions:[{terms,
+    /// terms_sig, terms_digest, made_at}]}], subscribers, waiting, received}.
+    pub fn subs_seller_info(&self) -> Result<String, JsValue> {
+        let (root_key, storage) = self.subs_handles()?;
+        let mut s = lij_core::subs_seller::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        if s.age_out(lij_core::tier2_wallet::now_ms() / 1000) { lij_core::subs_seller::save(storage.as_ref(), &s).map_err(|e| subs_err("WALLET", e))?; }
+        let plans: Vec<serde_json::Value> = s.plans.iter().map(|p| serde_json::json!({ "plan_id": p.plan_id, "closed": p.closed,
+            "versions": p.versions.iter().map(|v| serde_json::json!({ "terms": v.terms, "terms_sig": v.terms_sig, "terms_digest": v.terms.digest_hex(), "made_at": v.made_at })).collect::<Vec<_>>() })).collect();
+        Ok(serde_json::json!({ "on": s.on, "plan_key": lij_core::subscriptions::public_hex(&root_key.subs_seller_key()).map_err(|e| subs_err("WALLET", e))?, "next_index": s.next_index,
+            "plans": plans, "subscribers": s.subscribers, "waiting": s.waiting, "received": s.received }).to_string())
+    }
+
+    pub fn subs_seller_set_on(&self, on: bool) -> Result<(), JsValue> {
+        let (_root_key, storage) = self.subs_handles()?;
+        let mut s = lij_core::subs_seller::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        s.on = on;
+        lij_core::subs_seller::save(storage.as_ref(), &s).map_err(|e| subs_err("WALLET", e))
+    }
+
+    /// A new plan, or a new version of one, signed with the selling key. `terms_json` is the draft (its version, its
+    /// pay_by and its nodes are set here: a LiJ seller's plan is paid by Lightning to `provider_node`). Answers what
+    /// the sidecar publishes: {plan_id, plan_key, terms, terms_sig, terms_digest}.
+    pub fn subs_seller_sign_plan(&self, plan_id: &str, terms_json: &str, provider_node: &str) -> Result<String, JsValue> {
+        let (root_key, storage) = self.subs_handles()?;
+        let mut draft: serde_json::Value = serde_json::from_str(terms_json).map_err(|e| subs_err("PLAN", format!("the terms do not read: {e}")))?;
+        // the three terms the engine sets are filled in so the draft reads as terms
+        draft["terms_version"] = 1.into(); draft["pay_by"] = serde_json::json!(["lightning"]); draft["lightning"] = serde_json::json!({ "nodes": [provider_node] });
+        if let Some(o) = draft.as_object_mut() { o.remove("onchain"); }
+        let terms: lij_core::subscriptions::Terms = serde_json::from_value(draft).map_err(|e| subs_err("PLAN", format!("the terms do not read: {e}")))?;
+        let seller_sk = root_key.subs_seller_key();
+        let mut s = lij_core::subs_seller::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        let signed = s.sign_plan(&seller_sk, plan_id, terms, provider_node, lij_core::tier2_wallet::now_ms() / 1000).map_err(|e| subs_err("PLAN", e))?;
+        lij_core::subs_seller::save(storage.as_ref(), &s).map_err(|e| subs_err("WALLET", e))?;
+        Ok(serde_json::json!({ "plan_id": plan_id, "plan_key": lij_core::subscriptions::public_hex(&seller_sk).map_err(|e| subs_err("WALLET", e))?,
+            "terms": signed.terms, "terms_sig": signed.terms_sig, "terms_digest": signed.terms.digest_hex() }).to_string())
+    }
+
+    /// A plan stops (or again starts) taking new subscribers. The subscribers it has are not touched.
+    pub fn subs_seller_close_plan(&self, plan_id: &str, closed: bool) -> Result<(), JsValue> {
+        let (_root_key, storage) = self.subs_handles()?;
+        let mut s = lij_core::subs_seller::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        s.plans.iter_mut().find(|p| p.plan_id == plan_id).ok_or_else(|| subs_err("WALLET", "no such plan"))?.closed = closed;
+        lij_core::subs_seller::save(storage.as_ref(), &s).map_err(|e| subs_err("WALLET", e))
+    }
+
+    /// `count` new selling hashes for the provider, each signed with the selling key: JSON [{hash, secret, expires,
+    /// index, sig}]. The page registers them under the wallet's selling name (lnurlp_auth, action lnurl-register).
+    pub fn subs_seller_prepare_hashes(&self, count: u32, start_hint: Option<u32>) -> Result<String, JsValue> {
+        let wallet = self.inner.lock().map_err(|e| subs_err("WALLET", format!("Lock error: {e}")))?;
+        wallet.node().subs_seller_prepare_hashes(count, start_hint).map_err(|e| subs_err("WALLET", e))
+    }
+
+    /// The sidecar's list of this seller's subscribers, checked one by one (each agreement's own signature, under
+    /// terms this phone signed), and the work that follows: {plan_key, receipts:[…], tags:[…], refused:[…],
+    /// subscribers}. The page hands `receipts` and `tags` back to the sidecar.
+    pub fn subs_seller_work(&self, state_json: &str) -> Result<String, JsValue> {
+        let (root_key, storage) = self.subs_handles()?;
+        let state: serde_json::Value = serde_json::from_str(state_json).map_err(|e| subs_err("BAD_ANSWER", format!("the sidecar's list does not read: {e}")))?;
+        let mut s = lij_core::subs_seller::load(storage.as_ref()).map_err(|e| subs_err("WALLET", e))?;
+        let out = s.work(&root_key.subs_seller_key(), &state).map_err(|e| subs_err("WALLET", e))?;
+        lij_core::subs_seller::save(storage.as_ref(), &s).map_err(|e| subs_err("WALLET", e))?;
+        Ok(out.to_string())
+    }
+
+    /// THE SELLER'S DECISION on a payment held on a selling hash: taken only when `description` (what the provider
+    /// says the invoice on that hash was) carries a known subscriber's tag for a payment number that subscriber has
+    /// not paid; else sent back to the payer. `description` empty = the provider named none. JSON as
+    /// lij_core::node::subs_seller_take.
+    pub fn subs_seller_take(&self, hash: &str, description: &str, invoice_msat: f64, last: bool) -> Result<String, JsValue> {
+        let wallet = self.inner.lock().map_err(|e| subs_err("WALLET", format!("Lock error: {e}")))?;
+        let d = if description.is_empty() { None } else { Some(description) };
+        wallet.node().subs_seller_take(hash, d, invoice_msat.max(0.0) as u64, last).map_err(|e| subs_err("WALLET", e))
+    }
+
+    /// A subscriber's end, checked before the seller is shown a refund to pay: {when, refund_to}. The end must carry
+    /// the subscription key's own signature — the sidecar's word alone moves no money.
+    pub fn subs_seller_check_end(&self, plan_id: &str, end_json: &str) -> Result<String, JsValue> {
+        let end: serde_json::Value = serde_json::from_str(end_json).map_err(|e| subs_err("BAD_ANSWER", e))?;
+        let (when, refund_to) = lij_core::subs_seller::check_end(plan_id, &end).map_err(|e| subs_err("WALLET", e))?;
+        Ok(serde_json::json!({ "when": when, "refund_to": refund_to }).to_string())
+    }
+
     /// v166 (#29-4b): raw pending list for the bump UI (storage-only).
     pub fn list_pending_json(&self) -> Result<String, JsValue> {
         let storage = LocalStorage;
@@ -3430,7 +3979,7 @@ impl LijWalletHandle {
     /// actionable minimum/maximum sat/vB messages on violation.
     pub fn bump_onchain_send(&self, old_txid: String, new_fee_rate_sat_per_kw: u32) -> js_sys::Promise {
         let inner = self.inner.clone();
-        future_to_promise(async move {
+        timed_promise("bump_onchain_send", async move {
             let (root_key, independent, network) = {
                 let wallet = inner
                     .lock()
@@ -3629,7 +4178,7 @@ impl LijWalletHandle {
     #[wasm_bindgen]
     pub fn watch_address_inbound(&self, address: String, own_base: Option<String>, own_only: Option<bool>) -> js_sys::Promise {
         let inner = self.inner.clone();
-        future_to_promise(async move {
+        timed_promise("watch_address_inbound", async move {
             let independent = {
                 let wallet = inner
                     .lock()
@@ -3670,7 +4219,7 @@ impl LijWalletHandle {
     #[wasm_bindgen]
     pub fn check_watch_server(&self, base: String) -> js_sys::Promise {
         let inner = self.inner.clone();
-        future_to_promise(async move {
+        timed_promise("check_watch_server", async move {
             let (independent, network) = {
                 let wallet = inner
                     .lock()
@@ -3700,7 +4249,7 @@ impl LijWalletHandle {
     #[wasm_bindgen]
     pub fn identify_own_output(&self, txid: String) -> js_sys::Promise {
         let inner = self.inner.clone();
-        future_to_promise(async move {
+        timed_promise("identify_own_output", async move {
             let (root_key, independent, network) = {
                 let wallet = inner
                     .lock()
@@ -3768,7 +4317,7 @@ impl LijWalletHandle {
     #[wasm_bindgen]
     pub fn tx_details(&self, txid: String, filter_base: Option<String>) -> js_sys::Promise {
         let inner = self.inner.clone();
-        future_to_promise(async move {
+        timed_promise("tx_details", async move {
             let (root_key, _independent, network) = {
                 let wallet = inner
                     .lock()
@@ -3908,7 +4457,7 @@ impl LijWalletHandle {
 
     #[wasm_bindgen]
     pub fn onchain_history(&self) -> js_sys::Promise {
-        future_to_promise(async move { Ok::<JsValue, JsValue>(JsValue::from_str("[]")) })
+        timed_promise("onchain_history", async move { Ok::<JsValue, JsValue>(JsValue::from_str("[]")) })
     }
 
     /// Phase 10b — Send via LSP-provided route (Routing as a Service).
@@ -3942,7 +4491,7 @@ impl LijWalletHandle {
         let bolt11 = bolt11.to_string();
         let route_endpoint = route_endpoint.to_string();
         let route_macaroon_hex = route_macaroon_hex.to_string();
-        future_to_promise(async move {
+        timed_promise("send_payment_via_lsp_route", async move {
             // Phase 1: lock, prepare, release
             let prep = {
                 let wallet = inner.lock()
@@ -4016,7 +4565,7 @@ impl LijWalletHandle {
         // sats override is derived from it when the page gives only msat.
         let amount_sats_override: Option<u64> = amount_sats_override.or(amount_msat_override.map(|m| m / 1000));
         let progress_callback = progress_callback.clone();
-        future_to_promise(async move {
+        timed_promise("send_payment_with_retries", async move {
             // v353 (S63, §3d): a fresh send starts with a fresh memory (a second press after a Stop learns nothing
             // from the first — the page's "Try N more" is continue_payment, which keeps it)
             send_memory_drop(&payment_hash_hex_of(&bolt11).unwrap_or_default());
@@ -4046,7 +4595,7 @@ impl LijWalletHandle {
         let more_tries = more_tries.max(1);
         let amount_sats_override: Option<u64> = amount_sats_override.or(amount_msat_override.map(|m| m / 1000));
         let progress_callback = progress_callback.clone();
-        future_to_promise(async move {
+        timed_promise("continue_payment", async move {
             let hash_hex = match payment_hash_hex_of(&bolt11) { Some(h) => h, None => return Ok(payment_result_json(false, None, None, Some("continue: the invoice does not parse".into()))) };
             let used = match send_memory_get(&hash_hex) {
                 Some(m) if !m.succeeded => m.tries_used,
@@ -4095,7 +4644,7 @@ impl LijWalletHandle {
         let key = bolt11_or_hash.to_string();
         let route_endpoint = route_endpoint.to_string();
         let route_macaroon_hex = route_macaroon_hex.to_string();
-        future_to_promise(async move {
+        timed_promise("route_report", async move {
             let h = if key.len() == 64 && key.chars().all(|c| c.is_ascii_hexdigit()) { key.to_ascii_lowercase() } else { payment_hash_hex_of(&key).unwrap_or_default() };
             let m = match send_memory_get(&h) { Some(m) => m, None => return Ok(JsValue::from_str(r#"{"ok":false,"sent":false,"error":"nothing remembered for this invoice"}"#)) };
             let refusals: Vec<serde_json::Value> = m.tries.iter().filter_map(|t| t.failed.as_ref().map(|(from, to, scid, msat, code)| serde_json::json!({
@@ -4156,6 +4705,7 @@ async fn send_loop(
 ) -> Result<JsValue, JsValue> {
     let max_retries = last_attempt;
     let hash_hex = payment_hash_hex_of(&bolt11).unwrap_or_default();
+    lij_core::perf::send_mark(&hash_hex, if first_attempt > 1 { "more tries asked for" } else { "send called" });   // v379
     let mut mem = send_memory_get(&hash_hex).unwrap_or_else(|| SendMemory { started_ms: js_sys::Date::now(), ..Default::default() });
     mem.ended_ms = 0.0;
     send_memory_put(&hash_hex, mem.clone());
@@ -4475,6 +5025,7 @@ async fn send_loop(
                 // the round trip and hand that body over verbatim; everything
                 // downstream (lsp_hold parse, apply) sees what it saw before.
                 // External destinations take the fetch exactly as before.
+                lij_core::perf::send_mark(&hash_hex, if dest_is_lsp { "invoice read; asking the provider whether the address's owner is online" } else { "invoice read; asking the provider for a route" });   // v379
                 let response_text = if dest_is_lsp {
                     log::info!("[Phase10b-retry] internal send (dest == active LSP) — route ask skipped (v227)");
                     // v244 (S46, DP): the hold verdict for an INTERNAL send. The invoice was
@@ -4589,6 +5140,7 @@ async fn send_loop(
                     if hold.get("active")?.as_bool()? { hold.get("cap_s")?.as_u64() } else { None }
                 })();
 
+                lij_core::perf::send_mark(&hash_hex, "the provider answered");   // v379
                 // ── Phase 3: lock, apply (submit HTLC), get outcomes handle, release ──
                 let (apply_result, outcomes_handle) = {
                     let wallet = inner.lock()
@@ -4632,6 +5184,8 @@ async fn send_loop(
                     continue;
                 }
 
+                lij_core::perf::send_mark(&hash_hex, "payment handed to the channel");   // v379
+                perf_watch_htlc(inner.clone(), hash_hex.clone());
                 // ── Phase 4: poll outcomes map WITHOUT lock ────────────────
                 // Normal: 30s per attempt. HELD: the LSP told us it parked the
                 // HTLC (recipient offline) — wait the full hold cap + 60s
@@ -4646,6 +5200,12 @@ async fn send_loop(
                     None => 30000,
                 };
                 let outcome = wait_for_outcome(outcomes_handle.clone(), payment_id, wait_ms).await;
+                lij_core::perf::send_mark(&hash_hex, match &outcome {   // v379
+                    Some(PaymentOutcome::Sent { .. }) => "outcome: paid",
+                    Some(PaymentOutcome::PathFailed { .. }) => "outcome: this path refused",
+                    Some(PaymentOutcome::Failed { .. }) => "outcome: failed",
+                    None => "outcome: none yet (the wait ran out)",
+                });
 
                 match outcome {
                     Some(PaymentOutcome::Sent { preimage_hex, fee_paid_msat }) => {
@@ -4912,7 +5472,7 @@ impl LijWalletHandle {
         let dest = dest_pubkey_hex.to_string();
         let endpoint = route_endpoint.to_string();
         let mac = route_macaroon_hex.to_string();
-        future_to_promise(async move {
+        timed_promise("quote_route_fee_to_pubkey", async move {
             let (url, body) = lij_core::node::prepare_route_quote_to_pubkey(&dest, &endpoint, amount_sats)
                 .map_err(|e| JsValue::from_str(&format!("{e}")))?;
             let response_text = lij_core::node::fetch_post_with_macaroon(&url, &mac, &body).await
@@ -4948,7 +5508,7 @@ impl LijWalletHandle {
         let bolt11 = bolt11.to_string();
         let route_endpoint = route_endpoint.to_string();
         let route_macaroon_hex = route_macaroon_hex.to_string();
-        future_to_promise(async move {
+        timed_promise("quote_route_fee", async move {
             // Amount first: invoice-fixed or override (open invoices) — core
             // helper, lij-wasm carries no lightning-invoice dep of its own.
             let amount_msat: u64 = lij_core::node::invoice_amount_msat(&bolt11, amount_sats_override)
@@ -5004,7 +5564,7 @@ impl LijWalletHandle {
     ) -> js_sys::Promise {
         let inner = self.inner.clone();
         let memo = memo.to_string();
-        future_to_promise(async move {
+        timed_promise("create_invoice", async move {
             // Build under lock (sync, brief), release before any network I/O
             // -- the v8 mutex discipline.
             let result = {
@@ -5065,7 +5625,7 @@ impl LijWalletHandle {
         let memo = memo.to_string();
         let endpoint = lsp_endpoint.to_string();
         let macaroon = lsp_route_macaroon.to_string();
-        future_to_promise(async move {
+        timed_promise("create_invoice_with_jit", async move {
             // Phase 0 (NEW for D.2): fetch wallet pubkey BRIEFLY under lock,
             // then release before any network I/O. Pubkey is needed by the
             // adapter v0.18+ /lsps2/buy endpoint to know where to open the
@@ -5194,7 +5754,7 @@ impl LijWalletHandle {
         let bolt11 = bolt11.to_string();
         let route_endpoint = route_endpoint.to_string();
         let route_macaroon_hex = route_macaroon_hex.to_string();
-        future_to_promise(async move {
+        timed_promise("push_lock", async move {
             let fail = |m: String| Ok(JsValue::from_str(&serde_json::json!({ "ok": false, "error": m }).to_string()));
             let (mut prep, dest_is_lsp, hash_hex) = {
                 let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
@@ -5322,7 +5882,7 @@ impl LijWalletHandle {
     pub fn onchain_pay_release(&self, hash_hex: &str, rate_sat_vb: u64) -> js_sys::Promise {
         let inner = self.inner.clone();
         let hash_hex = hash_hex.to_string();
-        future_to_promise(async move {
+        timed_promise("onchain_pay_release", async move {
             let (built, independent) = {
                 let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
                 let (root_key, independent, _n) = wallet.onchain_handles();
@@ -5359,7 +5919,7 @@ impl LijWalletHandle {
     pub fn onchain_pay_release_kvb(&self, hash_hex: &str, rate_sat_kvb: u64) -> js_sys::Promise {
         let inner = self.inner.clone();
         let hash_hex = hash_hex.to_string();
-        future_to_promise(async move {
+        timed_promise("onchain_pay_release_kvb", async move {
             let (built, independent, tip) = {
                 let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
                 let (root_key, independent, _n) = wallet.onchain_handles();
@@ -5401,7 +5961,7 @@ impl LijWalletHandle {
         let which = which.trim().to_ascii_lowercase();
         let route_endpoint = route_endpoint.to_string();
         let route_macaroon_hex = route_macaroon_hex.to_string();
-        future_to_promise(async move {
+        timed_promise("onchain_pay_pay", async move {
             let fail = |m: String| Ok(JsValue::from_str(&serde_json::json!({ "ok": false, "error": m }).to_string()));
             if which != "a" && which != "b" { return fail("which must be a or b".into()); }
             let (mut prep, dest_is_lsp, inv_hash, cap_msat, max_cltv) = {
@@ -5461,7 +6021,7 @@ impl LijWalletHandle {
 
     pub fn lnurlp_prepare_hashes(&self, count: u32, start_hint: Option<u32>) -> js_sys::Promise {
         let inner = self.inner.clone();
-        future_to_promise(async move {
+        timed_promise("lnurlp_prepare_hashes", async move {
             let wallet = inner.lock()
                 .map_err(|e| JsValue::from_str(&format!("Lock error (lnurlp): {e}")))?;
             wallet
@@ -5482,7 +6042,7 @@ impl LijWalletHandle {
         let memo = memo.to_string();
         let endpoint = lsp_endpoint.to_string();
         let macaroon = lsp_route_macaroon.to_string();
-        future_to_promise(async move {
+        timed_promise("create_open_invoice_with_jit", async move {
             let client_pubkey = {
                 let wallet = inner.lock()
                     .map_err(|e| JsValue::from_str(&format!("Lock error (pubkey): {e}")))?;
@@ -5542,7 +6102,7 @@ impl LijWalletHandle {
     #[wasm_bindgen]
     pub fn list_lsps(&self) -> js_sys::Promise {
         let inner = self.inner.clone();
-        future_to_promise(async move {
+        timed_promise("list_lsps", async move {
             let wallet = inner.lock()
                 .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
             let lsps = wallet.list_lsps()
@@ -5949,7 +6509,7 @@ impl LijWalletHandle {
     pub fn switch_lsp(&self, lsp_pubkey: &str) -> js_sys::Promise {
         let inner = self.inner.clone();
         let lsp_pubkey = lsp_pubkey.to_string();
-        future_to_promise(async move {
+        timed_promise("switch_lsp", async move {
             let mut wallet = inner.lock()
                 .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
             wallet.switch_lsp(&lsp_pubkey)
@@ -5966,7 +6526,7 @@ impl LijWalletHandle {
     pub fn switch_lsp_with(&self, lsp_json: &str) -> js_sys::Promise {
         let inner = self.inner.clone();
         let parsed: Result<lij_core::lsp::LspInfo, _> = serde_json::from_str(lsp_json);
-        future_to_promise(async move {
+        timed_promise("switch_lsp_with", async move {
             let target = parsed.map_err(|e| JsValue::from_str(&format!("not a provider record: {e}")))?;
             let mut wallet = inner.lock()
                 .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
@@ -6028,7 +6588,7 @@ impl LijWalletHandle {
     #[wasm_bindgen]
     pub fn lnurlp_auth(&self, endpoint: String, action: String, name: String, hashes_json: String) -> js_sys::Promise {
         let inner = self.inner.clone();
-        future_to_promise(async move {
+        timed_promise("lnurlp_auth", async move {
             let km = {
                 let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
                 wallet.node().keys_manager_arc()
@@ -6048,7 +6608,7 @@ impl LijWalletHandle {
     #[wasm_bindgen]
     pub fn lsp_proof(&self, endpoint: String, action: String, record_id: String) -> js_sys::Promise {
         let inner = self.inner.clone();
-        future_to_promise(async move {
+        timed_promise("lsp_proof", async move {
             let km = {
                 let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
                 wallet.node().keys_manager_arc()
@@ -6063,7 +6623,7 @@ impl LijWalletHandle {
     #[wasm_bindgen]
     pub fn register_push_subscription(&self, subscription_json: String) -> js_sys::Promise {
         let inner = self.inner.clone();
-        future_to_promise(async move {
+        timed_promise("register_push_subscription", async move {
             let wallet = inner.lock()
                 .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
             wallet.register_push_subscription(&subscription_json)
@@ -6200,6 +6760,12 @@ impl LijWalletHandle {
         wallet.node().escape_export()
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
+
+    /// v379 (S71): the engine's own record of time — JSON {long_ms, stretches:[{at, ms, call, step}],
+    /// sends:[{hash8, marks:[[what, at]]}], counts:{what: n}} (lij_core::perf). Read by Diagnostics → Performance.
+    pub fn perf_report(&self) -> String { lij_core::perf::report_json() }
+    /// v379: both records emptied.
+    pub fn perf_clear(&self) { lij_core::perf::clear() }
 
     pub fn get_channels(&self) -> Result<String, JsValue> {
         // Phase 3.8.B: try_lock — see active_lsp_json comment.
@@ -6346,7 +6912,7 @@ impl LijWalletHandle {
     pub fn open_channel(&self, inbound_sats: u64) -> js_sys::Promise {
         let inner = self.inner.clone();
 
-        future_to_promise(async move {
+        timed_promise("open_channel", async move {
             // Step 1 — extract channel request data while holding the lock (no await inside)
             let (worker_url, lsp_info, client_pubkey) = {
                 let wallet = inner.lock()
@@ -6396,7 +6962,7 @@ impl LijWalletHandle {
     #[wasm_bindgen]
     pub fn open_lsp_channel(&self, amount_sats: u64, fee_rate_sat_per_vb: f64) -> js_sys::Promise {
         let inner = self.inner.clone();
-        future_to_promise(async move {
+        timed_promise("open_lsp_channel", async move {
             let wallet = inner
                 .lock()
                 .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
@@ -6415,7 +6981,7 @@ impl LijWalletHandle {
     pub fn open_lsp_channel_with(&self, req: &str) -> js_sys::Promise {
         let inner = self.inner.clone();
         let req = req.to_string();
-        future_to_promise(async move {
+        timed_promise("open_lsp_channel_with", async move {
             #[derive(serde::Deserialize)]
             struct Pin { txid: String, vout: u32 }
             #[derive(serde::Deserialize)]
@@ -6453,7 +7019,7 @@ impl LijWalletHandle {
             Ok(w) => w.onchain_handles().0,
             Err(_) => return js_sys::Promise::reject(&JsValue::from_str("WALLET_BUSY")),
         };
-        future_to_promise(async move {
+        timed_promise("lsp_channel_open_estimate_with", async move {
             let storage = t2_storage(&root_key);
             let fee_rate_sat_per_kw = ((r.fee_rate_sat_per_vb * 250.0).round() as u32).max(250);
             let spendable = lij_core::channel_open::spendable_total(storage.as_ref())
@@ -6496,7 +7062,7 @@ impl LijWalletHandle {
             Ok(w) => w.onchain_handles().0,
             Err(_) => return js_sys::Promise::reject(&JsValue::from_str("WALLET_BUSY")),
         };
-        future_to_promise(async move {
+        timed_promise("lsp_channel_open_estimate", async move {
             let storage = t2_storage(&root_key);
             let fee_rate_sat_per_kw = ((fee_rate_sat_per_vb * 250.0).round() as u32).max(250);
             let spendable = lij_core::channel_open::spendable_total(storage.as_ref())
@@ -6520,7 +7086,7 @@ impl LijWalletHandle {
         let pubkey_hex = pubkey_hex.to_string();
         let wss_url = wss_url.to_string();
 
-        future_to_promise(async move {
+        timed_promise("connect_to_peer", async move {
             let wallet = inner.lock()
                 .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
 
@@ -6605,6 +7171,7 @@ impl LijWalletHandle {
     }
 
     pub fn background_tick(&self, tick_count: u64) -> Result<(), JsValue> {
+        let _perf = lij_core::perf::scope("background_tick");   // v379
         // Phase 3.8.B: try_lock — see active_lsp_json comment.
         let wallet = match self.inner.try_lock() {
             Ok(w) => w,
@@ -6639,7 +7206,7 @@ impl LijWalletHandle {
     #[wasm_bindgen]
     pub fn list_peers(&self) -> js_sys::Promise {
         let inner = self.inner.clone();
-        future_to_promise(async move {
+        timed_promise("list_peers", async move {
             let wallet = inner.lock()
                 .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
             let peers = wallet.list_peers()
@@ -6874,6 +7441,38 @@ pub mod ws_transport {
         pub static PREOPEN: RefCell<Option<Preopen>> = RefCell::new(None);
     }
 
+    thread_local! {
+        /// v382: the pass for the next socket opened toward a provider — (the provider's key in lowercase hex, the pass,
+        /// when it was set, ms).
+        pub static NEXT_PASS: RefCell<Option<(String, String, f64)>> = RefCell::new(None);
+    }
+    /// v382: a pass older than this is not presented (the provider's are good for 90 s).
+    pub const PASS_MAX_AGE_MS: f64 = 75_000.0;
+    /// v382: the text frame that carries the pass (lijox-adapter ws-tunnel.js names the same).
+    pub const PASS_FRAME: &str = "lijox-pass:";
+
+    /// v382: keep the pass for the next socket toward `pubkey_hex`. false (and nothing kept) when it is not 64 hex.
+    pub fn set_pass(pubkey_hex: &str, pass_hex: &str) -> bool {
+        let ok = pass_hex.len() == 64 && pass_hex.chars().all(|c| c.is_ascii_hexdigit());
+        NEXT_PASS.with(|p| {
+            *p.borrow_mut() = if ok { Some((pubkey_hex.to_lowercase(), pass_hex.to_lowercase(), js_sys::Date::now())) } else { None };
+        });
+        ok
+    }
+
+    /// v382: the pass kept for a socket toward `pubkey_hex`, taken (good once). None when none is kept for that key,
+    /// or the one kept is too old.
+    fn take_pass(pubkey_hex: &str) -> Option<String> {
+        let want = pubkey_hex.to_lowercase();
+        NEXT_PASS.with(|p| {
+            let mut slot = p.borrow_mut();
+            let hit = matches!(slot.as_ref(), Some((pk, _, _)) if *pk == want);
+            if !hit { return None; }
+            let (_, pass, at) = slot.take()?;
+            if js_sys::Date::now() - at <= PASS_MAX_AGE_MS { Some(pass) } else { None }
+        })
+    }
+
     /// A pre-opened socket older than this is not adopted (it is closed and a fresh one opened).
     pub const PREOPEN_MAX_AGE_MS: f64 = 60_000.0;
 
@@ -7007,10 +7606,20 @@ pub mod ws_transport {
         };
         ws.set_binary_type(BinaryType::Arraybuffer);
 
+        // v382: the provider's pass for this connection, when the page was given one — presented as a text frame BEFORE
+        // the handshake's first bytes (the provider's tunnel takes it before anything is opened to its node)
+        let pass = take_pass(pubkey_hex);
+        let pass_open = pass.clone();
+
         let ws_clone_open = ws.clone();
         let first_bytes_clone = first_bytes.clone();
         let on_open = Closure::wrap(Box::new(move || {
             log::info!("WebSocket {id} opened, sending {} initial bytes", first_bytes_clone.len());
+            if let Some(p) = pass_open.as_ref() {
+                if let Err(e) = ws_clone_open.send_with_str(&format!("{PASS_FRAME}{p}")) {
+                    log::error!("Failed to present the pass: {:?}", e);
+                }
+            }
             if let Err(e) = ws_clone_open.send_with_u8_array(&first_bytes_clone) {
                 log::error!("Failed to send initial bytes: {:?}", e);
             }
@@ -7086,6 +7695,11 @@ pub mod ws_transport {
             // v322: adopted open — the open event has passed, so the handshake's first bytes go now (the line keeps the
             // page's "socket open" bookend)
             log::info!("WebSocket {id} opened, sending {} initial bytes (pre-opened {} ms before)", first_bytes.len(), preopened_ms.unwrap_or(0.0) as u64);
+            if let Some(p) = pass.as_ref() {
+                if let Err(e) = ws_now.send_with_str(&format!("{PASS_FRAME}{p}")) {
+                    log::error!("Failed to present the pass: {:?}", e);
+                }
+            }
             if let Err(e) = ws_now.send_with_u8_array(&first_bytes) {
                 log::error!("Failed to send initial bytes: {:?}", e);
             }
@@ -7128,6 +7742,7 @@ pub mod ws_transport {
 
     fn handle_incoming_bytes(id: u64, bytes: Vec<u8>) {
         use lij_core::peer::LijSocketDescriptor;
+        let _perf = lij_core::perf::scope("lightning_message");   // v379
 
         let inner = match crate::current_wallet_inner() {
             Some(i) => i,
@@ -7148,6 +7763,7 @@ pub mod ws_transport {
                 log::error!("Wallet lock poisoned: {e}"); return;
             }
             Err(std::sync::TryLockError::WouldBlock) => {
+                lij_core::perf::count("frames from the provider dropped: the wallet was busy");   // v379
                 log::warn!("WS id {id}: wallet busy, dropping {} bytes (Phase 3.8.D band-aid)", bytes.len());
                 return;
             }
@@ -7341,6 +7957,36 @@ impl LijWalletHandle {
 ///
 /// The lock is held ONLY during the map check (microseconds), then released
 /// for the sleep — keeps background_tick free to run.
+/// v379 (S71, the finer Performance report): watches one outgoing payment's HTLC on this wallet's own channel and writes
+/// two lines into the send's timeline — "taken by the provider" (both sides hold the HTLC; the provider can pass it on)
+/// and "the provider's answer arrived" (paid or refused, on its way out of the channel). A look every 50 ms, for 30 s
+/// at most, ending with the outcome. It reads; it changes nothing. A look is skipped when the wallet is busy.
+fn perf_watch_htlc(inner: Arc<std::sync::Mutex<LijWallet>>, hash_hex: String) {
+    if hash_hex.is_empty() { return; }
+    wasm_bindgen_futures::spawn_local(lij_core::perf::timed("perf_watch_htlc", async move {
+        let (mut seen, mut taken) = (false, false);
+        for _ in 0..600 {
+            let st = match inner.try_lock() { Ok(w) => Some(w.node().outbound_htlc_stage(&hash_hex)), Err(_) => None };
+            match st {
+                Some(Some(s)) => {
+                    seen = true;
+                    if s >= 1 && !taken { taken = true; lij_core::perf::send_mark(&hash_hex, "taken by the provider"); }
+                    if s >= 2 { lij_core::perf::send_mark(&hash_hex, "the provider's answer arrived"); return; }
+                }
+                Some(None) if seen => {
+                    // gone between two looks: taken and answered inside 50 ms, or closed out
+                    if !taken { lij_core::perf::send_mark(&hash_hex, "taken by the provider"); }
+                    lij_core::perf::send_mark(&hash_hex, "the provider's answer arrived");
+                    return;
+                }
+                _ => {}
+            }
+            if lij_core::perf::send_has(&hash_hex, "outcome:") && !seen { return; }
+            let _ = wasm_timer::Delay::new(std::time::Duration::from_millis(50)).await;
+        }
+    }));
+}
+
 async fn wait_for_outcome(
     outcomes: std::sync::Arc<std::sync::Mutex<
         std::collections::HashMap<

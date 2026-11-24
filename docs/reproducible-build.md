@@ -1,11 +1,11 @@
 # Reproducible build — how the served engine is checked against this source
 
-The wallet is a static site: `lij-pwa/frontend/` is served as-is at https://lightninginajar.xyz, and the engine is the WebAssembly module `lij-pwa/frontend/pkg/lij_wasm_bg.wasm` (about 9.4 MB) plus its JS glue `lij_wasm.js`. Both are built by the `lij-build` GitHub Actions workflow in this repository from `lij/` and committed back; the deploy branch is a byte copy of `lij-pwa/frontend/`.
+The wallet is a static site: `lij-pwa/frontend/` is served as-is at https://lightninginajar.xyz, and the engine is the WebAssembly module `lij-pwa/frontend/pkg/lij_wasm_bg.wasm` (about 11.2 MB at engine v382) plus its JS glue `lij_wasm.js`. Both are built by the `lij-build` GitHub Actions workflow in this repository from `lij/` and committed back; the deploy branch is a byte copy of `lij-pwa/frontend/`.
 
 ## Recipe (what CI runs — `.github/workflows/lij-build.yml`)
 
 ```
-# toolchain: lij/rust-toolchain.toml pins nightly-2025-01-01 with the wasm32-unknown-unknown target
+# toolchain: lij/rust-toolchain.toml pins stable 1.90.0 with the wasm32-unknown-unknown target
 rustup target add wasm32-unknown-unknown
 curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
 cd lij
@@ -13,12 +13,12 @@ cargo clean -p lij-wasm
 wasm-pack build --release --target web --out-dir ../../lij-pwa/frontend/pkg lij-wasm
 ```
 
-Crate sources are vendored under `lij/vendor` and `lij/.cargo/config.toml` points Cargo at them (`replace-with = "vendored-sources"`), so the build does not fetch from crates.io. The `lightning` crate comes from `lij/patches/lightning` — see [ldk-patches.md](ldk-patches.md) for the full diff against upstream 0.0.123. `wasm-opt -Oz` runs as part of `wasm-pack build` (`lij/lij-wasm/Cargo.toml`).
+Crate sources are vendored under `lij/vendor` and `lij/.cargo/config.toml` points Cargo at them (`replace-with = "vendored-sources"`), so the build does not fetch from crates.io. The `lightning` crate comes from `lij/patches/lightning` — see [ldk-patches.md](ldk-patches.md) for the full diff against upstream 0.2.7. `wasm-opt -Oz` runs as part of `wasm-pack build` (`lij/lij-wasm/Cargo.toml`).
 
 ## What is pinned (all of it, since page v710's workflow)
 
-- The Rust toolchain: `lij/rust-toolchain.toml` (nightly-2025-01-01, `rustc 1.85.0-nightly (d117b7f21 2024-12-31)` — that string is in the binary's `producers` section).
-- Every crate: vendored under `lij/vendor`, `Cargo.lock` checksums; `wasm-bindgen` 0.2.116 (crate and CLI).
+- The Rust toolchain: `lij/rust-toolchain.toml` — stable 1.90.0 since engine v241 (before that nightly-2025-01-01).
+- Every crate: vendored under `lij/vendor`, `Cargo.lock` checksums; `wasm-bindgen` 0.2.128 (crate and CLI) at engine v382.
 - The `lightning` patch set: in-tree.
 - `wasm-pack` v0.15.0: the release tarball is downloaded from GitHub and refused unless its sha256 is `c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a`.
 - `wasm-opt` (binaryen) version_117 — the version wasm-pack v0.15.0 would fetch itself, now downloaded explicitly and refused unless its sha256 is `3dc677006555b355ea2da5e82602065a161d5e83eaefd3f759afa00b96e83212`; it is put on PATH first, which is what wasm-pack uses when present.
@@ -39,13 +39,16 @@ curl -s https://lightninginajar.xyz/pkg/lij_wasm.js      | sha256sum
 curl -s https://lightninginajar.xyz/wallet/sw.js         | sha256sum
 ```
 
-The engine, glue and service worker are served byte-identical to the repository. The wallet page (`/wallet/`) is NOT: Cloudflare injects a per-request bot-protection link right after `<body>`, so its hash differs on every fetch. Check the page by its version string instead:
+Since 2026-10-21 lightninginajar.xyz is served from the author's own node, through a relay that passes the encrypted connection on without opening it, and every file is served byte-identical to the repository — the wallet page too:
 
 ```
+curl -s https://lightninginajar.xyz/wallet/ | sha256sum
 curl -s https://lightninginajar.xyz/wallet/ | grep -o "phase11-v[0-9]*" | head -1
 ```
 
-and, if you want the byte comparison, diff the served page against `lij-pwa/frontend/wallet/index.html` — the only difference should be that one injected `<a href="https://lightninginajar.xyz/cdn-cgi/content?id=…">` line.
+(Before 2026-10-21 Cloudflare served the site and inserted a per-request link right after the page's `<body>`, so the page's hash differed on every fetch; that is over.)
+
+Cloudflare keeps a copy of the same deploy branch at https://lij-git.pages.dev. The wallet uses it only for app-update downloads, as its Reach setting allows, and checks every file it takes from it against the sha256 list in the service worker fetched from lightninginajar.xyz itself; a file that does not match is dropped and taken from lightninginajar.xyz. A daily check compares the two hosts.
 
 The page's Content-Security-Policy (`lij-pwa/frontend/_headers`, `/wallet/*` block) lists a sha256 for each of the page's inline script blocks, written by the cut script from the final page bytes; a browser refuses any inline script whose hash is not in that list.
 
@@ -59,10 +62,14 @@ sha256sum lij-pwa/frontend/pkg/lij_wasm_bg.wasm lij-pwa/frontend/pkg/lij_wasm.js
 
 ## From engine v241 (2026-09-12): LDK 0.2.6, stable toolchain, release profile
 
-- `lightning` 0.2.6 (patched: `lij/patches/lightning`, hunks listed in docs/ldk-patches.md — to be re-issued for 0.2.6), `lightning-invoice` 0.34, `bitcoin` 0.32.
+- `lightning` 0.2.6 (patched: `lij/patches/lightning`, hunks listed in docs/ldk-patches.md), `lightning-invoice` 0.34, `bitcoin` 0.32.
 - Toolchain: **stable 1.90.0** (`lij/rust-toolchain.toml`) — the earlier pinned nightly cannot read edition-2024 manifests in the new dependency tree; nothing in the engine needs nightly.
 - Release profile (`lij/Cargo.toml`): `opt-level = "z"`, `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `strip = "debuginfo"`; wasm-pack/binaryen pins unchanged (0.15.0 / version_117).
 - The binary is ~7.9 MB (was ~9.5 MB on 0.0.123 with the default profile).
+
+## From engine v375 (2026-11-17): LDK 0.2.7
+
+- `lightning` 0.2.6 → 0.2.7, the patch set carried over; docs/ldk-patches.md was refreshed for v375 and again for v376 (the one HTLC timing rule). Toolchain, profile and the wasm-pack/binaryen pins unchanged.
 
 ## From engine v292 (2026-09-29): the multiply path — libsecp256k1 on its 64-bit limbs
 

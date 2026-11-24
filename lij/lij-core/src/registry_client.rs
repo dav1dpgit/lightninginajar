@@ -606,7 +606,13 @@ pub async fn route_report_auth(
 //   tower-voucher      "voucher:<voucher key, x-only hex>"   — v374 (S70, the tower's way in): the wallet asks ITS OWN
 //                      provider, once, to sign its voucher key (tower.rs); the provider must know the ask is this
 //                      wallet's, so the node key proves it
-pub const PROOF_ACTIONS: &[&str] = &["heartbeat", "lsps2-pending", "client-prefs", "push-claim", "push-deliver", "push-claim-status", "lnurl-note", "tapedrop", "lnurl-display", "onchain-pay", "tower-voucher"];
+//   wake-schedule      "wake:<count>:<sha256 hex of the times, decimal, joined by ','>"   — S71 (Subscriptions, format §12): the
+//                      reminder times a wallet hands its own provider; the provider is told times only, and only the
+//                      wallet's own key may replace its list
+//   subs-seller        "subs-seller:<sha256 hex of the request's JSON text as sent>"   — S71 (format §13): a seller's
+//                      phone speaking to its provider's subscriptions sidecar through the provider (plans, the checked
+//                      subscribers' receipts and tags, refunds); the sidecar holds no key and acts on nothing unsigned
+pub const PROOF_ACTIONS: &[&str] = &["heartbeat", "lsps2-pending", "client-prefs", "push-claim", "push-deliver", "push-claim-status", "lnurl-note", "tapedrop", "lnurl-display", "onchain-pay", "tower-voucher", "wake-schedule", "subs-seller"];
 
 /// Fetch the LSP's challenge and sign `action` over `record_id` with the node key. Returns `{node_pubkey, nonce, signature}`
 /// as JSON. The action must be on PROOF_ACTIONS; the record_id is the page's (≤ 512 bytes, no control characters).
@@ -738,7 +744,7 @@ mod tests {
     // listed action signs is the 0.112.0 digest with the action's bytes — the adapter's lnurlpAuthCheck twin.
     #[test]
     fn lsp_proof_actions_and_digest() {
-        assert_eq!(PROOF_ACTIONS, &["heartbeat", "lsps2-pending", "client-prefs", "push-claim", "push-deliver", "push-claim-status", "lnurl-note", "tapedrop", "lnurl-display", "onchain-pay", "tower-voucher"]);   // v358: tapedrop (F24); v359: lnurl-display (the Register name); v361: onchain-pay (quote / open / release / status)
+        assert_eq!(PROOF_ACTIONS, &["heartbeat", "lsps2-pending", "client-prefs", "push-claim", "push-deliver", "push-claim-status", "lnurl-note", "tapedrop", "lnurl-display", "onchain-pay", "tower-voucher", "wake-schedule", "subs-seller"]);   // v358: tapedrop (F24); v359: lnurl-display (the Register name); v361: onchain-pay (quote / open / release / status); S71: wake-schedule (the reminder times) and subs-seller (a seller's phone to its provider's sidecar)
         assert!(!PROOF_ACTIONS.contains(&"post-channel"), "the channel record keeps its own path");
         assert!(!PROOF_ACTIONS.contains(&"lnurl-register"), "the register keeps lnurlp_auth (the engine computes its record)");
         let nonce = "11".repeat(32);

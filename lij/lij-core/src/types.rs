@@ -98,6 +98,16 @@ pub struct ChannelInfo {
     /// Funding confirmations so far (None until first seen on-chain). Lets the
     /// UI separate confirmed capacity from a pending zero-conf open.
     pub confirmations: Option<u32>,
+    /// v379 (S71, DP 2026-11-19: a channel he funded on another provider said "~1 block" and was usable at the third
+    /// confirmation): how many confirmations the OTHER node asked for before this channel can be used. A node says
+    /// so when it accepts a channel this wallet funds; for a channel the other side funds it is this wallet's own
+    /// number. None until it is known.
+    #[serde(default)]
+    pub confirmations_required: Option<u32>,
+    /// v379: true when THIS wallet opened the channel with its own coins (LDK's is_outbound). The page compares the
+    /// number above with what the provider states only for such a channel.
+    #[serde(default)]
+    pub funded_by_this_wallet: bool,
     /// Whether channel_ready has been exchanged (usable for routing).
     pub is_channel_ready: bool,
     /// Our (the holder's) unspendable channel reserve, in satoshis. This must

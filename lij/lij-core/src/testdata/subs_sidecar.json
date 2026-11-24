@@ -1,0 +1,372 @@
+{
+ "sub_sk": "1111111111111111111111111111111111111111111111111111111111111111",
+ "plan_sk": "2222222222222222222222222222222222222222222222222222222222222222",
+ "t0": 1790000000,
+ "plan": {
+  "v": 1,
+  "tag": "lijoxSubsPlan",
+  "plan_id": "coffee-club",
+  "plan_key": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+  "server": "https://lsp.example.com/subs/p/coffee-club",
+  "terms": {
+   "merchant_name": "Kissaten Aoi",
+   "plan_name": "Coffee club",
+   "price": {
+    "unit": "sat",
+    "by_payment": [
+     {
+      "from": 1,
+      "amount": "8000"
+     },
+     {
+      "from": 4,
+      "amount": "10000"
+     }
+    ]
+   },
+   "every": {
+    "unit": "month",
+    "count": 1
+   },
+   "first_payment": {
+    "rule": "on_agree"
+   },
+   "payments": 12,
+   "price_kept_through": 3,
+   "grace_days": 7,
+   "ending": {
+    "refund": "unused_time"
+   },
+   "change_notice_days": 30,
+   "terms_version": 1,
+   "pay_by": [
+    "lightning"
+   ],
+   "lightning": {
+    "nodes": [
+     "0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c"
+    ]
+   }
+  },
+  "terms_sig": "0192a277e90e58af1a2c0198ab5e4e4ceb712b311ef897f86e41aec091157223fa7f4885fd18539acad4223fab1eec4d01bb249b44696a746fc1dc84290336ed",
+  "line": "New beans — see"
+ },
+ "plan_code": "lijoxsubs://lsp.example.com/subs/p/coffee-club",
+ "agree": {
+  "body": {
+   "v": 1,
+   "plan_id": "coffee-club",
+   "terms_version": 1,
+   "terms_digest": "8fdbbb5a3cb25c73b4f7b3c3e9b8637c06a8f120a985181fd8c82cda68ceb82f",
+   "sub_key": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+   "ts": 1790000000,
+   "sig": "aff91a26726b2c5cc62ae92abccee879778fee42a9bef473723133cec968e07f1c1cf3e6c7e332892f52327c8de76b792cf0256151eeeffbc4faf563cd3bf988"
+  },
+  "answer": {
+   "status": "OK",
+   "first_due": 1790000000,
+   "receipt": "6da30fb36dcc3914e0f5f7ffb18726a241cbbc57db3fd1748a5e7a0b7152834a5e8e751f01d75cfa584f1071dcfedf48cc794f4ba6927e821654926c98d13934"
+  },
+  "at": 1790000000
+ },
+ "sync": {
+  "answer": {
+   "status": "OK",
+   "state": "active",
+   "terms_version": 1,
+   "terms_digest": "8fdbbb5a3cb25c73b4f7b3c3e9b8637c06a8f120a985181fd8c82cda68ceb82f",
+   "terms": {
+    "merchant_name": "Kissaten Aoi",
+    "plan_name": "Coffee club",
+    "price": {
+     "unit": "sat",
+     "by_payment": [
+      {
+       "from": 1,
+       "amount": "8000"
+      },
+      {
+       "from": 4,
+       "amount": "10000"
+      }
+     ]
+    },
+    "every": {
+     "unit": "month",
+     "count": 1
+    },
+    "first_payment": {
+     "rule": "on_agree"
+    },
+    "payments": 12,
+    "price_kept_through": 3,
+    "grace_days": 7,
+    "ending": {
+     "refund": "unused_time"
+    },
+    "change_notice_days": 30,
+    "terms_version": 1,
+    "pay_by": [
+     "lightning"
+    ],
+    "lightning": {
+     "nodes": [
+      "0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c"
+     ]
+    }
+   },
+   "terms_sig": "0192a277e90e58af1a2c0198ab5e4e4ceb712b311ef897f86e41aec091157223fa7f4885fd18539acad4223fab1eec4d01bb249b44696a746fc1dc84290336ed",
+   "first_due": 1790000000,
+   "paid": [
+    {
+     "n": 1,
+     "at": 1790000055,
+     "payment_hash": "4dfed5abfe761b5b6850c41722e8313f2cbfeb80c54902fe1314b38431ec45be",
+     "txid": null
+    }
+   ],
+   "next": {
+    "n": 2,
+    "due": 1792592000
+   },
+   "receipt": "6da30fb36dcc3914e0f5f7ffb18726a241cbbc57db3fd1748a5e7a0b7152834a5e8e751f01d75cfa584f1071dcfedf48cc794f4ba6927e821654926c98d13934"
+  }
+ },
+ "status": {
+  "answer": {
+   "status": "OK",
+   "state": "active",
+   "paid_through": 1792592000,
+   "next": {
+    "n": 2,
+    "due": 1792592000
+   },
+   "line": "New beans — see",
+   "receipt": "6da30fb36dcc3914e0f5f7ffb18726a241cbbc57db3fd1748a5e7a0b7152834a5e8e751f01d75cfa584f1071dcfedf48cc794f4ba6927e821654926c98d13934",
+   "change": {
+    "terms_version": 2,
+    "terms": {
+     "merchant_name": "Kissaten Aoi",
+     "plan_name": "Coffee club",
+     "price": {
+      "unit": "sat",
+      "by_payment": [
+       {
+        "from": 1,
+        "amount": "8000"
+       },
+       {
+        "from": 4,
+        "amount": "11000"
+       }
+      ]
+     },
+     "every": {
+      "unit": "month",
+      "count": 1
+     },
+     "first_payment": {
+      "rule": "on_agree"
+     },
+     "payments": 12,
+     "price_kept_through": 3,
+     "grace_days": 7,
+     "ending": {
+      "refund": "unused_time"
+     },
+     "change_notice_days": 30,
+     "terms_version": 2,
+     "pay_by": [
+      "lightning"
+     ],
+     "lightning": {
+      "nodes": [
+       "0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c"
+      ]
+     }
+    },
+    "terms_sig": "6d0af4eb0dff2b6c6ff6b4a55905fa4d82482ff18527deb8a79f987981c957715e42f16e9cb3881c7951f841d81bc62b81cd4c03eb86cbbb49e70a0484b303d0",
+    "starts": 1792592050,
+    "notice_given": 1790000050
+   }
+  },
+  "first_due": 1790000000
+ },
+ "accept": {
+  "terms": {
+   "merchant_name": "Kissaten Aoi",
+   "plan_name": "Coffee club",
+   "price": {
+    "unit": "sat",
+    "by_payment": [
+     {
+      "from": 1,
+      "amount": "8000"
+     },
+     {
+      "from": 4,
+      "amount": "11000"
+     }
+    ]
+   },
+   "every": {
+    "unit": "month",
+    "count": 1
+   },
+   "first_payment": {
+    "rule": "on_agree"
+   },
+   "payments": 12,
+   "price_kept_through": 3,
+   "grace_days": 7,
+   "ending": {
+    "refund": "unused_time"
+   },
+   "change_notice_days": 30,
+   "terms_version": 2,
+   "pay_by": [
+    "lightning"
+   ],
+   "lightning": {
+    "nodes": [
+     "0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c"
+    ]
+   }
+  },
+  "answer": {
+   "status": "OK",
+   "receipt": "474395a7cb995c9ba44a29ebf89360a873167ae185ffd70d60461a8b29a06f882bd969b3c25019de5d73783ba15475c5cc92c2b28f5b74838b597be20952e585"
+  }
+ },
+ "end": {
+  "answer": {
+   "status": "OK",
+   "ends": 1798532000,
+   "refund": {
+    "amount_msat": 8250000,
+    "state": "owed"
+   }
+  }
+ },
+ "plan_described": {
+  "v": 1,
+  "tag": "lijoxSubsPlan",
+  "plan_id": "beans",
+  "plan_key": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+  "server": "https://lsp.example.com/subs/p/beans",
+  "terms": {
+   "merchant_name": "Kissaten Aoi",
+   "plan_name": "Coffee club",
+   "price": {
+    "unit": "sat",
+    "by_payment": [
+     {
+      "from": 1,
+      "amount": "8000"
+     }
+    ]
+   },
+   "every": {
+    "unit": "month",
+    "count": 1
+   },
+   "first_payment": {
+    "rule": "on_agree"
+   },
+   "payments": null,
+   "price_kept_through": null,
+   "grace_days": 7,
+   "ending": {
+    "refund": "unused_time"
+   },
+   "change_notice_days": 30,
+   "plan_description": "A bag of beans each month, roasted the week it ships.",
+   "terms_version": 1,
+   "pay_by": [
+    "lightning"
+   ],
+   "lightning": {
+    "nodes": [
+     "0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c"
+    ]
+   }
+  },
+  "terms_sig": "7ca40f0921f26374035fd5441630453364e8f203eaef2518ca6c16c3d780e6fa8053b53eee3f561964e5424e3ded5b4234167fdbcb09991fc86ed97456f8576f"
+ },
+ "seller_plan": {
+  "v": 1,
+  "tag": "lijoxSubsPlan",
+  "plan_id": "bread",
+  "plan_key": "6930f46dd0b16d866d59d1054aa63298b357499cd1862ef16f3f55f1cafceb82",
+  "server": "https://lsp.example.com/subs/s/679395abecdee72c/bread",
+  "terms": {
+   "merchant_name": "Mika",
+   "plan_name": "Bread box",
+   "price": {
+    "unit": "sat",
+    "by_payment": [
+     {
+      "from": 1,
+      "amount": "5000"
+     }
+    ]
+   },
+   "every": {
+    "unit": "week",
+    "count": 1
+   },
+   "first_payment": {
+    "rule": "on_agree"
+   },
+   "payments": null,
+   "price_kept_through": 4,
+   "grace_days": 7,
+   "ending": {
+    "refund": "none"
+   },
+   "change_notice_days": 30,
+   "terms_version": 1,
+   "pay_by": [
+    "lightning"
+   ],
+   "lightning": {
+    "nodes": [
+     "0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c"
+    ]
+   }
+  },
+  "terms_sig": "52b9859c69d8992091416f7522f06bc62ddcb0a459dde55221617ba5ce8b5358c02aa3c4b5c4c61fa548ec8a955d6e38abee07c63c39dd7f80266383a40ae9f3"
+ },
+ "seller_plan_code": "lijoxsubs://lsp.example.com/subs/s/679395abecdee72c/bread",
+ "seller_agree": {
+  "body": {
+   "v": 1,
+   "plan_id": "bread",
+   "terms_version": 1,
+   "terms_digest": "767390e49c466795e7ffd136a09d644cd16883510e63407ad5de734fdb3522f5",
+   "sub_key": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+   "ts": 1790000000,
+   "sig": "63df574572a819d7fa6f0b3f10f9d3f887beeaef237d99940779b737e35cb9602c2df95df1bd1387b394b22ebd277b7ad1cfd69ddbfbd8fea75ddf2db861509b"
+  },
+  "answer": {
+   "status": "OK",
+   "first_due": 1790000000,
+   "receipt": null,
+   "receipt_pending": true
+  },
+  "at": 1790000000
+ },
+ "seller_status": {
+  "answer": {
+   "status": "OK",
+   "state": "overdue",
+   "paid_through": null,
+   "next": {
+    "n": 1,
+    "due": 1790000000
+   },
+   "receipt": "e7fa82a1222bf9e8a98fe929ba9940608a295c515639eac2896cf509495a111fe8e42d0f9b92c52ea179d3c833c449ac1254468917d7f69c7259f167330a29e6"
+  },
+  "first_due": 1790000000
+ }
+}

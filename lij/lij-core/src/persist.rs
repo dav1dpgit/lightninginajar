@@ -281,6 +281,7 @@ impl<S: EcdsaChannelSigner> Persist<S> for LijChannelMonitorPersister {
         monitor_name: MonitorName,
         monitor: &ChannelMonitor<S>,
     ) -> ChannelMonitorUpdateStatus {
+        let _perf = crate::perf::step_scope("store: channel monitor");   // v379
         let key = Self::key_for(&monitor_name);
         match self.write_monitor(&key, monitor) {
             Ok(()) => {
@@ -305,6 +306,7 @@ impl<S: EcdsaChannelSigner> Persist<S> for LijChannelMonitorPersister {
         update: Option<&ChannelMonitorUpdate>,
         monitor: &ChannelMonitor<S>,
     ) -> ChannelMonitorUpdateStatus {
+        let _perf = crate::perf::step_scope("store: channel monitor");   // v379
         // Always persist the full monitor — simpler than batching incremental
         // updates, and the size cost is acceptable for browser storage.
         let key = Self::key_for(&monitor_name);

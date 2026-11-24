@@ -103,31 +103,282 @@ pub fn backup_fingerprint(blob: &StateBlob) -> String {
     sha256::Hash::hash(&blob.encrypted_data).to_string()
 }
 
-/// The note made before an upload: the number and the fingerprint of the copy on its way. 8 bytes BE + 32 bytes.
+// ── v380 (S71 Fri 2026-11-20, DP 08:39 "Go ahead with the the writeup and A-E fixes" — incident 2026-11-20, finding A):
+// THE PHONE KNOWS ITS OWN UPLOAD WHILE IT STAYS OPEN, TOO. FOUND (DP's phone, the tapes): a routine upload went up as
+// no. 7314 and the cloud stored it, but the answer never reached the phone (the app was in the background). The phone
+// kept no. 7313. The next upload, 49 s later, was a new copy (new encryption, so a new fingerprint) carrying 7314 again;
+// its note REPLACED the first one; the cloud refused it ("existing v7314 >= incoming v7314"); the refusal cleared the
+// note. From that moment nothing on the phone could show that the cloud's 7314 was the phone's own — "Your cloud copy
+// is newer than this phone" followed, on a phone that held the newest state. v319 could tell an own upload only at
+// the next wallet start, and only while the one note still stood.
+// Now (1) the note keeps EVERY copy sent under one number that got no answer (the number once, then one fingerprint
+// each, at most BACKUP_INFLIGHT_MAX), so a second attempt no longer forgets the first; (2) before a copy goes up
+// under a number that already has an unanswered upload, the phone asks the cloud what it holds — its own upload: the
+// number is taken and the new copy goes up as the next number (lij-wasm upload_copy); (3) a refusal that names that
+// very number is asked about once more before it is called a conflict; (4) loading any copy onto the phone drops
+// the note (wallet::inject_state_blob) — the phone no longer holds the state those uploads carried, so the cloud's
+// copy must not be read as "this phone's own" after it. A copy from another device, or a copy this phone never
+// sent, raises the warning as before.
+// The stored form: 8 bytes number BE, then 32 bytes per fingerprint. One fingerprint is byte-for-byte the v319 note.
+
+/// At most this many unanswered uploads of one number are remembered (32 bytes each); the oldest goes first.
+pub const BACKUP_INFLIGHT_MAX: usize = 8;
+
+/// The note made before an upload: the number and the fingerprint of the copy on its way. A note for the SAME number
+/// keeps the earlier fingerprints (uploads of that number that got no answer) and adds this one; a note for another
+/// number starts again with this one alone.
 pub fn backup_inflight_note(storage: &dyn LijStorage, version: u64, fingerprint_hex: &str) -> LijResult<()> {
     let fp = hex::decode(fingerprint_hex).map_err(|e| LijError::Backup(format!("fingerprint hex: {e}")))?;
     if fp.len() != 32 { return Err(LijError::Backup("fingerprint: not 32 bytes".into())); }
-    let mut v = Vec::with_capacity(40);
+    let mut fps: Vec<String> = match backup_inflight(storage)? {
+        Some((v, list)) if v == version => list,
+        _ => Vec::new(),
+    };
+    let fp_hex = hex::encode(&fp);
+    fps.retain(|f| f != &fp_hex);
+    fps.push(fp_hex);
+    while fps.len() > BACKUP_INFLIGHT_MAX { fps.remove(0); }
+    let mut v = Vec::with_capacity(8 + 32 * fps.len());
     v.extend_from_slice(&version.to_be_bytes());
-    v.extend_from_slice(&fp);
+    for f in &fps {
+        v.extend_from_slice(&hex::decode(f).map_err(|e| LijError::Backup(format!("fingerprint hex: {e}")))?);
+    }
     storage.set(KEY_BACKUP_INFLIGHT, &v)
 }
 
-/// The note, if one stands: (number, fingerprint hex). None when no upload is outstanding or the note is malformed.
-pub fn backup_inflight(storage: &dyn LijStorage) -> LijResult<Option<(u64, String)>> {
+/// The note, if one stands: (number, the fingerprints of every copy sent under it that got no answer, oldest first).
+/// None when no upload is outstanding or the note is malformed.
+pub fn backup_inflight(storage: &dyn LijStorage) -> LijResult<Option<(u64, Vec<String>)>> {
     Ok(match storage.get(KEY_BACKUP_INFLIGHT)? {
-        Some(b) if b.len() == 40 => {
+        Some(b) if b.len() >= 40 && (b.len() - 8) % 32 == 0 && (b.len() - 8) / 32 <= BACKUP_INFLIGHT_MAX => {
             let mut a = [0u8; 8];
             a.copy_from_slice(&b[..8]);
-            Some((u64::from_be_bytes(a), hex::encode(&b[8..])))
+            Some((u64::from_be_bytes(a), b[8..].chunks(32).map(hex::encode).collect()))
         }
         _ => None,
     })
 }
 
-/// The note is cleared once the cloud answered (accepted, or refused as older — the copy is not on its way any more).
+/// The note is cleared once the cloud answered (accepted, or refused by a copy that is not this phone's — no copy of
+/// this phone's is on its way any more), and whenever another copy is loaded onto the phone.
 pub fn backup_inflight_clear(storage: &dyn LijStorage) -> LijResult<()> {
     storage.delete(KEY_BACKUP_INFLIGHT)
+}
+
+/// v380: how many uploads sent as `number` still have no answer (0 when the note is for another number, or none stands).
+pub fn backup_unanswered(storage: &dyn LijStorage, number: u64) -> LijResult<usize> {
+    Ok(match backup_inflight(storage)? {
+        Some((v, fps)) if v == number => fps.len(),
+        _ => 0,
+    })
+}
+
+/// v380: a refused upload is asked about (is the cloud's copy this phone's own?) only when it can be: the cloud's
+/// number is the very number this phone just sent, and an EARLIER copy went up under that number with no answer. (The
+/// copy just sent cannot be the one stored — the cloud accepts a repeat of the very same copy.)
+pub fn backup_refusal_may_be_own(storage: &dyn LijStorage, sent_number: u64, cloud_number: u64) -> LijResult<bool> {
+    Ok(cloud_number == sent_number && backup_unanswered(storage, sent_number)? > 1)
+}
+
+/// v380: the cloud's copy is one of this phone's own unanswered uploads → its number is the phone's now (upward
+/// only) and the note is cleared; Some(number). Anything else → None, nothing written.
+pub fn backup_take_own(storage: &dyn LijStorage, meta: &BackupMeta) -> LijResult<Option<u64>> {
+    let note = backup_inflight(storage)?;
+    if !backup_meta_is_own(meta, note.as_ref()) { return Ok(None); }
+    backup_version_commit(storage, meta.version)?;
+    backup_inflight_clear(storage)?;
+    Ok(Some(meta.version))
+}
+
+/// v380: the mark on an upload error that happened before the copy left the phone (KvBackupClient::push).
+pub const BACKUP_NOT_SENT: &str = "copy not sent: ";
+
+/// v380: one fingerprint leaves the note — the copy was never sent, so the cloud cannot hold it. The last one out
+/// removes the note.
+pub fn backup_inflight_forget(storage: &dyn LijStorage, version: u64, fingerprint_hex: &str) -> LijResult<()> {
+    if let Some((v, mut fps)) = backup_inflight(storage)? {
+        if v != version || !fps.iter().any(|f| f == fingerprint_hex) { return Ok(()); }
+        fps.retain(|f| f != fingerprint_hex);
+        if fps.is_empty() { return backup_inflight_clear(storage); }
+        let mut out = Vec::with_capacity(8 + 32 * fps.len());
+        out.extend_from_slice(&v.to_be_bytes());
+        for f in &fps {
+            out.extend_from_slice(&hex::decode(f).map_err(|e| LijError::Backup(format!("fingerprint hex: {e}")))?);
+        }
+        storage.set(KEY_BACKUP_INFLIGHT, &out)?;
+    }
+    Ok(())
+}
+
+/// v380: what the cloud's answer says about the copy it holds, read against this phone's note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloudCopyIs {
+    /// One of this phone's own unanswered uploads — its number was taken as the phone's and the note cleared.
+    Own(u64),
+    /// A copy this phone never sent, carrying the number in question or a higher one.
+    Others,
+    /// The cloud says it holds no copy, or one with a LOWER number than the one in question: the upload never
+    /// arrived — or the cloud's read is behind its write (the registry reads through a cache of up to 30 s).
+    Behind,
+    /// The cloud gave no answer.
+    NoAnswer,
+}
+
+/// v380: what one upload needs of the cloud. On the phone: the wallet's sinks and its backup client (WalletCloud).
+/// In the tests: a stand-in that keeps the registry's own rule.
+#[allow(async_fn_in_trait)]
+pub trait CopyCloud {
+    /// Send the copy to every sink; one answer per sink.
+    async fn push(&self, blob: &StateBlob) -> Vec<LijResult<()>>;
+    /// The number and the fingerprint of the copy the cloud holds. Ok(None) = it holds none; Err = no answer.
+    async fn meta(&self) -> LijResult<Option<BackupMeta>>;
+}
+
+/// v380: the wallet's own cloud — its sinks for the upload, its backup client for the question.
+pub struct WalletCloud<'a> {
+    pub sinks: &'a [BackupSink],
+    pub client: &'a KvBackupClient,
+    pub signer: &'a crate::key::RootKey,
+}
+
+impl CopyCloud for WalletCloud<'_> {
+    async fn push(&self, blob: &StateBlob) -> Vec<LijResult<()>> {
+        let mut out = Vec::with_capacity(self.sinks.len());
+        for sink in self.sinks { out.push(sink.push(blob, self.signer).await); }
+        out
+    }
+    async fn meta(&self) -> LijResult<Option<BackupMeta>> {
+        let pubkey = self.signer.portable_pubkey_hex()?;
+        self.client.meta(&pubkey, self.signer).await
+    }
+}
+
+async fn ask_cloud_copy<C: CopyCloud>(storage: &dyn LijStorage, cloud: &C, number: u64) -> CloudCopyIs {
+    match cloud.meta().await {
+        Ok(Some(m)) => match backup_take_own(storage, &m) {
+            Ok(Some(n)) => {
+                log::info!("[v380] the cloud copy no. {n} is this phone's own upload (its answer never arrived): the number is taken");
+                CloudCopyIs::Own(n)
+            }
+            Ok(None) if m.version < number => CloudCopyIs::Behind,
+            Ok(None) => CloudCopyIs::Others,
+            Err(e) => { log::warn!("[v380] own-upload check: the note could not be read or written: {e}"); CloudCopyIs::NoAnswer }
+        },
+        Ok(None) => CloudCopyIs::Behind,
+        Err(e) => { log::warn!("[v380] own-upload check got no answer: {e}"); CloudCopyIs::NoAnswer }
+    }
+}
+
+/// v380: what one upload came to.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Uploaded {
+    /// How many sinks accepted the copy (its number is the phone's now).
+    pub ok: u32,
+    /// The cloud's number when it refused the copy as older and the copy it holds is not known to be this phone's
+    /// own: the automatic uploads stop until the person decides. 0 = no such refusal.
+    pub conflict: u64,
+    /// The number taken because the cloud's copy was this phone's own unanswered upload. 0 = none.
+    pub own: u64,
+    /// The cloud's copy was found to be this phone's own only AFTER this copy was refused: this copy was not stored,
+    /// and a FRESH copy goes up as the next number (the caller sends it; never this one again, which may be older
+    /// than the phone's state by now).
+    pub again: bool,
+    /// No usable answer (no connection, a 500, or a refusal that could not yet be told from the phone's own
+    /// upload): the caller tries again later.
+    pub unanswered: bool,
+    pub last_err: Option<String>,
+}
+
+/// v380: ONE UPLOAD, with the phone's own unanswered uploads known. (backup_now and maybe_backup both send through
+/// this.) The steps:
+///  1. An earlier copy went up under this very number and got no answer → the cloud is asked what it holds BEFORE
+///     this copy goes. Its own upload: the number is taken and this copy goes up as the next one. (The number is
+///     outside the encrypted bytes and the proof of an upload is made at the upload, so it can still be set.)
+///  2. The copy is noted (beside any earlier unanswered ones) and sent.
+///  3. Accepted → the number is the phone's, the note cleared. A copy that never left the phone leaves the note.
+///  4. Refused as older → (v381) when the refusal names the copy the registry holds, that settles it: own → no conflict,
+///     `again`; another copy's → conflict. Otherwise (a registry before 0.23.0): when the cloud's number is the very
+///     number just sent and an earlier copy went up under it, the cloud is asked whose copy it holds: this phone's own → no conflict, `again`; another copy's → conflict;
+///     no usable answer → `unanswered` (asked again at the next upload), and only once the note is full
+///     (BACKUP_INFLIGHT_MAX copies without a usable answer) the conflict, with the note kept for the next wallet start.
+///     Any other refusal is a conflict as before.
+pub async fn upload_copy<C: CopyCloud>(storage: &dyn LijStorage, mut blob: StateBlob, cloud: &C) -> Uploaded {
+    let mut out = Uploaded::default();
+    if backup_unanswered(storage, blob.version).unwrap_or(0) > 0 {
+        if let CloudCopyIs::Own(n) = ask_cloud_copy(storage, cloud, blob.version).await {
+            out.own = n;
+            blob.version = n + 1;
+        }
+    }
+    let fp = backup_fingerprint(&blob);
+    if let Err(e) = backup_inflight_note(storage, blob.version, &fp) {
+        log::warn!("[v319] in-flight note not written: {e}");
+    }
+    let mut refused: Option<u64> = None;
+    let mut refused_fp: Option<String> = None;
+    let mut sent = false;
+    for r in cloud.push(&blob).await {
+        match r {
+            Ok(()) => { out.ok += 1; sent = true; }
+            Err(e) => {
+                let s = e.to_string();
+                // v309: a refusal as older is NOT retried — the person decides; anything else is tried again later
+                match parse_stale_refusal(&s) {
+                    Some(n) => { refused = Some(n); refused_fp = parse_stale_refusal_fingerprint(&s); sent = true; }
+                    None => { out.unanswered = true; if !s.contains(BACKUP_NOT_SENT) { sent = true; } }
+                }
+                out.last_err = Some(s);
+            }
+        }
+    }
+    if out.ok > 0 {
+        let _ = backup_version_commit(storage, blob.version);   // v309: accepted — the number is the phone's now
+        let _ = backup_inflight_clear(storage);                 // v319: the cloud answered
+        out.unanswered = false;
+        return out;
+    }
+    if !sent {
+        let _ = backup_inflight_forget(storage, blob.version, &fp);   // never left the phone: nothing to remember
+        return out;
+    }
+    if let Some(n) = refused {
+        out.unanswered = false;
+        // v381: the refusal NAMES the copy the registry holds (lij-worker 0.23.0) — from the very read that decided
+        // the refusal. This one answer settles it: one of this phone's unanswered uploads → no conflict, a fresh copy
+        // goes next; any other copy → the conflict. No second question (which the registry's 30-s cache could answer
+        // with an older copy).
+        if let Some(cfp) = refused_fp {
+            let held = BackupMeta { version: n, saved_at_ms: 0, fingerprint: Some(cfp) };
+            if let Ok(Some(m)) = backup_take_own(storage, &held) {
+                log::info!("[v381] refused by the cloud copy no. {m}, and the refusal names it: this phone's own upload (its answer never arrived) — the number is taken");
+                out.own = m;
+                out.again = true;
+                return out;
+            }
+            out.conflict = n;
+            let _ = backup_inflight_clear(storage);
+            return out;
+        }
+        // a registry that does not name the copy it holds (before 0.23.0): the question is asked (v380)
+        if backup_refusal_may_be_own(storage, blob.version, n).unwrap_or(false) {
+            match ask_cloud_copy(storage, cloud, n).await {
+                CloudCopyIs::Own(m) => { out.own = m; out.again = true; return out; }
+                CloudCopyIs::Others => {}
+                CloudCopyIs::Behind | CloudCopyIs::NoAnswer => {
+                    if backup_unanswered(storage, blob.version).unwrap_or(BACKUP_INFLIGHT_MAX) < BACKUP_INFLIGHT_MAX {
+                        out.unanswered = true;
+                        return out;
+                    }
+                    log::warn!("[v380] the cloud holds no. {n} and could not say whose copy it is after {BACKUP_INFLIGHT_MAX} uploads — the warning is raised; the note stands");
+                    out.conflict = n;
+                    return out;
+                }
+            }
+        }
+        out.conflict = n;
+        let _ = backup_inflight_clear(storage);   // v319: the cloud answered — no copy of this phone's is on its way
+    }
+    out
 }
 
 // ── v359 (S65 Wed 2026-10-28, DP's UX item 8 — "Erase & start over … check if the manual backup is fresh"): THE DIRTY FLAG
@@ -188,11 +439,12 @@ pub struct BackupMeta {
     pub fingerprint: Option<String>,
 }
 
-/// Is the cloud's copy this phone's own upload? — its number AND fingerprint are the ones this phone noted before
-/// sending. A cloud copy without a fingerprint, or a phone without a note, is never "own".
-pub fn backup_meta_is_own(meta: &BackupMeta, inflight: Option<&(u64, String)>) -> bool {
+/// Is the cloud's copy this phone's own upload? — its number AND fingerprint are ones this phone noted before
+/// sending (v380: any of the copies sent under that number with no answer). A cloud copy without a fingerprint, or a
+/// phone without a note, is never "own".
+pub fn backup_meta_is_own(meta: &BackupMeta, inflight: Option<&(u64, Vec<String>)>) -> bool {
     match (inflight, meta.fingerprint.as_deref()) {
-        (Some((v, fp)), Some(cfp)) => *v == meta.version && fp == cfp,
+        (Some((v, fps)), Some(cfp)) => *v == meta.version && fps.iter().any(|fp| fp == cfp),
         _ => false,
     }
 }
@@ -225,6 +477,17 @@ pub fn parse_stale_refusal(err: &str) -> Option<u64> {
     let i = err.find("existing v")? + "existing v".len();
     let digits: String = err[i..].chars().take_while(|c| c.is_ascii_digit()).collect();
     digits.parse::<u64>().ok()
+}
+
+/// v381 (incident 2026-11-20, round 2): the fingerprint of the copy the registry holds, when its refusal names it
+/// (lij-worker 0.23.0 adds "existing_fingerprint":"<64 hex>" beside the unchanged words). None when the refusal names
+/// none — a registry before 0.23.0, or a held copy without a fingerprint (null) — or when the error is not a refusal.
+pub fn parse_stale_refusal_fingerprint(err: &str) -> Option<String> {
+    if !err.contains("Stale backup rejected") { return None; }
+    let key = "\"existing_fingerprint\":\"";
+    let i = err.find(key)? + key.len();
+    let hexs: String = err[i..].chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+    if hexs.len() == 64 && err[i + 64..].starts_with('"') { Some(hexs.to_ascii_lowercase()) } else { None }
 }
 
 /// Signs backup challenges with the *portable* key — the BIP32 key whose pubkey
@@ -480,8 +743,11 @@ impl KvBackupClient {
     /// fresh Worker challenge (no shared secret). Fire-and-forget at the call
     /// site — local state remains the live source of truth if this fails.
     pub async fn push(&self, blob: &StateBlob, signer: &dyn BackupSigner) -> LijResult<()> {
-        let pubkey = signer.portable_pubkey_hex()?;
-        let nonce = self.get_challenge(&pubkey).await?;
+        // v380: an error BEFORE the upload itself (no challenge — the usual sign of no connection) means the copy never
+        // left the phone; it is marked so (BACKUP_NOT_SENT) and upload_copy keeps no note of a copy that was never sent.
+        let not_sent = |e: LijError| LijError::Backup(format!("{BACKUP_NOT_SENT}{e}"));
+        let pubkey = signer.portable_pubkey_hex().map_err(not_sent)?;
+        let nonce = self.get_challenge(&pubkey).await.map_err(not_sent)?;
         // v358 (S64, Kimi round 2 K6a): the push's proof binds the copy it authorises — its fingerprint and its number —
         // under the lij-backup-v2 digest; the body says so (auth_v 2). Worker 0.18.0 verifies v2 and still takes v1
         // from older engines for one release; a v1 proof never authorised a particular copy.
@@ -954,7 +1220,8 @@ mod v319_own_upload_tests {
         let b = blob(1, 6142);
         let fp = backup_fingerprint(&b);
         backup_inflight_note(&s, 6142, &fp).unwrap();
-        assert_eq!(backup_inflight(&s).unwrap(), Some((6142, fp.clone())), "the number and the fingerprint, as noted");
+        assert_eq!(backup_inflight(&s).unwrap(), Some((6142, vec![fp.clone()])), "the number and the fingerprint, as noted");
+        assert_eq!(s.get(KEY_BACKUP_INFLIGHT).unwrap().unwrap().len(), 40, "v380: one unanswered copy is stored exactly as v319 stored it — 8 + 32 bytes");
         assert_eq!(backup_version_stored(&s).unwrap(), 0, "the note commits nothing — the number stays the phone's old one until the cloud answers");
         backup_inflight_clear(&s).unwrap();
         assert_eq!(backup_inflight(&s).unwrap(), None, "cleared once the cloud answered");
@@ -967,7 +1234,7 @@ mod v319_own_upload_tests {
     fn v319_the_clouds_copy_is_this_phones_own_only_when_number_and_fingerprint_both_match() {
         let b = blob(1, 6142);
         let fp = backup_fingerprint(&b);
-        let note = (6142u64, fp.clone());
+        let note = (6142u64, vec![fp.clone()]);
         let own = BackupMeta { version: 6142, saved_at_ms: 1, fingerprint: Some(fp.clone()) };
         assert!(backup_meta_is_own(&own, Some(&note)), "DP's case: the phone uploaded 6142, the app was put away before the OK — the cloud's 6142 is this phone's");
         let other_bytes = BackupMeta { version: 6142, saved_at_ms: 1, fingerprint: Some(backup_fingerprint(&blob(2, 6142))) };
@@ -977,6 +1244,390 @@ mod v319_own_upload_tests {
         let old_worker = BackupMeta { version: 6142, saved_at_ms: 1, fingerprint: None };
         assert!(!backup_meta_is_own(&old_worker, Some(&note)), "a cloud copy without a fingerprint (stored by worker 0.9.0): never own");
         assert!(!backup_meta_is_own(&own, None), "a phone without a note: never own");
+    }
+
+    // ── v380 (incident 2026-11-20, finding A): the phone knows its own upload while it stays open ──
+
+    #[test]
+    fn v380_the_incident_an_upload_whose_answer_was_lost_is_known_at_the_next_upload() {
+        // the tapes: the phone holds 7313; a copy goes up as 7314, the cloud stores it, the answer never arrives
+        let s = MemoryStorage::new();
+        backup_version_commit(&s, 7313).unwrap();
+        let first = blob(1, backup_version_peek(&s).unwrap());
+        assert_eq!(first.version, 7314);
+        let fp_first = backup_fingerprint(&first);
+        backup_inflight_note(&s, first.version, &fp_first).unwrap();
+        // 49 s later: a new copy, new encryption, the same number — because 7314 was never committed
+        let second = blob(2, backup_version_peek(&s).unwrap());
+        assert_eq!(second.version, 7314, "the next copy carries the very number of the unanswered one");
+        assert_eq!(backup_unanswered(&s, second.version).unwrap(), 1, "an earlier copy went up under this number with no answer — the cloud is asked before this one goes");
+        // the cloud answers: it holds 7314 with the first copy's fingerprint
+        let cloud = BackupMeta { version: 7314, saved_at_ms: 1, fingerprint: Some(fp_first.clone()) };
+        assert_eq!(backup_take_own(&s, &cloud).unwrap(), Some(7314), "the cloud's 7314 is this phone's own upload — the number is taken");
+        assert_eq!(backup_version_stored(&s).unwrap(), 7314);
+        assert_eq!(backup_version_peek(&s).unwrap(), 7315, "the new copy goes up as 7315 — accepted, no warning");
+        assert_eq!(backup_inflight(&s).unwrap(), None, "the note is cleared with the number taken");
+    }
+
+    #[test]
+    fn v380_a_second_attempt_no_longer_forgets_the_first() {
+        // what the old engine did at 07:09:17: the second copy's note REPLACED the first; the refusal then had nothing
+        // to be compared with. Now both stand under the one number.
+        let s = MemoryStorage::new();
+        backup_version_commit(&s, 7313).unwrap();
+        let (fp_a, fp_b) = (backup_fingerprint(&blob(1, 7314)), backup_fingerprint(&blob(2, 7314)));
+        backup_inflight_note(&s, 7314, &fp_a).unwrap();
+        assert!(!backup_refusal_may_be_own(&s, 7314, 7314).unwrap(), "one copy sent and refused: it cannot be the one stored (the cloud accepts a repeat of the very same copy) — nothing to ask");
+        backup_inflight_note(&s, 7314, &fp_b).unwrap();
+        assert_eq!(backup_inflight(&s).unwrap(), Some((7314, vec![fp_a.clone(), fp_b.clone()])), "both copies sent as 7314, oldest first");
+        assert!(backup_refusal_may_be_own(&s, 7314, 7314).unwrap(), "refused with the very number sent, and an earlier copy went up under it: the cloud is asked whose copy it holds");
+        assert!(!backup_refusal_may_be_own(&s, 7314, 7320).unwrap(), "the cloud holds a higher number than any this phone sent: another copy's — the warning, nothing to ask");
+        // a copy this phone never sent, under the same number: not own, nothing written, the note stands
+        let other = BackupMeta { version: 7314, saved_at_ms: 1, fingerprint: Some(backup_fingerprint(&blob(9, 7314))) };
+        assert_eq!(backup_take_own(&s, &other).unwrap(), None, "another copy under the same number is not this phone's — the warning stands");
+        assert_eq!(backup_version_stored(&s).unwrap(), 7313, "nothing was taken");
+        assert_eq!(backup_unanswered(&s, 7314).unwrap(), 2, "the note stands");
+        // the cloud holds the FIRST copy (the incident), or the second (the answers crossed): own either way
+        for fp in [fp_a.clone(), fp_b.clone()] {
+            let t = MemoryStorage::new();
+            backup_version_commit(&t, 7313).unwrap();
+            backup_inflight_note(&t, 7314, &fp_a).unwrap();
+            backup_inflight_note(&t, 7314, &fp_b).unwrap();
+            let cloud = BackupMeta { version: 7314, saved_at_ms: 1, fingerprint: Some(fp) };
+            assert_eq!(backup_take_own(&t, &cloud).unwrap(), Some(7314));
+            assert_eq!(backup_version_peek(&t).unwrap(), 7315);
+        }
+    }
+
+    #[test]
+    fn v380_the_note_is_for_one_number_holds_no_copy_twice_and_is_bounded() {
+        let s = MemoryStorage::new();
+        let fp = |i: u8| backup_fingerprint(&blob(i, 50));
+        backup_inflight_note(&s, 50, &fp(1)).unwrap();
+        backup_inflight_note(&s, 50, &fp(1)).unwrap();
+        assert_eq!(backup_unanswered(&s, 50).unwrap(), 1, "the very same copy sent again is one copy");
+        backup_inflight_note(&s, 51, &fp(2)).unwrap();
+        assert_eq!(backup_inflight(&s).unwrap(), Some((51, vec![fp(2)])), "a note for another number starts again — the copies sent under 50 cannot be what a cloud at 51 or above holds as this phone's next");
+        assert_eq!(backup_unanswered(&s, 50).unwrap(), 0);
+        for i in 10..(10 + BACKUP_INFLIGHT_MAX as u8 + 3) { backup_inflight_note(&s, 51, &fp(i)).unwrap(); }
+        let (n, fps) = backup_inflight(&s).unwrap().unwrap();
+        assert_eq!((n, fps.len()), (51, BACKUP_INFLIGHT_MAX), "bounded — the oldest go first");
+        assert_eq!(fps.last().unwrap(), &fp(10 + BACKUP_INFLIGHT_MAX as u8 + 2), "the newest is kept");
+        assert!(!fps.contains(&fp(2)), "the oldest went");
+        // a note of a length this engine does not write is no note
+        s.set(KEY_BACKUP_INFLIGHT, &vec![7u8; 8 + 32 * (BACKUP_INFLIGHT_MAX + 1)]).unwrap();
+        assert_eq!(backup_inflight(&s).unwrap(), None);
+        s.set(KEY_BACKUP_INFLIGHT, &[7u8; 8 + 32 + 5]).unwrap();
+        assert_eq!(backup_inflight(&s).unwrap(), None);
+    }
+
+    #[test]
+    fn v380_a_cloud_without_a_fingerprint_or_a_phone_without_a_note_takes_nothing() {
+        let s = MemoryStorage::new();
+        backup_version_commit(&s, 10).unwrap();
+        let fp = backup_fingerprint(&blob(1, 11));
+        let cloud = BackupMeta { version: 11, saved_at_ms: 1, fingerprint: Some(fp.clone()) };
+        assert_eq!(backup_take_own(&s, &cloud).unwrap(), None, "no note: never own");
+        backup_inflight_note(&s, 11, &fp).unwrap();
+        let no_fp = BackupMeta { version: 11, saved_at_ms: 1, fingerprint: None };
+        assert_eq!(backup_take_own(&s, &no_fp).unwrap(), None, "a cloud copy without a fingerprint: never own");
+        let lower = BackupMeta { version: 10, saved_at_ms: 1, fingerprint: Some(fp.clone()) };
+        assert_eq!(backup_take_own(&s, &lower).unwrap(), None, "the cloud still holds the number before: the upload never arrived — it is sent again as before");
+        assert_eq!(backup_version_stored(&s).unwrap(), 10);
+        assert_eq!(backup_unanswered(&s, 11).unwrap(), 1);
+    }
+
+    // ── v380: the whole upload, against a stand-in that keeps the registry's own rule (lij-worker /backup) ──
+
+    /// The registry as the phone meets it: it holds one copy (number, fingerprint); a copy with a higher number
+    /// replaces it; the very same copy again is accepted; anything else is refused with the registry's words.
+    struct FakeCloud {
+        held: std::cell::RefCell<Option<(u64, String)>>,
+        /// what it held before the last write (what a read through the 30-s cache can still show)
+        before: std::cell::RefCell<Option<(u64, String)>>,
+        /// the next N uploads are stored, but their answer never reaches the phone
+        lose_answers: std::cell::Cell<u32>,
+        /// nothing reaches the registry — not even the challenge
+        offline: std::cell::Cell<bool>,
+        /// the next N questions get no answer
+        meta_silent: std::cell::Cell<u32>,
+        /// the next N questions are answered from the cache: what was held BEFORE the last write
+        meta_behind: std::cell::Cell<u32>,
+        pushes: std::cell::Cell<u32>,
+        metas: std::cell::Cell<u32>,
+        /// lij-worker 0.23.0: a refusal names the copy held (false = a registry before it: the words only)
+        names_copy: std::cell::Cell<bool>,
+    }
+    impl FakeCloud {
+        fn holding(v: u64, fp: &str) -> Self {
+            FakeCloud { held: std::cell::RefCell::new(Some((v, fp.to_string()))), before: std::cell::RefCell::new(None), lose_answers: 0.into(), offline: false.into(),
+                meta_silent: 0.into(), meta_behind: 0.into(), pushes: 0.into(), metas: 0.into(), names_copy: false.into() }
+        }
+        fn holds(&self) -> (u64, String) { self.held.borrow().clone().unwrap() }
+    }
+    impl CopyCloud for FakeCloud {
+        async fn push(&self, blob: &StateBlob) -> Vec<LijResult<()>> {
+            self.pushes.set(self.pushes.get() + 1);
+            if self.offline.get() { return vec![Err(LijError::Backup(format!("{BACKUP_NOT_SENT}Backup error: challenge: empty response")))]; }
+            let fp = backup_fingerprint(blob);
+            let prev = self.held.borrow().clone();
+            if let Some((v, f)) = prev.clone() {
+                if v == blob.version && f == fp { return vec![Ok(())]; }
+                if v >= blob.version {
+                    let named = if self.names_copy.get() { format!(",\"existing_version\":{v},\"existing_fingerprint\":\"{f}\",\"existing_saved_at_ms\":1795000000000") } else { String::new() };
+                    return vec![Err(LijError::Backup(format!("Backup POST HTTP 409 https://registry/backup — {{\"error\":\"Stale backup rejected: existing v{v} >= incoming v{}\"{named}}}", blob.version)))];
+                }
+            }
+            *self.before.borrow_mut() = prev;
+            *self.held.borrow_mut() = Some((blob.version, fp));
+            if self.lose_answers.get() > 0 {
+                self.lose_answers.set(self.lose_answers.get() - 1);
+                return vec![Err(LijError::Backup("Backup POST fetch: JsValue(TypeError: Load failed)".into()))];
+            }
+            vec![Ok(())]
+        }
+        async fn meta(&self) -> LijResult<Option<BackupMeta>> {
+            self.metas.set(self.metas.get() + 1);
+            if self.offline.get() { return Err(LijError::Backup("challenge: empty response".into())); }
+            if self.meta_silent.get() > 0 { self.meta_silent.set(self.meta_silent.get() - 1); return Err(LijError::Backup("Backup POST fetch: no answer".into())); }
+            let shown = if self.meta_behind.get() > 0 { self.meta_behind.set(self.meta_behind.get() - 1); self.before.borrow().clone() } else { self.held.borrow().clone() };
+            Ok(shown.map(|(version, fp)| BackupMeta { version, saved_at_ms: 1, fingerprint: Some(fp) }))
+        }
+    }
+    /// A phone that holds `n` and a registry that holds the copy the phone last had accepted.
+    fn phone_and_cloud(n: u64) -> (MemoryStorage, FakeCloud) {
+        let s = MemoryStorage::new();
+        backup_version_commit(&s, n).unwrap();
+        (s, FakeCloud::holding(n, &backup_fingerprint(&blob(0, n))))
+    }
+    /// The next copy as the engine takes it: new bytes every time, the number only peeked.
+    fn next_copy(s: &MemoryStorage, seed: u8) -> StateBlob { blob(seed, backup_version_peek(s).unwrap()) }
+
+    #[tokio::test]
+    async fn v380_the_incident_replayed_the_second_upload_goes_through_with_no_warning() {
+        let (s, cloud) = phone_and_cloud(7313);
+        // 07:08:28 — a routine upload; the registry stores it as 7314; the answer never reaches the phone
+        cloud.lose_answers.set(1);
+        let first = next_copy(&s, 1);
+        let fp_first = backup_fingerprint(&first);
+        let up = upload_copy(&s, first, &cloud).await;
+        assert_eq!((up.ok, up.conflict, up.own, up.again, up.unanswered), (0, 0, 0, false, true), "no answer: tried again later — exactly what the tape shows (pushed 0, conflict 0)");
+        assert_eq!(backup_version_stored(&s).unwrap(), 7313, "the phone still carries 7313");
+        assert_eq!(cloud.holds(), (7314, fp_first.clone()), "the registry holds 7314 — the phone's own copy");
+        assert_eq!(backup_unanswered(&s, 7314).unwrap(), 1, "the note of the unanswered copy stands");
+        // 07:09:17 — the next upload: a new copy. The old engine sent it as 7314 again; this is what it met — the
+        // registry's refusal, as the tape has it — and with the first copy's note already replaced, the warning followed.
+        let second = next_copy(&s, 2);
+        assert_eq!(second.version, 7314);
+        let met = cloud.push(&second).await;
+        let words = met[0].as_ref().unwrap_err().to_string();
+        assert!(words.contains("Stale backup rejected: existing v7314 >= incoming v7314"), "{words}");
+        assert_eq!(parse_stale_refusal(&words), Some(7314), "the old engine: conflict 7314 — 'Your cloud copy is newer than this phone'");
+        let fp_second = backup_fingerprint(&second);
+        let up = upload_copy(&s, second, &cloud).await;
+        assert_eq!((up.ok, up.conflict, up.own, up.again, up.unanswered), (1, 0, 7314, false, false), "the registry was asked first; its 7314 is this phone's own; the new copy went up as 7315 and was accepted — no warning");
+        assert_eq!(cloud.holds(), (7315, fp_second), "the registry holds the phone's newest state");
+        assert_eq!(backup_version_stored(&s).unwrap(), 7315);
+        assert_eq!(backup_inflight(&s).unwrap(), None);
+        assert_eq!(cloud.metas.get(), 1, "one question, asked only because an upload stood unanswered");
+        // and with nothing unanswered, an upload asks nothing
+        let up = upload_copy(&s, next_copy(&s, 3), &cloud).await;
+        assert_eq!((up.ok, up.own, cloud.metas.get()), (1, 0, 1));
+    }
+
+    #[tokio::test]
+    async fn v380_the_question_fails_before_the_upload_and_is_asked_again_after_the_refusal() {
+        let (s, cloud) = phone_and_cloud(7313);
+        cloud.lose_answers.set(1);
+        let first = next_copy(&s, 1);
+        let fp_first = backup_fingerprint(&first);
+        upload_copy(&s, first, &cloud).await;
+        cloud.meta_silent.set(1);   // the question before the upload gets no answer; the upload itself gets through
+        let up = upload_copy(&s, next_copy(&s, 2), &cloud).await;
+        assert_eq!((up.ok, up.conflict, up.own, up.again), (0, 0, 7314, true), "refused with the very number sent — asked again — the registry's copy is this phone's own: NO conflict; a fresh copy goes next");
+        assert_eq!(cloud.holds(), (7314, fp_first), "the refused copy was not stored");
+        assert_eq!((backup_version_stored(&s).unwrap(), backup_inflight(&s).unwrap()), (7314, None));
+        let third = next_copy(&s, 3);
+        let fp_third = backup_fingerprint(&third);
+        let up = upload_copy(&s, third, &cloud).await;
+        assert_eq!((up.ok, up.conflict), (1, 0));
+        assert_eq!(cloud.holds(), (7315, fp_third));
+    }
+
+    #[tokio::test]
+    async fn v380_a_read_that_is_behind_the_write_is_not_called_a_conflict() {
+        // the registry reads its stored copy through a cache of up to 30 s: right after the unanswered upload a
+        // question can still be answered with the copy BEFORE it
+        let (s, cloud) = phone_and_cloud(7313);
+        cloud.lose_answers.set(1);
+        upload_copy(&s, next_copy(&s, 1), &cloud).await;
+        cloud.meta_behind.set(2);   // both questions of the next upload see the old 7313
+        let up = upload_copy(&s, next_copy(&s, 2), &cloud).await;
+        assert_eq!((up.ok, up.conflict, up.own, up.again, up.unanswered), (0, 0, 0, false, true), "the refusal says the registry holds 7314, the question says 7313: no usable answer yet — no warning, asked again at the next upload");
+        assert_eq!(backup_unanswered(&s, 7314).unwrap(), 2, "both copies sent as 7314 stand in the note");
+        let third = next_copy(&s, 3);
+        let fp_third = backup_fingerprint(&third);
+        let up = upload_copy(&s, third, &cloud).await;
+        assert_eq!((up.ok, up.conflict, up.own), (1, 0, 7314), "the read has caught up: own — the copy goes up as 7315");
+        assert_eq!(cloud.holds(), (7315, fp_third));
+    }
+
+    #[tokio::test]
+    async fn v380_a_copy_this_phone_never_sent_still_raises_the_warning() {
+        // another copy of the wallet (a second phone, an old tab) put a higher number in the cloud
+        let (s, cloud) = phone_and_cloud(7313);
+        *cloud.held.borrow_mut() = Some((7320, backup_fingerprint(&blob(99, 7320))));
+        let up = upload_copy(&s, next_copy(&s, 1), &cloud).await;
+        assert_eq!((up.ok, up.conflict, up.own, up.again, up.unanswered), (0, 7320, 0, false, false), "refused by a copy that is not this phone's: the warning, as before");
+        assert_eq!(backup_inflight(&s).unwrap(), None, "the registry answered — no copy of this phone's is on its way");
+        assert_eq!(cloud.metas.get(), 0, "a higher number than any this phone sent: nothing to ask");
+        // the same number, another copy's bytes, while this phone has an unanswered upload of that number
+        let (s, cloud) = phone_and_cloud(7313);
+        cloud.lose_answers.set(1);
+        upload_copy(&s, next_copy(&s, 1), &cloud).await;
+        *cloud.held.borrow_mut() = Some((7314, backup_fingerprint(&blob(99, 7314))));   // the other copy's 7314 took the place
+        let up = upload_copy(&s, next_copy(&s, 2), &cloud).await;
+        assert_eq!((up.ok, up.conflict, up.own, up.again), (0, 7314, 0, false), "7314 in the cloud, but not one of the copies this phone sent: the warning stands");
+        assert_eq!(backup_version_stored(&s).unwrap(), 7313, "nothing was taken");
+        assert_eq!(backup_inflight(&s).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn v380_a_copy_that_never_left_the_phone_leaves_no_note() {
+        let (s, cloud) = phone_and_cloud(7313);
+        cloud.offline.set(true);
+        for i in 0..20u8 {
+            let up = upload_copy(&s, next_copy(&s, i + 1), &cloud).await;
+            assert_eq!((up.ok, up.conflict, up.unanswered), (0, 0, true));
+        }
+        assert_eq!(backup_inflight(&s).unwrap(), None, "twenty tries with no connection: nothing was sent, nothing is remembered");
+        // with one REAL unanswered upload standing, no connection for a long time does not push it out of the note
+        cloud.offline.set(false);
+        cloud.lose_answers.set(1);
+        let sent = next_copy(&s, 40);
+        let fp_sent = backup_fingerprint(&sent);
+        upload_copy(&s, sent, &cloud).await;
+        cloud.offline.set(true);
+        for i in 0..20u8 { upload_copy(&s, next_copy(&s, 50 + i), &cloud).await; }
+        assert_eq!(backup_inflight(&s).unwrap(), Some((7314, vec![fp_sent])), "the one copy that did go up is still the one remembered");
+        cloud.offline.set(false);
+        let up = upload_copy(&s, next_copy(&s, 90), &cloud).await;
+        assert_eq!((up.ok, up.conflict, up.own), (1, 0, 7314), "back online: own, and the new copy is accepted as 7315");
+    }
+
+    #[tokio::test]
+    async fn v380_no_usable_answer_for_a_long_time_ends_in_the_warning_never_in_silence() {
+        // the registry keeps refusing and never says whose copy it holds: the uploads must not stop silently for ever
+        let (s, cloud) = phone_and_cloud(7313);
+        cloud.lose_answers.set(1);
+        let first = next_copy(&s, 1);
+        let fp_first = backup_fingerprint(&first);
+        upload_copy(&s, first, &cloud).await;
+        cloud.meta_silent.set(1000);
+        let mut rounds = 0u32;
+        let up = loop {
+            rounds += 1;
+            let up = upload_copy(&s, next_copy(&s, 1 + rounds as u8), &cloud).await;
+            if !up.unanswered || rounds > 50 { break up; }
+        };
+        assert_eq!(up.conflict, 7314, "the warning is raised in the end");
+        assert_eq!(rounds as usize, BACKUP_INFLIGHT_MAX - 1, "after the note is full — a few minutes of uploads at one every 30 s");
+        let note = backup_inflight(&s).unwrap().unwrap();
+        assert!(note.1.contains(&fp_first), "the note stands, the first copy still in it — the next wallet start can still tell an own upload");
+        cloud.meta_silent.set(0);
+        let m = cloud.meta().await.unwrap().unwrap();
+        assert_eq!(backup_take_own(&s, &m).unwrap(), Some(7314));
+    }
+
+    // ── v381 (round 2): the registry's refusal names the copy it holds (lij-worker 0.23.0) ──
+
+    #[test]
+    fn v381_the_fingerprint_is_read_out_of_a_refusal_that_names_the_copy() {
+        let fp = "ab".repeat(32);
+        let named = format!("Backup error: Backup POST HTTP 409 https://r/backup — {{\"error\":\"Stale backup rejected: existing v7314 >= incoming v7314\",\"existing_version\":7314,\"existing_fingerprint\":\"{fp}\",\"existing_saved_at_ms\":1795000000000}}");
+        assert_eq!(parse_stale_refusal(&named), Some(7314), "the number is still read from the unchanged words");
+        assert_eq!(parse_stale_refusal_fingerprint(&named), Some(fp.clone()));
+        assert_eq!(parse_stale_refusal_fingerprint(&named.replace(&fp, &fp.to_uppercase())), Some(fp.clone()), "hex in capitals reads the same");
+        let old = "Backup error: Backup POST HTTP 409 https://r/backup — {\"error\":\"Stale backup rejected: existing v7314 >= incoming v7314\"}";
+        assert_eq!(parse_stale_refusal_fingerprint(old), None, "a registry before 0.23.0 names none — the question is asked instead");
+        let null = named.replace(&format!("\"{fp}\""), "null");
+        assert_eq!(parse_stale_refusal_fingerprint(&null), None, "a held copy without a fingerprint");
+        assert_eq!(parse_stale_refusal_fingerprint(&named.replace(&fp, &fp[..60])), None, "not 64 hex: not a fingerprint");
+        assert_eq!(parse_stale_refusal_fingerprint(&format!("something else \"existing_fingerprint\":\"{fp}\"")), None, "not a refusal");
+    }
+
+    #[tokio::test]
+    async fn v381_the_refusal_itself_settles_it_no_second_question() {
+        // the question before the upload gets no answer; the upload is refused; the refusal names the copy held —
+        // this phone's own. Settled from that one answer.
+        let (s, cloud) = phone_and_cloud(7313);
+        cloud.names_copy.set(true);
+        cloud.lose_answers.set(1);
+        upload_copy(&s, next_copy(&s, 1), &cloud).await;
+        cloud.meta_silent.set(1000);
+        let up = upload_copy(&s, next_copy(&s, 2), &cloud).await;
+        assert_eq!((up.ok, up.conflict, up.own, up.again, up.unanswered), (0, 0, 7314, true, false), "own, from the refusal alone: no conflict, a fresh copy goes next");
+        assert_eq!(cloud.metas.get(), 1, "one question (before the upload, unanswered) — none after the refusal");
+        assert_eq!((backup_version_stored(&s).unwrap(), backup_inflight(&s).unwrap()), (7314, None));
+        let up = upload_copy(&s, next_copy(&s, 3), &cloud).await;
+        assert_eq!((up.ok, up.conflict, cloud.holds().0), (1, 0, 7315));
+    }
+
+    #[tokio::test]
+    async fn v381_a_read_behind_the_write_no_longer_costs_a_round() {
+        // v380 against a registry before 0.23.0: the question after the refusal could be answered from the 30-s cache
+        // with the older copy — no warning, but one upload round lost. The refusal that names the copy comes from the
+        // read that decided it, so the phone knows at once.
+        let (s, cloud) = phone_and_cloud(7313);
+        cloud.names_copy.set(true);
+        cloud.lose_answers.set(1);
+        upload_copy(&s, next_copy(&s, 1), &cloud).await;
+        cloud.meta_behind.set(1000);
+        let up = upload_copy(&s, next_copy(&s, 2), &cloud).await;
+        assert_eq!((up.ok, up.conflict, up.own, up.again, up.unanswered), (0, 0, 7314, true, false));
+        let third = next_copy(&s, 3);
+        assert_eq!(third.version, 7315);
+        let up = upload_copy(&s, third, &cloud).await;
+        assert_eq!((up.ok, up.conflict), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn v381_a_named_copy_that_is_not_this_phones_is_the_conflict() {
+        let (s, cloud) = phone_and_cloud(7313);
+        cloud.names_copy.set(true);
+        cloud.lose_answers.set(1);
+        upload_copy(&s, next_copy(&s, 1), &cloud).await;
+        *cloud.held.borrow_mut() = Some((7314, backup_fingerprint(&blob(99, 7314))));   // another copy's 7314 took the place
+        cloud.meta_silent.set(1000);
+        let up = upload_copy(&s, next_copy(&s, 2), &cloud).await;
+        assert_eq!((up.ok, up.conflict, up.own, up.again, up.unanswered), (0, 7314, 0, false, false), "the refusal names a copy this phone never sent: the warning, at once");
+        assert_eq!((backup_version_stored(&s).unwrap(), backup_inflight(&s).unwrap()), (7313, None));
+        // and a higher number from another copy
+        let (s, cloud) = phone_and_cloud(7313);
+        cloud.names_copy.set(true);
+        *cloud.held.borrow_mut() = Some((7320, backup_fingerprint(&blob(98, 7320))));
+        let up = upload_copy(&s, next_copy(&s, 1), &cloud).await;
+        assert_eq!((up.conflict, up.own, cloud.metas.get()), (7320, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn v380_the_wallets_own_cloud_is_built_as_the_browser_layer_builds_it() {
+        // the browser layer (lij-wasm upload_copy) cannot be compiled off the browser; this is its call, type for type.
+        // Off the browser the challenge has no answer, so the copy is "not sent": nothing accepted, nothing remembered.
+        let (root_key, _m) = crate::key::RootKey::generate(bitcoin::Network::Regtest).unwrap();
+        let signer: std::sync::Arc<crate::key::RootKey> = std::sync::Arc::new(root_key);
+        let cfg = || StorageConfig { worker_url: "http://localhost".into(), auth_token: "".into() };
+        let client = KvBackupClient::new(cfg());
+        let sinks: Vec<BackupSink> = vec![BackupSink::CloudflareKv(KvBackupClient::new(cfg()))];
+        let s = MemoryStorage::new();
+        async fn glue(st: &dyn LijStorage, blob: StateBlob, signer: &crate::key::RootKey, sinks: &[BackupSink], client: &KvBackupClient) -> Uploaded {
+            let cloud = WalletCloud { sinks, client, signer };
+            upload_copy(st, blob, &cloud).await
+        }
+        let up = glue(&s, next_copy(&s, 1), &signer, &sinks, &client).await;
+        assert_eq!((up.ok, up.conflict, up.own, up.again, up.unanswered), (0, 0, 0, false, true));
+        assert!(up.last_err.unwrap().contains(BACKUP_NOT_SENT));
+        assert_eq!(backup_inflight(&s).unwrap(), None);
     }
 
     #[test]

@@ -39,7 +39,7 @@ pub const MARKS_KEY: &str = "tier2_marks";
 /// read them. v256 encrypted the view but left four readers on plain storage (the on-chain
 /// send, the fee bump, the channel-open estimate and the funding build) — each failed with
 /// "tier2 view parse: expected value at line 1 column 1". Every reader goes through this.
-pub const ENCRYPTED_KEYS: &[&str] = &[VIEW_KEY, MARKS_KEY, crate::nwc::NWC_KEY, crate::tx_store::TX_STORE_KEY, crate::tatara::records::RECORDS_KEY, crate::tatara::store::SEATS_KEY, crate::tatara::store::CLOSE_JOINS_KEY];   // v327: the close-joins (a channel linked to a pool size; this phone only)   // v323 (S58, Mix step 7 — v0.10 §9 rule 2): the attempt records (they link a coin to its payout) · step 8: the seats (their keys; this phone only)   // v298: the wallet's own transactions too   // the pending list stays plain: node.rs reads it in four places · v286: the NWC connections (service secrets) are encrypted at rest too
+pub const ENCRYPTED_KEYS: &[&str] = &[VIEW_KEY, MARKS_KEY, crate::nwc::NWC_KEY, crate::tx_store::TX_STORE_KEY, crate::tatara::records::RECORDS_KEY, crate::tatara::store::SEATS_KEY, crate::tatara::store::CLOSE_JOINS_KEY, crate::subscriptions::SUBS_KEY, crate::subs_seller::SELLER_KEY];   // S71: the subscriptions and a seller's records   // v327: the close-joins (a channel linked to a pool size; this phone only)   // v323 (S58, Mix step 7 — v0.10 §9 rule 2): the attempt records (they link a coin to its payout) · step 8: the seats (their keys; this phone only)   // v298: the wallet's own transactions too   // the pending list stays plain: node.rs reads it in four places · v286: the NWC connections (service secrets) are encrypted at rest too
 pub fn encrypted<S: LijStorage>(inner: S, key: [u8; 32]) -> crate::storage::EncryptedKeys<S> {
     crate::storage::EncryptedKeys::new(inner, key, ENCRYPTED_KEYS)
 }   // v220: pub — the blob packs it (D3)
@@ -1576,7 +1576,9 @@ pub async fn fetch_and_apply(
     close_txids: &std::collections::HashSet<String>,
 ) -> LijResult<()> {
     for m in matched {
+        crate::perf::step("blocks: download and read a matching block");   // v379
         let block = fetch_block_bound(http, base, m.height, &m.block_hash).await?;   // v287: the shared fetch
+        crate::perf::step("blocks: look through a matching block for the wallet's coins");   // v379
 
         view.block_times.insert(m.height, block.header.time);   // v259
         apply_txs(view, scripts, &block.txdata, m.height);
@@ -1692,6 +1694,7 @@ pub async fn fetch_confirmed_txs(
 
 /// Persist the view (serialized JSON) via LijStorage.
 pub fn save_view(storage: &dyn LijStorage, view: &Tier2View) -> LijResult<()> {
+    let _perf = crate::perf::step_scope("store the on-chain record");   // v379
     let bytes = serde_json::to_vec(view)
         .map_err(|e| LijError::Storage(format!("tier2 view serialize: {e}")))?;
     storage.set(VIEW_KEY, &bytes)?;

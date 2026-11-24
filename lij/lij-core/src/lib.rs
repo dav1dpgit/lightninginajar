@@ -11,6 +11,7 @@
 //                  Cloudflare KV backup endpoint (your Worker),
 //                  Open LSP switching via LSPS1/LSPS2 protocol
 
+pub mod perf;   // v379 (S71): the engine's own record of long stretches and of each send's timeline — a diagnostic
 pub mod error;
 pub mod key;
 pub mod persisted_counter;
@@ -23,6 +24,7 @@ pub mod push;   // v280 (S49): Push Key — the pure half (link, pair, records)
 pub mod peer;
 pub mod persist;
 pub mod channel_state_file;   // v365 (S68): the channel state file — the manager and the channel records in one 65,531-byte encrypted file (BOLT #1110's size), with the spill rule
+pub mod state_statement;   // v382 (S71): the wallet's signed statement of its channel records' update numbers — the provider keeps the highest and gives no pass to a wallet behind it
 pub mod seed_vault;
 pub mod wallet;
 pub mod types;
@@ -67,4 +69,6 @@ pub mod inflight;   // v360 (S66, DP 21:28 "Go"): Black start — the in-flight 
 pub mod jit_funding;   // v363 (S67, DP 2026-11-04 "Go on all"): wallet trusts LSP — the never-funded JIT channel rule, the audit, the watch; docs/design/jit-trust/wallet-trusts-lsp-v0.1.md §6
 pub mod onchain_pay;   // v361 (S66, DP 23:12 "Go on Phase 1"): Lightning pays on-chain — the wallet's pure half (the hand-over script, the release, the record); docs/design/onchain-pay/lightning-paying-onchain-v0.6.md
 pub mod tower;   // v372 (S69, DP "Go on both"): LIJOX watch duty W2 — the wallet's side of the tower: penalty transactions at two fee rates, encrypted for a tower (teos-v1), the upload queue, a key per tower from the 12 words; docs/lijox-watch-standard-r1.md §2
+pub mod subscriptions;   // S71 (DP 2026-11-19 14:47 "Go on all subscription work"): LIJOX Subscriptions — the pure half (docs/design/subscriptions/lijox-subscriptions-r2.md)
+pub mod subs_seller;      // S71: a LiJ wallet user who sells — the seller's records, signatures and the take-or-send-back decision (format §13)
 

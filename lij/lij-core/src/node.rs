@@ -750,7 +750,7 @@ pub enum MppDecision {
 /// saved cooperative-close transaction come along too. Older copies without it still load (the key is simply absent).
 /// v323 (S58, Mix step 7 — spec v0.10 §9 rule 2): the Mix's attempt records ride every backup taken while one is
 /// unsettled (sealed, the same ciphertext); the key is deleted once none is left, so a later backup carries no trace.
-pub const BUNDLE_SINGLE_KEYS: [&str; 15] = [
+pub const BUNDLE_SINGLE_KEYS: [&str; 17] = [
     crate::tier2_wallet::VIEW_KEY,
     crate::tier2_wallet::PENDING_KEY,
     crate::tier2_wallet::MARKS_KEY,   // v281 (S50, coin control): freezes and notes ride the blob too
@@ -766,6 +766,8 @@ pub const BUNDLE_SINGLE_KEYS: [&str; 15] = [
     crate::nwc::NWC_KEY,     // v286 (S50, NWC): the connections (service secrets, encrypted at rest) and limits ride too
     crate::closed_channel_log::KEY_CLOSED_CHANNELS,   // v311: the closed-channel log and its coop hold
     crate::tatara::records::RECORDS_KEY,              // v323: the Mix's unsettled attempt records
+    crate::subscriptions::SUBS_KEY,                   // S71: the subscriptions (the agreements, what was paid) — a restore then syncs each before Pay
+    crate::subs_seller::SELLER_KEY,                   // S71: a seller's plans, subscribers and the next selling-hash index
 ];
 
 #[cfg(test)]
@@ -2225,7 +2227,7 @@ impl LijNode {
         {
             let km = self.keys_manager.clone();
             let storage = self.storage.clone();
-            wasm_bindgen_futures::spawn_local(async move {
+            crate::perf::spawn("upload_channel_record_for_ready", async move {
                 match crate::registry_client::upload_channel_record(
                     &km, &endpoint, &record,
                 ).await {
@@ -2330,7 +2332,7 @@ impl LijNode {
                 let storage = self.storage.clone();
                 let endpoint = endpoint.clone();
                 let key = key.clone();
-                wasm_bindgen_futures::spawn_local(async move {
+                crate::perf::spawn("process_registry_retries", async move {
                     match crate::registry_client::upload_channel_record(
                         &km, &endpoint, &record,
                     ).await {
@@ -2370,6 +2372,7 @@ impl LijNode {
     /// persistence decision; an early caller flags manager_dirty instead).
     pub fn process_channel_events(&self) -> LijResult<bool> {
         use std::sync::atomic::{AtomicBool, Ordering};
+        let _perf = crate::perf::step_scope("lightning: handle events");   // v379
         let cm = self.channel_manager.as_ref()
             .ok_or_else(|| LijError::Node("ChannelManager not initialized".into()))?;
 
@@ -2445,6 +2448,12 @@ impl LijNode {
                                 if idx.saturating_add(1) > self.lnurlp_next_index() {
                                     self.lnurlp_set_next_index(idx.saturating_add(1));
                                 }
+                            } else if let Some((idx, _)) = self.subs_seller_derive_search(&hash_hex) {
+                                // S71 (Subscriptions, format §13): a SELLING hash. It is HELD, not taken: the page
+                                // reads the invoice's description from the provider and subs_seller_take takes it
+                                // only with a known subscriber's tag for an unpaid number — else it goes back.
+                                log::info!("PaymentClaimable on selling hash {} (index {}) — held for its subscription tag check", &hash_hex[..16], idx);
+                                self.subs_seller_note_waiting(&hash_hex, amount_msat);
                             } else if pool_readable {
                                 log::warn!(
                                     "PaymentClaimable for {} but this device holds no preimage and derivation finds none — failing back so the sender is not left hanging",
@@ -2474,6 +2483,7 @@ impl LijNode {
                         .lock()
                         .unwrap()
                         .insert(hex::encode(payment_hash.0), ClaimedRecord { msat: amount_msat, skim_msat, parts });
+                    self.subs_seller_claimed(&hex::encode(payment_hash.0), amount_msat);   // S71: a subscriber's payment the phone decided to take is now the seller's
                 }
                 lightning::events::Event::PaymentPathSuccessful { payment_hash, path, .. } => {
                     // v274: which of our channels this part left by, and how much crossed it (the
@@ -2513,6 +2523,7 @@ impl LijNode {
                     }
                     self.push_latch(&hex::encode(payment_hash.0), true);   // v280: a push whose key was brought
                     self.onchain_pay_latch(&hex::encode(payment_hash.0), true);   // v361: A or B of an on-chain pay settled
+                    self.subs_latch(&hex::encode(payment_hash.0), &hex::encode(payment_preimage.0), fee_paid_msat);   // S71: a subscription's payment completed — the preimage is its receipt
                 }
                 lightning::events::Event::PaymentPathFailed {
                     payment_id,
@@ -3112,6 +3123,28 @@ impl LijNode {
     /// v227: an early event pass (after inbound bytes) that saw events marks the
     /// manager dirty so the next tick's persistence fires as if the tick had
     /// seen them itself.
+    /// v379 (S71, the finer Performance report): where an outgoing payment's HTLC stands on this wallet's own
+    /// channel — 0 handed to the channel and not yet taken by the provider, 1 taken (both sides hold it; the provider
+    /// can pass it on), 2 the provider's answer has arrived (paid or refused) and is being closed out. None when no
+    /// channel holds an HTLC with this payment hash. Read-only.
+    pub fn outbound_htlc_stage(&self, payment_hash_hex: &str) -> Option<u8> {
+        use lightning::ln::channel_state::OutboundHTLCStateDetails as S;
+        let cm = self.channel_manager.as_ref()?;
+        let mut best: Option<u8> = None;
+        for c in cm.list_channels() {
+            for h in c.pending_outbound_htlcs.iter() {
+                if hex::encode(h.payment_hash.0) != payment_hash_hex { continue; }
+                let st = match h.state {
+                    Some(S::AwaitingRemoteRevokeToAdd) | None => 0u8,
+                    Some(S::Committed) => 1,
+                    Some(S::AwaitingRemoteRevokeToRemoveSuccess) | Some(S::AwaitingRemoteRevokeToRemoveFailure) => 2,
+                };
+                best = Some(best.map_or(st, |b| b.min(st)));   // a payment in parts: as far as its slowest part
+            }
+        }
+        best
+    }
+
     pub fn mark_manager_dirty(&self) {
         self.manager_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
     }
@@ -3122,6 +3155,7 @@ impl LijNode {
     /// (avg 0.5 s of pure wait on every send). Same call the tick makes; the
     /// v197 pump_peer does this for channel opens.
     pub fn pump_outbound(&self) {
+        let _perf = crate::perf::step_scope("lightning: send messages out");   // v379
         if let Ok(pm) = self.peer_manager() {
             pm.process_events();
         }
@@ -3749,7 +3783,7 @@ impl LijNode {
                     let cs = cold_start.clone();
                     independent.set_first_height_hook(Arc::new(move |h: u32| cs.mark_independent_queried(Some(h))));
                 }
-                wasm_bindgen_futures::spawn_local(async move {
+                crate::perf::spawn("background_tick#1", async move {
                     match independent.fetch_tip_height().await {
                         Ok(height) => {
                             log::debug!("independent: fetch_tip_height returned {}", height);
@@ -3790,7 +3824,7 @@ impl LijNode {
         #[cfg(target_arch = "wasm32")]
         {
             let fe = self.fee_estimator.clone();
-            wasm_bindgen_futures::spawn_local(async move {
+            crate::perf::spawn("background_tick#2", async move {
                 if let Err(e) = fe.refresh_cooperative(tick_count).await {
                     log::warn!("fee_estimator refresh_cooperative: {e}");
                 }
@@ -3817,7 +3851,7 @@ impl LijNode {
         #[cfg(target_arch = "wasm32")]
         {
             let bc = self.broadcaster.clone();
-            wasm_bindgen_futures::spawn_local(async move {
+            crate::perf::spawn("background_tick#3", async move {
                 if let Err(e) = bc.process_queue().await {
                     log::warn!("broadcaster process_queue: {e}");
                 }
@@ -3855,7 +3889,7 @@ impl LijNode {
                     s
                 })
                 .unwrap_or_default();
-            wasm_bindgen_futures::spawn_local(async move {
+            crate::perf::spawn("background_tick#4", async move {
                 let log = crate::closed_channel_log::ClosedChannelLog::new(storage);
                 if let Err(e) = watcher
                     .poll_pending_closes(log, independent, &root_key, network, counter, now, &funded_by_us)
@@ -3876,7 +3910,7 @@ impl LijNode {
             let storage = self.storage.clone();
             let independent = self.independent.clone();
             let network = self.network;
-            wasm_bindgen_futures::spawn_local(async move {
+            crate::perf::spawn("background_tick#5", async move {
                 use std::str::FromStr;
                 let log = crate::closed_channel_log::ClosedChannelLog::new(storage);
                 let records = match log.list() {
@@ -4038,7 +4072,7 @@ impl LijNode {
                         let inflight_flag = self.funding_reconcile_inflight.clone();
                         let failures_flag = self.funding_reconcile_failures.clone();
                         let walk_seq_flag = self.walk_seq.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
+                        crate::perf::spawn("background_tick#6", async move {
                             let complete = check_funding_outpoints_for_spends(
                                 cm_clone,
                                 chain_monitor_clone,
@@ -4162,7 +4196,7 @@ impl LijNode {
                 // over no other provider's channel
                 let active_lsp_hex = self.active_lsp.as_ref().map(|l| l.info.pubkey.to_lowercase());
                 let our_pubkey_hex = hex::encode(cm.get_our_node_id().serialize());
-                wasm_bindgen_futures::spawn_local(async move {
+                crate::perf::spawn("background_tick#7", async move {
                     use crate::cancelled_open::{load_dead_map, save_dead_map, verdict, Verdict, ABANDON_MESSAGE};
                     let mut map = load_dead_map(&*storage);
                     let now = crate::tier2_wallet::now_ms();
@@ -4290,7 +4324,7 @@ impl LijNode {
                     let indep = self.independent.clone();
                     let storage = self.storage.clone();
                     let coordinator = self.chain_coordinator.clone();
-                    wasm_bindgen_futures::spawn_local(async move {
+                    crate::perf::spawn("background_tick#8", async move {
                         for txid_str in pending_fundings.into_iter().take(4) {
                             let (height, pos) = match indep.fetch_tx_merkle_pos(&txid_str).await {
                                 Ok(v) => v,
@@ -4370,7 +4404,7 @@ impl LijNode {
             let root_key = self.root_key.clone();
             let network = self.network;
             let counter = self.signer_provider.peek_counter().unwrap_or(0);
-            wasm_bindgen_futures::spawn_local(async move {
+            crate::perf::spawn("background_tick#9", async move {
                 coop_hold_maintain(storage, indep, bc, fee, cm, tip, root_key, network, counter).await;
             });
         }
@@ -4386,7 +4420,7 @@ impl LijNode {
                     .filter_map(|c| c.funding_txo.map(|o| o.txid.to_string()))
                     .collect())
                 .unwrap_or_default();
-            wasm_bindgen_futures::spawn_local(async move {
+            crate::perf::spawn("background_tick#10", async move {
                 let pending = crate::tier2_wallet::load_pending(&*storage);
                 let now = crate::tier2_wallet::now_ms();
                 for p in pending.iter().filter(|p| {
@@ -4903,6 +4937,178 @@ impl LijNode {
         self.lnurlp_save_pool(&pool);
         log::info!("LNURLp pool: prepared {} derived hash(es) (indices up to {}); cache size now {}", n, next.saturating_sub(1), pool.len());
         Ok(serde_json::to_string(&out).unwrap_or_else(|_| "[]".into()))
+    }
+
+    // ── S71 (DP 2026-11-19 14:47 "Go on all subscription work"): LIJOX SUBSCRIPTIONS — the engine's wiring ────────────
+    // The format is subscriptions.rs (the paying wallet) and subs_seller.rs (a wallet user who sells); this is where
+    // they meet the wallet's state and LDK. Both stores are encrypted at rest and ride every backup.
+    fn subs_storage(&self) -> crate::storage::EncryptedKeys<&dyn LijStorage> {
+        crate::tier2_wallet::encrypted(&*self.storage, self.root_key.encryption_key())
+    }
+
+    /// A latch from the event pass: the payment on this hash completed. If it is a subscription's, its record is paid
+    /// and keeps the preimage (the receipt). Idempotent; other hashes are ignored.
+    fn subs_latch(&self, payment_hash_hex: &str, preimage_hex: &str, fee_msat: Option<u64>) {
+        let st = self.subs_storage();
+        let mut s = match crate::subscriptions::load(&st) { Ok(s) => s, Err(e) => { log::error!("[subs] the records could not be read at a completed payment: {e}"); return; } };
+        if !s.sending().iter().any(|(_, h, _)| h == payment_hash_hex) { return; }
+        if s.settle_payment(payment_hash_hex, preimage_hex, fee_msat, current_time_secs()) {
+            log::info!("[subs] payment {}… completed — recorded as paid", &payment_hash_hex[..16.min(payment_hash_hex.len())]);
+            if let Err(e) = crate::subscriptions::save(&st, &s) { log::error!("[subs] the paid record could not be written: {e}"); }
+        }
+    }
+
+    /// The subscriptions, with LDK's word folded in for every payment the records show on its way:
+    ///   - LDK lists the payment as fulfilled (the latch missed it) → paid;
+    ///   - LDK still holds it (pending, or abandoned with a part not yet back), or `in_run` says the send loop is still
+    ///     trying → it stays on its way;
+    ///   - neither, and its invoice has run out → it came back: the number may be sent again.
+    /// A payment never started cannot start once its invoice has run out, so "LDK does not know it" is only read as
+    /// "came back" after that time. Housekeeping (subscriptions::Store::tidy) runs here too.
+    pub fn subs_reconciled(&self, in_run: &dyn Fn(&str) -> bool) -> LijResult<crate::subscriptions::Store> {
+        use lightning::ln::channelmanager::RecentPaymentDetails as RPD;
+        let st = self.subs_storage();
+        let mut s = crate::subscriptions::load(&st)?;
+        let now = current_time_secs();
+        let mut changed = s.tidy(now);
+        let sending = s.sending();
+        if let (false, Some(cm)) = (sending.is_empty(), self.channel_manager.as_ref()) {
+            let (mut held, mut fulfilled) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+            for p in cm.list_recent_payments() {
+                match p {
+                    RPD::Pending { payment_hash, .. } | RPD::Abandoned { payment_hash, .. } => { held.insert(hex::encode(payment_hash.0)); }
+                    RPD::Fulfilled { payment_hash: Some(h), .. } => { fulfilled.insert(hex::encode(h.0)); }
+                    _ => {}
+                }
+            }
+            for (_, hash, expires_at) in sending {
+                if fulfilled.contains(&hash) { changed |= s.settle_payment(&hash, "", None, now); }
+                else if held.contains(&hash) || in_run(&hash) {}
+                else if now > expires_at.saturating_add(60) {
+                    log::info!("[subs] payment {}… is not with LDK and its invoice has run out — it came back", &hash[..16.min(hash.len())]);
+                    changed |= s.fail_payment(&hash);
+                }
+            }
+        }
+        if changed { crate::subscriptions::save(&st, &s)?; }
+        Ok(s)
+    }
+
+    /// The page reports that a send ended without paying. The record is turned back at once only when LDK holds
+    /// nothing on that hash and the send loop is over; otherwise it stays on its way (and `subs_reconciled` decides).
+    pub fn subs_pay_failed(&self, payment_hash_hex: &str, in_run: &dyn Fn(&str) -> bool) -> LijResult<bool> {
+        use lightning::ln::channelmanager::RecentPaymentDetails as RPD;
+        let h = payment_hash_hex.trim().to_ascii_lowercase();
+        let cm = self.channel_manager.as_ref().ok_or_else(|| LijError::Node("ChannelManager not initialized".into()))?;
+        let with_ldk = cm.list_recent_payments().iter().any(|p| match p {
+            RPD::Pending { payment_hash, .. } | RPD::Abandoned { payment_hash, .. } => hex::encode(payment_hash.0) == h,
+            RPD::Fulfilled { payment_hash: Some(ph), .. } => hex::encode(ph.0) == h,
+            _ => false,
+        });
+        if with_ldk || in_run(&h) { return Ok(false); }
+        let st = self.subs_storage();
+        let mut s = crate::subscriptions::load(&st)?;
+        let turned = s.fail_payment(&h);
+        if turned { crate::subscriptions::save(&st, &s)?; }
+        Ok(turned)
+    }
+
+    /// The selling hash at `hash_hex`, by derivation: (index, preimage). Searched a little past the next index, so a
+    /// restored wallet finds the hashes it registered before.
+    fn subs_seller_derive_search(&self, hash_hex: &str) -> Option<(u32, [u8; 32])> {
+        use bitcoin::hashes::Hash as _;
+        let next = crate::subs_seller::load(&self.subs_storage()).map(|s| s.next_index).unwrap_or(0);
+        for i in 0..next.saturating_add(256).max(512) {
+            let pre = self.root_key.subs_seller_preimage(i);
+            if hex::encode(bitcoin::hashes::sha256::Hash::hash(&pre).to_byte_array()) == hash_hex { return Some((i, pre)); }
+        }
+        None
+    }
+
+    fn subs_seller_note_waiting(&self, hash_hex: &str, amount_msat: u64) {
+        let st = self.subs_storage();
+        match crate::subs_seller::load(&st) {
+            Ok(mut s) => { if s.note_waiting(hash_hex, amount_msat, current_time_secs()) { if let Err(e) = crate::subs_seller::save(&st, &s) { log::error!("[subs-seller] a waiting payment could not be written: {e}"); } } }
+            Err(e) => log::error!("[subs-seller] the records could not be read at an arriving payment (it stays held; LDK sends it back at its timelock): {e}"),
+        }
+    }
+
+    /// A latch from the event pass: LDK claimed the payment on this hash. If the phone had decided to take it, the
+    /// record is written now. Other hashes are ignored.
+    fn subs_seller_claimed(&self, payment_hash_hex: &str, amount_msat: u64) {
+        let st = self.subs_storage();
+        let Ok(mut s) = crate::subs_seller::load(&st) else { return };
+        if let Some(r) = s.claimed(payment_hash_hex, amount_msat, current_time_secs()) {
+            log::info!("[subs-seller] payment {} of a subscriber to {} taken: {} msat received of {} msat paid", r.n, r.plan_id, r.received_msat, r.invoice_msat);
+            if let Err(e) = crate::subs_seller::save(&st, &s) { log::error!("[subs-seller] the taken payment could not be written: {e}"); }
+        }
+    }
+
+    /// `count` new selling hashes for the provider (the address path's way, lnurlp_prepare_hashes, under the selling
+    /// derivation): each is registered with LDK as an inbound payment and SIGNED with the selling key — the `hash_sig`
+    /// a paying wallet checks, so the provider can refuse or delay a payment and cannot collect it. `start_hint` is
+    /// the provider's own next index for this wallet's selling name. JSON `[{hash, secret, expires, index, sig}]`.
+    pub fn subs_seller_prepare_hashes(&self, count: u32, start_hint: Option<u32>) -> LijResult<String> {
+        use bitcoin::hashes::Hash as _;
+        let cm = self.channel_manager.as_ref().ok_or_else(|| LijError::Node("ChannelManager not initialized".into()))?;
+        let st = self.subs_storage();
+        let mut s = crate::subs_seller::load(&st)?;
+        let seller_sk = self.root_key.subs_seller_key();
+        let mut next = s.next_index.max(start_hint.unwrap_or(0));
+        let expires = current_time_secs().saturating_add(LNURLP_HASH_EXPIRY_SECS as u64);
+        let mut out: Vec<serde_json::Value> = Vec::new();
+        for _ in 0..count.clamp(1, 50) {
+            let index = next;
+            next = next.saturating_add(1);
+            let hash = bitcoin::hashes::sha256::Hash::hash(&self.root_key.subs_seller_preimage(index));
+            let payment_hash = lightning::types::payment::PaymentHash(hash.to_byte_array());
+            let secret = cm.create_inbound_payment_for_hash(payment_hash, None, LNURLP_HASH_EXPIRY_SECS, None)
+                .map_err(|()| LijError::Invoice("create_inbound_payment_for_hash failed".into()))?;
+            let hash_hex = hex::encode(payment_hash.0);
+            out.push(serde_json::json!({ "hash": hash_hex, "secret": hex::encode(secret.0), "expires": expires, "index": index,
+                "sig": crate::subscriptions::seller_sign_hash(&seller_sk, &hash_hex)? }));
+        }
+        s.next_index = next;
+        crate::subs_seller::save(&st, &s)?;
+        log::info!("[subs-seller] prepared {} selling hash(es), indices up to {}", out.len(), next.saturating_sub(1));
+        Ok(serde_json::to_string(&out).unwrap_or_else(|_| "[]".into()))
+    }
+
+    /// THE SELLER'S DECISION on a payment held on a selling hash. `description` and `invoice_msat` are what the
+    /// provider says the invoice on that hash was (the page read them, GET /lnurl/note). Taken → LDK claims it with
+    /// the derived preimage; refused → it is sent back to the payer now. A tag that matches no subscriber the phone
+    /// knows is `ask_again` (the page fetches the subscribers once more) unless `last`, when it is sent back.
+    /// JSON {taken, plan_id?, sub_key?, n?, invoice_msat?, ask_again?, sent_back?, why?}.
+    pub fn subs_seller_take(&self, hash_hex: &str, description: Option<&str>, invoice_msat: u64, last: bool) -> LijResult<String> {
+        use crate::subs_seller::Decision;
+        let h = hash_hex.trim().to_ascii_lowercase();
+        let cm = self.channel_manager.as_ref().ok_or_else(|| LijError::Node("ChannelManager not initialized".into()))?;
+        let st = self.subs_storage();
+        let mut s = crate::subs_seller::load(&st)?;
+        let out = match s.decide(&self.root_key.subs_seller_key(), &h, description, invoice_msat) {
+            Decision::Take { plan_id, sub_key, n, invoice_msat } => {
+                let (_, pre) = self.subs_seller_derive_search(&h).ok_or_else(|| LijError::Invoice("this hash is not one of the wallet's selling hashes".into()))?;
+                // the mark is written BEFORE the claim: from here the number counts as paid, so a second payment for
+                // it is refused even if this phone stops between the two lines
+                s.claiming(&h, &plan_id, &sub_key, n, invoice_msat);
+                crate::subs_seller::save(&st, &s)?;
+                cm.claim_funds(lightning::types::payment::PaymentPreimage(pre));
+                log::info!("[subs-seller] taking payment {n} of a subscriber to {plan_id} (hash {}…)", &h[..16.min(h.len())]);
+                serde_json::json!({ "taken": true, "plan_id": plan_id, "sub_key": sub_key, "n": n, "invoice_msat": invoice_msat })
+            }
+            Decision::AskAgain(why) if !last => serde_json::json!({ "taken": false, "ask_again": true, "why": why }),
+            Decision::AskAgain(why) | Decision::Refuse(why) => {
+                if s.gone(&h) {
+                    let mut b = [0u8; 32];
+                    if hex::decode_to_slice(&h, &mut b).is_ok() { cm.fail_htlc_backwards(&lightning::types::payment::PaymentHash(b)); }
+                    crate::subs_seller::save(&st, &s)?;
+                    log::warn!("[subs-seller] payment on selling hash {}… NOT taken — sent back to the payer: {why}", &h[..16.min(h.len())]);
+                }
+                serde_json::json!({ "taken": false, "sent_back": true, "why": why })
+            }
+        };
+        cm.process_pending_htlc_forwards();
+        Ok(out.to_string())
     }
 
     // ── v280 (S49, DP GO 2026-09-25 — Push Key, step A) ───────────────────────────────────────
@@ -6951,6 +7157,8 @@ impl LijNode {
                 funding_height: c.short_channel_id.map(|s| (s >> 40) as u32).filter(|h| *h > 0),   // v334: the funding's block, from the scid
                 funding_txid: c.funding_txo.map(|o| o.txid.to_string()),
                 confirmations: c.confirmations,
+                confirmations_required: c.confirmations_required,   // v379
+                funded_by_this_wallet: c.is_outbound,   // v379
                 is_channel_ready: c.is_channel_ready,
                 // Holder-side reserve (sats). LDK reports this already excluded
                 // from outbound_capacity_msat, so it's purely informational.
@@ -7612,6 +7820,18 @@ impl LijNode {
             }
         }
         out
+    }
+
+    /// v382 (incident 2026-11-20 r2 §4.1 — state_statement.rs): this wallet's statement for its provider — each live
+    /// channel record's update number, signed with the node key at `at_ms`. The body of POST /v1/state as JSON
+    /// ({"node_pubkey","at","channels","signature"}); the page adds "want_pass" and sends it. Sync, no I/O. A wallet
+    /// with more channel records than a statement may carry states none ("null").
+    pub fn state_statement_json(&self, at_ms: u64) -> LijResult<String> {
+        let ids: std::collections::BTreeMap<String, u64> = self.channel_state_ids().into_iter().collect();
+        if ids.len() > crate::state_statement::MAX_CHANNELS { return Ok("null".to_string()); }
+        let pk = self.node_pubkey()?;
+        let sig = self.sign_message(&crate::state_statement::signed_text(&pk, at_ms, &ids))?;
+        Ok(crate::state_statement::body_json(&pk, at_ms, &ids, &sig))
     }
 
     /// v365: this copy's channel state fingerprint — what the wallet compares with its holder's on reconnect.
@@ -8370,6 +8590,7 @@ impl LijNode {
     // ── Persistence ───────────────────────────────────────────────────────────
 
     fn persist_channel_manager(&self) -> LijResult<()> {
+        let _perf = crate::perf::step_scope("store: channel manager");   // v379
         if let Some(ref cm) = self.channel_manager {
             let mut buf = vec![];
             cm.write(&mut buf)
@@ -9282,6 +9503,188 @@ mod tests {
             preferred_lsp_pubkey: None,
             route_pref: None, worker_reach: None,   // v349
         }
+    }
+
+    // ── S71: LIJOX Subscriptions — the wiring ──────────────────────────────────────────────────────────────────────
+    fn s71_sending(hash: &str, expires_at: u64) -> crate::subscriptions::PaymentRec {
+        crate::subscriptions::PaymentRec { n: 1, payment_hash: hash.to_string(), state: "sending".into(), preimage: None, amount_msat: 8_000_000, fee_msat: None,
+            price_unit: "sat".into(), price_amount: "8000".into(), sat_per_unit: None, at: 0, period_from: 0, period_to: 0, expires_at }
+    }
+
+    #[tokio::test]
+    async fn s71_subscriptions_ride_every_backup_and_a_restore_makes_each_wait_for_its_sync() {
+        let (root_key, mnemonic) = RootKey::generate(Network::Regtest).unwrap();
+        let storage: Arc<dyn LijStorage> = Arc::new(MemoryStorage::new());
+        let node = LijNode::new(root_key, test_config(), storage.clone()).await.unwrap();
+        node.set_sync_state(SyncState::Ready);
+        let _ = node.create_invoice(Some(1_000), "test", 3600);   // a channel manager exists, so there is a state to back up
+        let mut s = crate::subscriptions::Store::default();
+        s.add(crate::subscriptions::test_record(&[0x11; 32], &[0x22; 32], current_time_secs())).unwrap();
+        crate::subscriptions::save(&node.subs_storage(), &s).unwrap();
+        // encrypted at rest: neither the merchant's name nor the plan is readable in storage
+        let raw = storage.get(crate::subscriptions::SUBS_KEY).unwrap().expect("written");
+        assert!(raw.starts_with(b"ENC1") && !String::from_utf8_lossy(&raw).contains("Kissaten"));
+        assert!(BUNDLE_SINGLE_KEYS.contains(&crate::subscriptions::SUBS_KEY) && BUNDLE_SINGLE_KEYS.contains(&crate::subs_seller::SELLER_KEY));
+        assert!(crate::tier2_wallet::ENCRYPTED_KEYS.contains(&crate::subscriptions::SUBS_KEY) && crate::tier2_wallet::ENCRYPTED_KEYS.contains(&crate::subs_seller::SELLER_KEY));
+        // the copy, loaded on a new phone with the 12 words (the path every restore takes)
+        let blob = node.gather_state_blob().unwrap().expect("a copy");
+        let fresh = MemoryStorage::new();
+        crate::wallet::LijWallet::import_backup_file(&mnemonic.to_string(), &test_config(), &fresh, &blob).unwrap();
+        let key = RootKey::from_mnemonic(&mnemonic, Network::Regtest).unwrap().encryption_key();
+        let got = crate::subscriptions::load(&crate::tier2_wallet::encrypted(&fresh as &dyn LijStorage, key)).unwrap();
+        assert_eq!(got.subs.len(), 1);
+        assert!(got.subs[0].needs_sync, "after ANY restore the merchant is asked what was paid before Pay is offered");
+        assert!(!crate::subscriptions::load(&node.subs_storage()).unwrap().subs[0].needs_sync, "the phone the copy was taken on is not marked");
+    }
+
+    // v382 (incident 2026-11-20 r2 §4.1): the wallet's signed statement of its channel records
+    #[tokio::test]
+    async fn v382_the_statement_is_signed_by_the_node_key_over_the_fixed_form() {
+        let (root_key, _m) = RootKey::generate(Network::Regtest).unwrap();
+        let storage: Arc<dyn LijStorage> = Arc::new(MemoryStorage::new());
+        let node = LijNode::new(root_key, test_config(), storage.clone()).await.unwrap();
+        let at = 1_795_000_000_123u64;
+        let body: serde_json::Value = serde_json::from_str(&node.state_statement_json(at).unwrap()).unwrap();
+        let pk = node.node_pubkey().unwrap();
+        assert_eq!(body["node_pubkey"], pk);
+        assert_eq!(body["at"], at);
+        assert!(body["channels"].as_object().unwrap().is_empty(), "a wallet with no channel record states an empty list — and may still ask for its pass");
+        // what the provider does with it (LND's verifymessage): the signature over the signed text recovers the node key
+        let ids: std::collections::BTreeMap<String, u64> = node.channel_state_ids().into_iter().collect();
+        let text = crate::state_statement::signed_text(&pk, at, &ids);
+        let recovered = lightning::util::message_signing::recover_pk(text.as_bytes(), body["signature"].as_str().unwrap()).unwrap();
+        assert_eq!(hex::encode(recovered.serialize()), pk, "the proof is the node key's");
+        // another time is another text: a statement cannot be re-dated without the key
+        let other = crate::state_statement::signed_text(&pk, at + 1, &ids);
+        let r2 = lightning::util::message_signing::recover_pk(other.as_bytes(), body["signature"].as_str().unwrap());
+        assert!(r2.map(|k| hex::encode(k.serialize()) != pk).unwrap_or(true), "the same signature does not prove another time");
+    }
+
+    // v380 (incident 2026-11-20, finding A): a copy loaded onto the phone drops the note of the phone's own unanswered uploads
+    #[tokio::test]
+    async fn v380_loading_a_copy_drops_the_note_of_this_phones_unanswered_uploads() {
+        let (root_key, mnemonic) = RootKey::generate(Network::Regtest).unwrap();
+        let storage: Arc<dyn LijStorage> = Arc::new(MemoryStorage::new());
+        let node = LijNode::new(root_key, test_config(), storage.clone()).await.unwrap();
+        node.set_sync_state(SyncState::Ready);
+        let _ = node.create_invoice(Some(1_000), "test", 3600);
+        // an older copy saved to a file as no. 41
+        crate::storage::backup_version_commit(storage.as_ref(), 40).unwrap();
+        let file = node.gather_state_blob().unwrap().expect("a copy");
+        assert_eq!(file.version, 41);
+        crate::storage::backup_version_commit(storage.as_ref(), 41).unwrap();
+        // later the phone sends a newer copy as no. 42; the cloud stores it; the answer never arrives
+        let sent = node.gather_state_blob().unwrap().expect("a copy");
+        assert_eq!(sent.version, 42);
+        let fp = crate::storage::backup_fingerprint(&sent);
+        crate::storage::backup_inflight_note(storage.as_ref(), sent.version, &fp).unwrap();
+        let cloud = crate::storage::BackupMeta { version: 42, saved_at_ms: 1, fingerprint: Some(fp.clone()) };
+        assert!(crate::storage::backup_meta_is_own(&cloud, crate::storage::backup_inflight(storage.as_ref()).unwrap().as_ref()), "before any load: the cloud's 42 is this phone's own");
+        // the person then loads the OLDER file onto the phone
+        crate::wallet::LijWallet::import_backup_file(&mnemonic.to_string(), &test_config(), storage.as_ref(), &file).unwrap();
+        assert_eq!(crate::storage::backup_inflight(storage.as_ref()).unwrap(), None, "the note is gone with the state it stood for");
+        assert_eq!(crate::storage::backup_take_own(storage.as_ref(), &cloud).unwrap(), None, "the cloud's 42 is no longer read as this phone's own — the phone holds the file's older state, and the warning must stand");
+        assert_eq!(crate::storage::backup_version_peek(storage.as_ref()).unwrap(), 42, "the phone carries the file's number; its next copy would be refused and the person decides");
+    }
+
+    #[tokio::test]
+    async fn s71_a_payment_on_its_way_follows_ldks_word_and_its_invoices_life() {
+        let (root_key, _m) = RootKey::generate(Network::Regtest).unwrap();
+        let storage: Arc<dyn LijStorage> = Arc::new(MemoryStorage::new());
+        let node = LijNode::new(root_key, test_config(), storage.clone()).await.unwrap();
+        let now = current_time_secs();
+        let (live, old, run) = ("a1".repeat(32), "a2".repeat(32), "a3".repeat(32));
+        let mut s = crate::subscriptions::Store::default();
+        for (i, (h, exp)) in [(&live, now + 500), (&old, now - 100), (&run, now - 100)].into_iter().enumerate() {
+            let mut r = crate::subscriptions::test_record(&[0x11 + i as u8; 32], &[0x22; 32], now);
+            r.payments.push(s71_sending(h, exp));
+            s.add(r).unwrap();
+        }
+        crate::subscriptions::save(&node.subs_storage(), &s).unwrap();
+        // LDK holds none of them. The one whose invoice still lives stays on its way (its send may be about to start);
+        // the one whose invoice has run out came back; the one the send loop is still trying stays.
+        let got = node.subs_reconciled(&|h| h == run.as_str()).unwrap();
+        let state = |st: &crate::subscriptions::Store, h: &str| st.subs.iter().flat_map(|x| x.payments.iter()).find(|p| p.payment_hash == h).unwrap().state.clone();
+        assert_eq!((state(&got, &live), state(&got, &old), state(&got, &run)), ("sending".into(), "failed".into(), "sending".into()));
+        assert_eq!(state(&crate::subscriptions::load(&node.subs_storage()).unwrap(), &old), "failed", "written, not only answered");
+        // the page reports a failed send: turned back only when the loop is over
+        assert!(!node.subs_pay_failed(&run, &|h| h == run.as_str()).unwrap());
+        assert!(node.subs_pay_failed(&run, &|_| false).unwrap());
+        assert!(!node.subs_pay_failed(&run, &|_| false).unwrap(), "once");
+        // the latch: the payment completed — paid, with its preimage; a hash that is no subscription's is ignored
+        node.subs_latch(&live, &"cd".repeat(32), Some(1_500));
+        node.subs_latch(&"ff".repeat(32), &"cd".repeat(32), None);
+        let got = crate::subscriptions::load(&node.subs_storage()).unwrap();
+        let p = got.subs.iter().flat_map(|x| x.payments.iter()).find(|p| p.payment_hash == live).unwrap();
+        assert_eq!((p.state.as_str(), p.preimage.as_deref(), p.fee_msat), ("paid", Some("cd".repeat(32).as_str()), Some(1_500)));
+        // a paid payment is never turned back
+        assert!(!node.subs_pay_failed(&live, &|_| false).unwrap());
+    }
+
+    #[tokio::test]
+    async fn s71_selling_hashes_are_signed_apart_from_the_address_pool_and_taken_only_after_the_tag_check() {
+        use bitcoin::hashes::Hash as _;
+        let (root_key, _m) = RootKey::generate(Network::Regtest).unwrap();
+        let storage: Arc<dyn LijStorage> = Arc::new(MemoryStorage::new());
+        let node = LijNode::new(root_key, test_config(), storage.clone()).await.unwrap();
+        let seller_sk = node.root_key.subs_seller_key();
+        let seller_pub = crate::subscriptions::public_hex(&seller_sk).unwrap();
+        let first: Vec<serde_json::Value> = serde_json::from_str(&node.subs_seller_prepare_hashes(3, None).unwrap()).unwrap();
+        assert_eq!(first.iter().map(|e| e["index"].as_u64().unwrap()).collect::<Vec<_>>(), vec![0, 1, 2]);
+        for e in &first {
+            let h = e["hash"].as_str().unwrap();
+            assert!(crate::subscriptions::verify_canonical(&seller_pub, &crate::subscriptions::hash_canonical(h), e["sig"].as_str().unwrap()), "each selling hash carries the selling key's signature");
+            assert_eq!(e["secret"].as_str().unwrap().len(), 64);
+            assert!(node.subs_seller_derive_search(h).is_some());
+            assert!(node.lnurlp_derive_search(h).is_none(), "the address path's claim never finds a selling hash");
+        }
+        let more: Vec<serde_json::Value> = serde_json::from_str(&node.subs_seller_prepare_hashes(1, None).unwrap()).unwrap();
+        assert_eq!(more[0]["index"], 3);
+        let hinted: Vec<serde_json::Value> = serde_json::from_str(&node.subs_seller_prepare_hashes(1, Some(10)).unwrap()).unwrap();
+        assert_eq!(hinted[0]["index"], 10, "the provider's next index wins when it is higher (a restored wallet)");
+        let pool_hash = hex::encode(bitcoin::hashes::sha256::Hash::hash(&node.root_key.lnurlp_preimage(0)).to_byte_array());
+        assert!(node.subs_seller_derive_search(&pool_hash).is_none());
+        // a plan, a subscriber, and a payment that arrives on selling hash 0
+        let provider = "0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c";
+        let now = current_time_secs();
+        let draft = crate::subscriptions::test_record(&[0x11; 32], &seller_sk, now).plan.terms;
+        let mut s = crate::subs_seller::load(&node.subs_storage()).unwrap();
+        let signed = s.sign_plan(&seller_sk, "coffee-club", draft, provider, now).unwrap();
+        crate::subs_seller::save(&node.subs_storage(), &s).unwrap();
+        let plan = crate::subscriptions::Plan { plan_id: "coffee-club".into(), plan_key: seller_pub.clone(), server: "https://p.example/s/x".into(), terms: signed.terms.clone(), terms_sig: signed.terms_sig.clone(), line: None };
+        let sub_sk = [0x11u8; 32];
+        let agree = crate::subscriptions::agree_body(&sub_sk, &plan, None, now).unwrap();
+        let mut s = crate::subs_seller::load(&node.subs_storage()).unwrap();
+        s.work(&seller_sk, &serde_json::json!({ "subscribers": [ { "plan_id": "coffee-club", "agree": agree, "first_due": now, "receipt": null, "paid": [] } ] })).unwrap();
+        crate::subs_seller::save(&node.subs_storage(), &s).unwrap();
+        let h0 = first[0]["hash"].as_str().unwrap().to_string();
+        node.subs_seller_note_waiting(&h0, 7_900_000);
+        let k = crate::subscriptions::shared_secret(&sub_sk, &seller_pub).unwrap();
+        let desc = crate::subscriptions::invoice_description("coffee-club", 1, &crate::subscriptions::payment_tag(&k, 1));
+        // a description that is no subscription's: not taken, off the waiting list (LDK is told to send it back)
+        let h1 = first[1]["hash"].as_str().unwrap().to_string();
+        node.subs_seller_note_waiting(&h1, 5_000);
+        let out: serde_json::Value = serde_json::from_str(&node.subs_seller_take(&h1, None, 5_000, false).unwrap()).unwrap();
+        assert_eq!((out["taken"].as_bool(), out["sent_back"].as_bool()), (Some(false), Some(true)));
+        // an unknown tag: ask again first; sent back when asked the last time
+        let h2 = first[2]["hash"].as_str().unwrap().to_string();
+        node.subs_seller_note_waiting(&h2, 8_000_000);
+        let stranger = crate::subscriptions::invoice_description("coffee-club", 1, &"0".repeat(32));
+        let out: serde_json::Value = serde_json::from_str(&node.subs_seller_take(&h2, Some(&stranger), 8_000_000, false).unwrap()).unwrap();
+        assert_eq!(out["ask_again"], true);
+        assert_eq!(crate::subs_seller::load(&node.subs_storage()).unwrap().undecided().len(), 2, "still held");
+        let out: serde_json::Value = serde_json::from_str(&node.subs_seller_take(&h2, Some(&stranger), 8_000_000, true).unwrap()).unwrap();
+        assert_eq!(out["sent_back"], true);
+        // the subscriber's own tag: taken — marked first, recorded when LDK says claimed
+        let out: serde_json::Value = serde_json::from_str(&node.subs_seller_take(&h0, Some(&desc), 8_000_000, false).unwrap()).unwrap();
+        assert_eq!((out["taken"].as_bool(), out["n"].as_u64()), (Some(true), Some(1)));
+        let s = crate::subs_seller::load(&node.subs_storage()).unwrap();
+        assert!(s.received.is_empty() && s.waiting.len() == 1 && s.waiting[0].claiming.is_some());
+        node.subs_seller_claimed(&h0, 7_900_000);
+        node.subs_seller_claimed(&"ee".repeat(32), 1);   // some other claimed payment: ignored
+        let s = crate::subs_seller::load(&node.subs_storage()).unwrap();
+        assert!(s.waiting.is_empty());
+        assert_eq!((s.received.len(), s.received[0].n, s.received[0].invoice_msat, s.received[0].received_msat), (1, 1, 8_000_000, 7_900_000));
     }
 
     #[tokio::test]
