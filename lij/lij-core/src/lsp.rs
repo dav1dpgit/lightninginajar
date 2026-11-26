@@ -240,7 +240,7 @@ pub async fn fetch_lsp_registry(worker_url: &str) -> LijResult<Vec<LspInfo>> {
             .map_err(|e| LijError::Lsp(format!("Text await error: {:?}", e)))?;
             text.as_string().ok_or_else(|| LijError::Lsp("Response not a string".into()))
         };
-        let timeout = wasm_timer::Delay::new(std::time::Duration::from_secs(REGISTRY_READ_TIMEOUT_SECS));
+        let timeout = crate::wait::sleep_ms(crate::wait::secs_to_ms(REGISTRY_READ_TIMEOUT_SECS));   // v385: the browser's own timer (wait.rs)
         let body = match select(Box::pin(read), Box::pin(timeout)).await {
             Either::Left((r, _)) => r?,
             Either::Right((_, _)) => return Err(LijError::Lsp(format!("registry read: no answer within {REGISTRY_READ_TIMEOUT_SECS} s"))),
@@ -253,9 +253,15 @@ pub async fn fetch_lsp_registry(worker_url: &str) -> LijResult<Vec<LspInfo>> {
             .as_array()
             .ok_or_else(|| LijError::Lsp("No lsps array in response".into()))?;
 
+        // v392 (S72, F — docs/design/routes/sigcheck-r1.md): every record is checked against its provider's own
+        // signature before anything here reads it. A record that does not hold is replaced by the one this wallet
+        // holds for that provider, or left out when it holds none — so the start ladder, switch_lsp and list_lsps
+        // never see a record that was changed after signing. A registry that sends no signatures is read as before.
+        let lsps = crate::registry_check::check_own_read(worker_url, lsps);
+
         let mut result = vec![];
         for lsp in lsps {
-            if let Ok(info) = serde_json::from_value::<LspInfo>(lsp.clone()) {
+            if let Ok(info) = serde_json::from_value::<LspInfo>(lsp) {
                 result.push(info);
             }
         }

@@ -109,9 +109,7 @@ struct PostChannelRequest<'a> {
 struct PostChannelResponse {
     ok: bool,
     record: ChannelRecord,
-    #[allow(dead_code)]
     replaced: bool,
-    #[allow(dead_code)]
     #[serde(default)]
     stored_at: Option<u64>,
 }
@@ -349,6 +347,26 @@ pub async fn upload_channel_record(
     record: &ChannelRecord,
 ) -> LijResult<()> {
     let endpoint = lsp_endpoint.trim_end_matches('/');
+    let canonical = record.canonicalize();
+
+    // v388 (F, docs/design/routes/f4-r1.md §1): INSIDE THE LIGHTNING CONNECTION when the address is the provider in
+    // use and it serves `lijox.channel_record` there. One request: the provider stores the record under the
+    // connection's key, so no challenge is fetched and nothing is signed. Its answer is the web form's own, and it is
+    // checked the same way (the stored record must be the record sent, byte for byte). No answer inside: an error —
+    // the record stays queued and the 30-second retry sends it again; it is never sent as a web request to a provider
+    // that serves the method inside.
+    if let Some(r) = crate::inside::ask(endpoint, "lijox.channel_record", channel_record_params(&canonical)?, 10_000).await {
+        let a = r?;
+        if !a.ok {
+            return Err(LijError::Lsp(format!("registry POST HTTP {} — {}", a.status, a.text)));
+        }
+        let (replaced, stored_at) = check_channel_post_answer(&canonical, &a.text)?;
+        log::info!(
+            "Registry: upload OK (inside the connection) channel_id={} replaced={} stored_at={:?}",
+            canonical.channel_id, replaced, stored_at,
+        );
+        return Ok(());
+    }
 
     // 1. Challenge
     let challenge_url = format!("{endpoint}/lsps/registry/challenge");
@@ -363,8 +381,7 @@ pub async fn upload_channel_record(
         )));
     }
 
-    // 2. Canonicalize + build digest + sign
-    let canonical = record.canonicalize();
+    // 2. Build digest + sign
     let pubkey_hex = node_pubkey_hex(keys_manager);
     let record_id = channel_record_id(&canonical);   // v358: the whole record, not the channel id alone
     let digest = build_message_digest(
@@ -386,19 +403,38 @@ pub async fn upload_channel_record(
         .map_err(|e| LijError::Lsp(format!("serialize POST body: {e}")))?;
     let post_url = format!("{endpoint}/lsps/registry/channels");
     let resp_body = http_post_json(&post_url, &req_body).await?;
-    let resp: PostChannelResponse = serde_json::from_str(&resp_body)
-        .map_err(|e| LijError::Lsp(format!("parse POST response: {e} — body: {resp_body}")))?;
+    let (replaced, stored_at) = check_channel_post_answer(&canonical, &resp_body)?;
 
+    log::info!(
+        "Registry: upload OK channel_id={} replaced={} stored_at={:?}",
+        canonical.channel_id,
+        replaced,
+        stored_at,
+    );
+    Ok(())
+}
+
+/// v388: the params of `lijox.channel_record` — the canonical record under `record`, nothing else. The provider
+/// writes the wallet's key itself, from the connection.
+pub fn channel_record_params(canonical: &ChannelRecord) -> LijResult<String> {
+    let rec = serde_json::to_value(canonical)
+        .map_err(|e| LijError::Lsp(format!("serialize the channel record: {e}")))?;
+    Ok(serde_json::json!({ "record": rec }).to_string())
+}
+
+/// v388: ONE check of the provider's answer to a channel record, for both forms of the request (it was written
+/// inline in `upload_channel_record`). `ok` must be true, and the record the provider says it stored must be the
+/// record sent, byte for byte — this catches a provider that drops a field or changes a value, which a field-by-field
+/// comparison could miss. → (replaced, stored_at).
+pub fn check_channel_post_answer(canonical: &ChannelRecord, resp_body: &str) -> LijResult<(bool, Option<u64>)> {
+    let resp: PostChannelResponse = serde_json::from_str(resp_body)
+        .map_err(|e| LijError::Lsp(format!("parse POST response: {e} — body: {resp_body}")))?;
     if !resp.ok {
         return Err(LijError::Lsp(format!(
             "registry POST returned ok=false: {resp_body}"
         )));
     }
-
-    // 4. Echo-verify: serialize both records and compare byte-for-byte. This
-    //    catches silent mutation by the LSP (e.g. dropped fields, reordered
-    //    keys) that schema-level field equality might miss.
-    let sent_json = serde_json::to_string(&canonical)
+    let sent_json = serde_json::to_string(canonical)
         .map_err(|e| LijError::Lsp(format!("re-serialize sent record: {e}")))?;
     let echo_json = serde_json::to_string(&resp.record)
         .map_err(|e| LijError::Lsp(format!("re-serialize echo record: {e}")))?;
@@ -407,14 +443,7 @@ pub async fn upload_channel_record(
             "registry echo MISMATCH — sent {sent_json} received {echo_json}"
         )));
     }
-
-    log::info!(
-        "Registry: upload OK channel_id={} replaced={} stored_at={:?}",
-        canonical.channel_id,
-        resp.replaced,
-        resp.stored_at,
-    );
-    Ok(())
+    Ok((resp.replaced, resp.stored_at))
 }
 
 /// Register a Web Push wake subscription with the LSP (D-1 2c offline-receive).
@@ -885,4 +914,49 @@ mod tests {
         let d_b = build_message_digest(ACTION_POST_CHANNEL, &nonce, &pubkey, Some("b")).unwrap();
         assert_ne!(d_a, d_b, "different record_ids must produce different digests");
     }
+    // ── v388: the channel record inside the Lightning connection ──
+    fn v388_record() -> ChannelRecord {
+        ChannelRecord {
+            channel_id: "AB".repeat(32),
+            funding_txid: "CD".repeat(32),
+            funding_vout: 1,
+            channel_value_sat: 100_000,
+            commit_type: "ANCHORS".to_string(),
+            channel_keys_id_hex: "EF".repeat(32),
+            close_height: None,
+            closing_txid: None,
+        }
+    }
+
+    #[test]
+    fn v388_the_params_are_the_canonical_record_under_record_and_nothing_else() {
+        let c = v388_record().canonicalize();
+        let p: serde_json::Value = serde_json::from_str(&channel_record_params(&c).unwrap()).unwrap();
+        let o = p.as_object().unwrap();
+        assert_eq!(o.len(), 1, "no key, no nonce, no signature: the provider writes the key from the connection");
+        assert_eq!(serde_json::to_string(&o["record"]).unwrap().len(), serde_json::to_string(&c).unwrap().len());
+        assert_eq!(o["record"]["channel_id"], "ab".repeat(32));
+        assert_eq!(o["record"]["funding_vout"], 1);
+        assert!(o["record"].get("close_height").is_none(), "a field the record does not carry is not sent");
+    }
+
+    #[test]
+    fn v388_the_answer_is_checked_the_same_for_both_forms() {
+        let c = v388_record().canonicalize();
+        let rec = serde_json::to_string(&c).unwrap();
+        // the answer the provider gives (registry.js): ok, the stored record, replaced, stored_at
+        let good = format!(r#"{{"ok":true,"record":{rec},"replaced":false,"stored_at":1795000000000}}"#);
+        assert_eq!(check_channel_post_answer(&c, &good).unwrap(), (false, Some(1_795_000_000_000)));
+        let again = format!(r#"{{"ok":true,"record":{rec},"replaced":true,"previous":{rec},"stored_at":1795000000001}}"#);
+        assert_eq!(check_channel_post_answer(&c, &again).unwrap().0, true);
+        // a provider that stored something else is caught
+        let mut other = c.clone(); other.channel_value_sat = 99_999;
+        let wrong = format!(r#"{{"ok":true,"record":{},"replaced":false}}"#, serde_json::to_string(&other).unwrap());
+        let e = check_channel_post_answer(&c, &wrong).unwrap_err().to_string();
+        assert!(e.contains("MISMATCH"), "{e}");
+        // ok false, and an answer that is not the answer's shape
+        assert!(check_channel_post_answer(&c, &format!(r#"{{"ok":false,"record":{rec},"replaced":false}}"#)).unwrap_err().to_string().contains("ok=false"));
+        assert!(check_channel_post_answer(&c, r#"{"error":"not_the_connections_key"}"#).unwrap_err().to_string().contains("parse POST response"));
+    }
+
 }

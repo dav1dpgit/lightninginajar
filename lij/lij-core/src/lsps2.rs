@@ -214,6 +214,15 @@ pub async fn fetch_lsps2_info(
     let url = format!("{endpoint}/lsps2/get_info");
     log::info!("Fetching LSPS2 info from {url}");
 
+    // v387 (F3b-2): inside the Lightning connection when `endpoint` is the provider in use and it serves the method
+    // there. The terms are then the ones for this wallet (the provider writes the connection's key into the request).
+    if let Some(r) = crate::inside::ask(endpoint, "lijox.jit_info", "{}".to_string(), 8_000).await {
+        let a = r?;
+        if !a.ok { return Err(LijError::Lsp(format!("get_info HTTP {} — {}", a.status, a.text))); }
+        return serde_json::from_str::<Lsps2GetInfoResponse>(&a.text)
+            .map_err(|e| LijError::Lsp(format!("Parse get_info response: {e} — body: {}", a.text)));
+    }
+
     #[cfg(target_arch = "wasm32")]
     {
         use wasm_bindgen::JsCast;
@@ -308,6 +317,15 @@ pub async fn lsps2_buy(
     let body_json = serde_json::to_string(&body)
         .map_err(|e| LijError::Lsp(format!("Serialize buy request: {e}")))?;
 
+    // v387 (F3b-2): inside the Lightning connection when the provider in use serves it there. The same body; the same
+    // words for a refusal ("buy HTTP <status> — <body>"), so every reader of a refused buy reads it as before.
+    if let Some(r) = crate::inside::ask(endpoint, "lijox.jit_buy", body_json.clone(), 15_000).await {
+        let a = r?;
+        if !a.ok { return Err(LijError::Lsp(format!("buy HTTP {} — {}", a.status, a.text))); }
+        return serde_json::from_str::<Lsps2BuyResponse>(&a.text)
+            .map_err(|e| LijError::Lsp(format!("Parse buy response: {e} — body: {}", a.text)));
+    }
+
     #[cfg(target_arch = "wasm32")]
     {
         use wasm_bindgen::{JsCast, JsValue};
@@ -390,6 +408,14 @@ pub async fn lsps2_register_secret(
         r#"{{"jit_channel_scid":"{}","payment_secret":"{}","total_msat":{}}}"#,
         jit_channel_scid, payment_secret_hex, total_msat
     );
+
+    // v387 (F3b-2): inside the Lightning connection when the provider in use serves it there — the invoice's payment
+    // secret then travels encrypted to the provider and is readable by nobody who carries the web requests.
+    if let Some(r) = crate::inside::ask(endpoint, "lijox.register_secret", body_json.clone(), 10_000).await {
+        let a = r?;
+        if !a.ok { return Err(LijError::Lsp(format!("register_secret HTTP {} -- {}", a.status, a.text))); }
+        return Ok(());
+    }
 
     #[cfg(target_arch = "wasm32")]
     {
@@ -486,6 +512,14 @@ pub async fn lsps2_register_invoice_secret_with_scid(
             payment_hash_hex, payment_secret_hex, total_msat
         ),
     };
+
+    // v387 (F3b-2): inside the Lightning connection when the provider in use serves it there (the same method takes
+    // both forms of the secret's registration).
+    if let Some(r) = crate::inside::ask(endpoint, "lijox.register_secret", body_json.clone(), 10_000).await {
+        let a = r?;
+        if !a.ok { return Err(LijError::Lsp(format!("register_invoice_secret HTTP {} -- {}", a.status, a.text))); }
+        return Ok(());
+    }
 
     #[cfg(target_arch = "wasm32")]
     {

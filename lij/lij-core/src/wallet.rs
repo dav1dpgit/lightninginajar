@@ -329,12 +329,23 @@ impl LijWallet {
     pub async fn list_lsps(&self) -> LijResult<Vec<LspInfo>> {
         let worker_url = self.node_config_worker_url();
         let lsps = fetch_lsp_registry(&worker_url).await?;
+        Ok(self.rank_listed(&lsps))
+    }
+
+    /// v393: the registry this wallet reads — for a caller that reads it WITHOUT holding the wallet (lij-wasm's
+    /// list_lsps and switch_lsp: in the browser a wallet held through a network wait refuses every other call).
+    pub fn registry_url(&self) -> String {
+        self.node_config_worker_url()
+    }
+
+    /// v393: a registry answer the caller already holds, ranked as `list_lsps` ranks it. No network.
+    pub fn rank_listed(&self, lsps: &[LspInfo]) -> Vec<LspInfo> {
         // v224: stickiness finally armed — the ranker compares against the
         // ACTIVE LSP's pubkey (the old code passed this wallet's own pubkey,
         // which never matches an LSP, so the churn bonus never fired once).
         let current_pubkey = self.node.active_lsp().map(|a| a.info.pubkey.clone());
-        let ranked = rank_lsps(&lsps, current_pubkey.as_deref());
-        Ok(ranked.into_iter().cloned().collect())
+        let ranked = rank_lsps(lsps, current_pubkey.as_deref());
+        ranked.into_iter().cloned().collect()
     }
 
     // ── Channel operations ───────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-# LDK patches — the full diff against upstream `lightning` 0.2.7 (refreshed 2026-11-18, engine v376: the hunk LIJ PATCH v376 in `chain/channelmonitor.rs`, its test file and the one line that registers it — see `src/chain/channelmonitor.rs` (8) and `src/ln/lij_own_send_tests.rs` below; before that refreshed 2026-11-17, engine v375, the move from 0.2.6 to 0.2.7; the previous refresh 2026-10-15 at v347 lacked v360's `LijHtlcLeg` / `lij_htlc_legs` hunks — 88 lines)
+# LDK patches — the full diff against upstream `lightning` 0.2.7 (refreshed 2026-11-26, engine v393: one read-only accessor, `lij_holder_csv()`, in `chain/channelmonitor.rs` — see (9) there, 8 lines; before that refreshed 2026-11-18, engine v376: the hunk LIJ PATCH v376 in `chain/channelmonitor.rs`, its test file and the one line that registers it — see `src/chain/channelmonitor.rs` (8) and `src/ln/lij_own_send_tests.rs` below; before that refreshed 2026-11-17, engine v375, the move from 0.2.6 to 0.2.7; the previous refresh 2026-10-15 at v347 lacked v360's `LijHtlcLeg` / `lij_htlc_legs` hunks — 88 lines)
 
 The engine (`lij/lij-core`, `lij/lij-wasm`) builds against `lij/patches/lightning`, a copy of the `lightning` crate at 0.2.7 with local changes (`lij/Cargo.toml`: `lightning = { path = "patches/lightning" }`). This document is the complete diff, hunk by hunk, with the purpose of each. It supersedes the 0.0.123 edition of this file (engine ≤ v240); the engine moved to 0.2.6 at v241 (2026-09-12) and to 0.2.7 at v375 (2026-11-17: the same hunks, applied to the 0.2.7 source unchanged — no hunk rejected, the sorted change lines identical), and every hunk below is the re-port of a 0.0.123 hunk except one, the re-exposed `force_close_without_broadcasting_txn` (removed upstream in 0.1). To reproduce the diff yourself:
 
@@ -15,7 +15,7 @@ diff -u  lightning-0.2.7/Cargo.toml lij/patches/lightning/Cargo.toml
 | file | added | removed |
 |---|---:|---:|
 | `src/chain/chaininterface.rs` | 12 | 0 |
-| `src/chain/channelmonitor.rs` | 224 | 0 |
+| `src/chain/channelmonitor.rs` | 232 | 0 |
 | `src/ln/channel.rs` | 11 | 4 |
 | `src/ln/channel_state.rs` | 10 | 0 |
 | `src/ln/channelmanager.rs` | 32 | 6 |
@@ -33,7 +33,7 @@ diff -u  lightning-0.2.7/Cargo.toml lij/patches/lightning/Cargo.toml
 | `src/util/sweep.rs` | 11 | 0 |
 | `src/util/time.rs` | 50 | 1 |
 | `Cargo.toml` | 4 | 0 |
-| **total, 19 files** | **593** | **38** |
+| **total, 19 files** | **601** | **38** |
 
 Two kinds of change. (a) **Behavioural** — five files: `chain/chaininterface.rs`, `chain/channelmonitor.rs`, `ln/channel.rs`, `ln/channelmanager.rs`, `util/sweep.rs`; plus one **read-only field** (engine v269, 2026-09-21): `ln/channel_state.rs` adds `ChannelDetails::lij_value_to_self_msat`, LDK's own `value_to_self_msat` carried out unchanged (TLV 49, odd, default 0), and `routing/router.rs` sets it to 0 in two test/bench constructors. Each is read-only or narrows LDK's behaviour toward not broadcasting; none touches signing, key derivation, routing or gossip. One of them, since engine v376, is about HTLC handling: `chain/channelmonitor.rs` (8) changes WHEN the wallet goes on-chain over an HTLC it sent itself (3 blocks past its expiry → 4,032) — it delays a broadcast and adds none; the two v376 files under `ln/` are tests and compile into no build of the engine. (b) **Wall-clock substitutions** — `SystemTime` / `Instant` do not exist on `wasm32-unknown-unknown`, so every wall-clock call in the crate goes through `util/time.rs` (`lij_now`, `lij_since_epoch`, a browser-clock `Instant`), which reads `js_sys::Date` on wasm32 and the standard clock on every other target. Ten files carry only these substitutions; native builds are unchanged in behaviour. (The 0.0.123 edition had the same two kinds; 0.2.6 calls the clock in more places, which is why the file list grew.)
 
@@ -69,7 +69,7 @@ Adds `unbounded_sat_per_1000_weight`, an accessor that returns the fee estimator
 
 ## `src/chain/channelmonitor.rs`
 
-Seven read-only additions and one hold, all behavioural, re-ported from 0.0.123 (the fifth added at v276, the sixth at v313, the seventh at v360 — see (6) and (7) below), and since v376 one change to a rule (8): (1) `channel_keys_id()` — the 32-byte key id the registry channel record and the escape kit need to re-derive channel keys from the seed; (2) `lij_export_escape` + the private `lij_to_local_descriptor` — a signed copy of the latest holder commitment and its `to_local` descriptor for the offline escape kit (never broadcast by this code); (3) `lij_is_resolved_awaiting_archive()` — true when every balance is claimed and the funding spend has confirmed, so the wallet's archiver can retire the monitor; (5) `lij_latest_holder_commitment_txid()` — the txid of the latest holder commitment, read without building or signing anything, so the wallet can fingerprint its Black start kit every tick and re-push it only when a channel's state moved (engine v276); (4) the `lij_coop_hold` module and its one check at monitor load — LDK's rule is "a monitor without a manager channel broadcasts the holder commitment"; a cooperative close this wallet signed and that is still unconfirmed at the next boot must not be turned into a force close, so the wallet marks those funding txids before the manager is read and the broadcast is held; (6) `lij_commitment_obscure_factor()` — the channel's BOLT 3 commitment-number obscure factor, read only; the Black start kit's merge across copies of the wallet (engine v313) uses it to order another copy's kit entry against this copy's state, so a revoked CLOSE never replaces a newer one in the kit; (7) `LijHtlcLeg` and `lij_htlc_legs()` (engine v360, Black start — the in-flight payment collect), with its private twin on `ChannelMonitorImpl` — for each signed HTLC transaction `lij_export_escape` returns, which HTLC it belongs to and a `DelayedPaymentOutput` descriptor for its one output, so the wallet pre-signs a collect of it for the kit as it does for `to_local`; matched by the HTLC transaction's input, never by position; nothing is queued, signed or changed; (8) **LIJ PATCH v376** (engine v376, 2026-11-18, DP "Go" — `docs/design/htlc/offline-sender-r1.md` §4 B and `-r2.md`), the one change here to a rule LDK acts on: in `should_broadcast_holder_commitment_txn`, an outbound HTLC whose source is `HTLCSource::OutboundRoute` — a payment this node sent itself — is given the grace upstream already gives an async payment (`ASYNC_PAYMENT_GRACE_PERIOD_BLOCKS`, 4,032 blocks) before the node closes the channel on-chain over it, where upstream closes 3 blocks past the HTLC's expiry (`LATENCY_GRACE_PERIOD_BLOCKS`). Upstream's own comment gives the reason for that close as claiming the corresponding inbound HTLC on another channel; a LiJ wallet never forwards, so no HTLC it sends has one. A forwarded HTLC (`HTLCSource::PreviousHopData`) keeps the 3-block rule; the third line of the test (an inbound HTLC this node holds the preimage for) is untouched; no stored field changes. Its tests are `src/ln/lij_own_send_tests.rs` (below). **Fourteen of upstream's own tests assert the 3-block close for a sender's own payment and fail by design with (8) in place** (each read at its failing line: the node expected to close is the node that sent the payment): `async_signer_tests::test_async_holder_signatures_keyed_anchors`, `…_no_anchors`, `…_p2a_anchor`; `chanmon_update_fail_tests::test_monitor_and_persister_update_fail`; `functional_tests::channel_monitor_network_test`, `htlc_claim_single_commitment_only_a`, `htlc_claim_single_commitment_only_b`, `test_concurrent_monitor_claim`, `test_manual_broadcast_skips_commitment_until_funding`, `test_update_err_monitor_lockdown`; `monitor_tests::test_revoked_counterparty_commitment_balances`, `test_yield_anchors_events`; `reorg_tests::test_retries_own_commitment_broadcast_after_reorg`, `test_set_outpoints_partial_claiming`. All fourteen pass on the same tree without the hunk (run 2026-11-18). They are left as upstream wrote them.
+Eight read-only additions and one hold, all behavioural, re-ported from 0.0.123 (the fifth added at v276, the sixth at v313, the seventh at v360, the eighth at v393 — see (6), (7) and (9) below), and since v376 one change to a rule (8): (1) `channel_keys_id()` — the 32-byte key id the registry channel record and the escape kit need to re-derive channel keys from the seed; (2) `lij_export_escape` + the private `lij_to_local_descriptor` — a signed copy of the latest holder commitment and its `to_local` descriptor for the offline escape kit (never broadcast by this code); (3) `lij_is_resolved_awaiting_archive()` — true when every balance is claimed and the funding spend has confirmed, so the wallet's archiver can retire the monitor; (5) `lij_latest_holder_commitment_txid()` — the txid of the latest holder commitment, read without building or signing anything, so the wallet can fingerprint its Black start kit every tick and re-push it only when a channel's state moved (engine v276); (4) the `lij_coop_hold` module and its one check at monitor load — LDK's rule is "a monitor without a manager channel broadcasts the holder commitment"; a cooperative close this wallet signed and that is still unconfirmed at the next boot must not be turned into a force close, so the wallet marks those funding txids before the manager is read and the broadcast is held; (6) `lij_commitment_obscure_factor()` — the channel's BOLT 3 commitment-number obscure factor, read only; the Black start kit's merge across copies of the wallet (engine v313) uses it to order another copy's kit entry against this copy's state, so a revoked CLOSE never replaces a newer one in the kit; (7) `LijHtlcLeg` and `lij_htlc_legs()` (engine v360, Black start — the in-flight payment collect), with its private twin on `ChannelMonitorImpl` — for each signed HTLC transaction `lij_export_escape` returns, which HTLC it belongs to and a `DelayedPaymentOutput` descriptor for its one output, so the wallet pre-signs a collect of it for the kit as it does for `to_local`; matched by the HTLC transaction's input, never by position; nothing is queued, signed or changed; (8) **LIJ PATCH v376** (engine v376, 2026-11-18, DP "Go" — `docs/design/htlc/offline-sender-r1.md` §4 B and `-r2.md`), the one change here to a rule LDK acts on: in `should_broadcast_holder_commitment_txn`, an outbound HTLC whose source is `HTLCSource::OutboundRoute` — a payment this node sent itself — is given the grace upstream already gives an async payment (`ASYNC_PAYMENT_GRACE_PERIOD_BLOCKS`, 4,032 blocks) before the node closes the channel on-chain over it, where upstream closes 3 blocks past the HTLC's expiry (`LATENCY_GRACE_PERIOD_BLOCKS`). Upstream's own comment gives the reason for that close as claiming the corresponding inbound HTLC on another channel; a LiJ wallet never forwards, so no HTLC it sends has one. A forwarded HTLC (`HTLCSource::PreviousHopData`) keeps the 3-block rule; the third line of the test (an inbound HTLC this node holds the preimage for) is untouched; no stored field changes. Its tests are `src/ln/lij_own_send_tests.rs` (below). **Fourteen of upstream's own tests assert the 3-block close for a sender's own payment and fail by design with (8) in place** (each read at its failing line: the node expected to close is the node that sent the payment): `async_signer_tests::test_async_holder_signatures_keyed_anchors`, `…_no_anchors`, `…_p2a_anchor`; `chanmon_update_fail_tests::test_monitor_and_persister_update_fail`; `functional_tests::channel_monitor_network_test`, `htlc_claim_single_commitment_only_a`, `htlc_claim_single_commitment_only_b`, `test_concurrent_monitor_claim`, `test_manual_broadcast_skips_commitment_until_funding`, `test_update_err_monitor_lockdown`; `monitor_tests::test_revoked_counterparty_commitment_balances`, `test_yield_anchors_events`; `reorg_tests::test_retries_own_commitment_broadcast_after_reorg`, `test_set_outpoints_partial_claiming`. All fourteen pass on the same tree without the hunk (run 2026-11-18). They are left as upstream wrote them. (9) `lij_holder_csv()` (engine v393, 2026-11-26) — read only: it returns the stored number `on_holder_tx_csv`, the delay in blocks the counterparty set on this wallet's own `to_local` output (`to_self_delay`). The wallet shows it on a channel closed by force ("available N blocks after the close transaction is in a block"). Nothing is built, signed, queued or changed.
 
 ```diff
 @@ -1058,6 +1058,29 @@
@@ -102,7 +102,7 @@ Seven read-only additions and one hold, all behavioural, re-ported from 0.0.123 
  /// A ChannelMonitor handles chain events (blocks connected and disconnected) and generates
  /// on-chain transactions to ensure no loss of funds occurs.
  ///
-@@ -2370,6 +2393,75 @@
+@@ -2370,6 +2393,83 @@
  		);
  	}
  
@@ -111,6 +111,14 @@ Seven read-only additions and one hold, all behavioural, re-ported from 0.0.123 
 +	/// Additive, no behaviour change.
 +	pub fn channel_keys_id(&self) -> [u8; 32] {
 +		self.inner.lock().unwrap().channel_keys_id
++	}
++
++	/// LiJ v393 (read-only): the delay on THIS wallet's own `to_local` output when its own commitment
++	/// transaction closes the channel — the number of blocks the counterparty set (`to_self_delay`).
++	/// For the wallet's words "available N blocks after the close transaction is in a block".
++	/// Additive, no behaviour change.
++	pub fn lij_holder_csv(&self) -> u16 {
++		self.inner.lock().unwrap().on_holder_tx_csv
 +	}
 +
 +	/// LiJ (escape kit, re-ported to 0.2.6; read-only): a signed copy of the latest holder
@@ -178,7 +186,7 @@ Seven read-only additions and one hold, all behavioural, re-ported from 0.0.123 
  	/// Unsafe test-only version of `broadcast_latest_holder_commitment_txn` used by our test framework
  	/// to bypass HolderCommitmentTransaction state update lockdown after signature and generate
  	/// revoked commitment transaction.
-@@ -4345,6 +4437,18 @@
+@@ -4345,6 +4445,18 @@
  							log_trace!(logger, "Avoiding commitment broadcast, already detected confirmed spend onchain");
  							continue;
  						}
@@ -197,7 +205,7 @@ Seven read-only additions and one hold, all behavioural, re-ported from 0.0.123 
  						self.queue_latest_holder_commitment_txn_for_broadcast(broadcaster, &bounded_fee_estimator, logger, true);
  					} else if !self.holder_tx_signed {
  						log_error!(logger, "WARNING: You have a potentially-unsafe holder commitment transaction available to broadcast");
-@@ -5326,6 +5430,82 @@
+@@ -5326,6 +5438,82 @@
  	#[cfg(any(test, feature = "_test_utils", feature = "unsafe_revoked_tx_signing"))]
  	/// Note that this includes possibly-locktimed-in-the-future transactions!
  	#[rustfmt::skip]
@@ -280,7 +288,7 @@ Seven read-only additions and one hold, all behavioural, re-ported from 0.0.123 
  	fn unsafe_get_latest_holder_commitment_txn<L: Deref>(
  		&mut self, logger: &WithContext<L>
  	) -> Vec<Transaction> where L::Target: Logger {
-@@ -6157,6 +6337,21 @@
+@@ -6157,6 +6345,21 @@
  							..
  						}
  					);
@@ -302,7 +310,7 @@ Seven read-only additions and one hold, all behavioural, re-ported from 0.0.123 
  					if ( htlc_outbound && htlc.cltv_expiry + LATENCY_GRACE_PERIOD_BLOCKS <= height && !async_payment) ||
  					   ( htlc_outbound && htlc.cltv_expiry + ASYNC_PAYMENT_GRACE_PERIOD_BLOCKS <= height && async_payment) ||
  					   (!htlc_outbound && htlc.cltv_expiry <= height + CLTV_CLAIM_BUFFER && self.payment_preimages.contains_key(&htlc.payment_hash)) {
-@@ -7471,3 +7666,32 @@
+@@ -7471,3 +7674,32 @@
  	}
  	// Further testing is done in the ChannelManager integration tests.
  }

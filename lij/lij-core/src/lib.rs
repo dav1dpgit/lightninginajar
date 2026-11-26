@@ -33,6 +33,12 @@ pub mod fee_estimator;
 pub mod chain_filter;
 pub mod cooperative_chain_msg;
 pub mod cooperative_chain_handler;
+pub mod sent_log;
+pub mod inside;   // v386 (S72): the end of every sent Lightning payment, written down when the engine learns it
+pub mod wait;   // v385 (S72): every wait in the engine, on the browser's own timer — one function
+pub mod lijox_rpc;   // v383 (S72): requests inside the Lightning connection — LSPS0, message 37913 (docs/design/routes/f2-r1.md)
+pub mod check_conn;   // v389 (S72, F2b): the checks before connecting, on a short connection under a one-time key
+pub mod registry_check;   // v392 (S72, F): the wallet's own check of a provider's signature on its registry record (docs/design/routes/sigcheck-r1.md)
 pub mod chain_coordinator;
 pub mod cooperative_chain_bridge;
 pub mod independent;

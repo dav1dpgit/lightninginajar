@@ -2400,6 +2400,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().channel_keys_id
 	}
 
+	/// LiJ v393 (read-only): the delay on THIS wallet's own `to_local` output when its own commitment
+	/// transaction closes the channel — the number of blocks the counterparty set (`to_self_delay`).
+	/// For the wallet's words "available N blocks after the close transaction is in a block".
+	/// Additive, no behaviour change.
+	pub fn lij_holder_csv(&self) -> u16 {
+		self.inner.lock().unwrap().on_holder_tx_csv
+	}
+
 	/// LiJ (escape kit, re-ported to 0.2.6; read-only): a signed copy of the latest holder
 	/// commitment transaction(s) plus a manually assembled
 	/// [`SpendableOutputDescriptor::DelayedPaymentOutput`] for our `to_local` output when it

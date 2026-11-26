@@ -540,6 +540,29 @@ export class LijWalletHandle {
         }
     }
     /**
+     * v393: the wait a channel's money has after a close by force — `[{"channel_id","own_close_delay","anchors"}]`
+     * (node::close_waits_json). WALLET_BUSY when the engine cannot be asked this instant.
+     * @returns {string}
+     */
+    close_waits_json() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_close_waits_json(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * v309 (S56): what the cloud holds for this wallet — {"found":true,"channels":n,"version":v,"saved_at_ms":t} or
      * {"found":false}; REJECTS when the service gave no answer. Nothing is written. The warning before a device file
      * is loaded compares the file's date and number with these.
@@ -1105,6 +1128,74 @@ export class LijWalletHandle {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0];
+    }
+    /**
+     * v383 (S72, DP 2026-11-24 on "Section F"; docs/design/routes/f2-r1.md): ONE REQUEST TO THE PROVIDER INSIDE THE
+     * LIGHTNING CONNECTION (LSPS0, message 37913). Resolves to the JSON text {"ok","status","body"} — the same shape
+     * for an answer and for a refusal, the body being what the request's web route answers — or, when the path itself
+     * failed, {"ok":false,"status":0,"path_error":{"code","message"}}. Rejects with "not_connected" (the provider is
+     * not connected: nothing was sent), "timeout" (no answer within `timeout_ms`, 1 to 120 s), "WALLET_BUSY" (try
+     * again in a moment) or the engine's refusal of the request. THE WALLET'S LOCK IS HELD ONLY WHILE THE MESSAGE IS
+     * QUEUED, never while this waits: the answer arrives as a frame from the provider, and a frame waits for the lock.
+     * @param {string} provider_pubkey
+     * @param {string} method
+     * @param {string} params_json
+     * @param {number} timeout_ms
+     * @returns {Promise<any>}
+     */
+    lijox_call(provider_pubkey, method, params_json, timeout_ms) {
+        const ptr0 = passStringToWasm0(provider_pubkey, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(method, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(params_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_lijox_call(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, timeout_ms);
+        return ret;
+    }
+    /**
+     * v383: the path's counts — JSON {sent, answered, refused, path_errors, ended_by_disconnect, cancelled, parts_out,
+     * parts_in, ignored, waiting}. Read by Diagnostics → Performance.
+     * @returns {string}
+     */
+    lijox_counts() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_lijox_counts(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * v384 (F3a-1): THE PAGE HANDS OVER WHAT A PROVIDER SERVES INSIDE THE CONNECTION — `methods_json` is a JSON array
+     * of method names, that provider's own `lijox.hello` answer as the page keeps it. The engine's own requests to
+     * the provider in use (the route request, the route report, the outcome check) then go inside the connection
+     * for the methods on the list and are not sent as web requests. The whole list for that provider is replaced;
+     * "[]" means it serves none. → how many names are kept. Rejects with "WALLET_BUSY" (try again in a moment).
+     * @param {string} provider_pubkey
+     * @param {string} methods_json
+     * @returns {number}
+     */
+    lijox_served_set(provider_pubkey, methods_json) {
+        const ptr0 = passStringToWasm0(provider_pubkey, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(methods_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_lijox_served_set(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
     }
     /**
      * Return the closed-channel log as JSON.
@@ -3781,6 +3872,31 @@ export class LijWalletHandle {
         return ret;
     }
     /**
+     * v386: the ends of this wallet's sent Lightning payments as the engine wrote them down when it learned them
+     * (lij-core sent_log.rs) — `[{hash, state: "sent" | "failed", at, preimage?, fee_msat?, reason?}]`, newest
+     * first. Unlike list_recent_payments_json (LDK's own tracking, which drops a payment the moment it fails back),
+     * this is there after a restart and whenever the page comes to look. try_lock, as its neighbour.
+     * @returns {string}
+     */
+    sent_outcomes_json() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_sent_outcomes_json(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * v274: the channel(s) each settled outbound payment left by (see node::sent_parts_json).
      * try_lock — the page asks again on WALLET_BUSY.
      * @returns {string}
@@ -5466,6 +5582,63 @@ export function bolt11_facts(bolt11) {
 }
 
 /**
+ * v389: ONE REQUEST INSIDE THE CHECK CONNECTION. Resolves to the same JSON text as lijox_call —
+ * {"ok","status","body"}, or {"ok":false,"status":0,"path_error":{…}} — and rejects with "not_connected" (no check
+ * connection is open and ready), "timeout" (no answer within `timeout_ms`, 1 to 120 s) or the refusal of the params.
+ * @param {string} method
+ * @param {string} params_json
+ * @param {number} timeout_ms
+ * @returns {Promise<any>}
+ */
+export function check_call(method, params_json, timeout_ms) {
+    const ptr0 = passStringToWasm0(method, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(params_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.check_call(ptr0, len0, ptr1, len1, timeout_ms);
+    return ret;
+}
+
+/**
+ * v389: close the check connection (the checks are done, or the start was stopped). Nothing happens when none is open.
+ */
+export function check_close() {
+    wasm.check_close();
+}
+
+/**
+ * v389 (S72, F2b — docs/design/routes/f2b-r1.md): OPEN THE CHECK CONNECTION — a short Lightning connection to the
+ * provider `provider_pubkey_hex` at `wss_url`, under a key made for this one start. `wallet_pubkey_hex` is the
+ * wallet's own node key: the one-time key is refused if it were ever the same. Resolves to the one-time key (hex)
+ * once the handshake is done and requests can be sent; rejects when the socket closes first or `timeout_ms` (1 to
+ * 30 s) passes. THE WALLET'S LOCK IS NOT TAKEN — this connection is beside the wallet, not through it.
+ * @param {string} provider_pubkey_hex
+ * @param {string} wss_url
+ * @param {string} wallet_pubkey_hex
+ * @param {number} timeout_ms
+ * @returns {Promise<any>}
+ */
+export function check_open(provider_pubkey_hex, wss_url, wallet_pubkey_hex, timeout_ms) {
+    const ptr0 = passStringToWasm0(provider_pubkey_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(wss_url, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passStringToWasm0(wallet_pubkey_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.check_open(ptr0, len0, ptr1, len1, ptr2, len2, timeout_ms);
+    return ret;
+}
+
+/**
+ * v389: true while a check connection is open and its handshake is done.
+ * @returns {boolean}
+ */
+export function check_ready() {
+    const ret = wasm.check_ready();
+    return ret !== 0;
+}
+
+/**
  * Given 11 valid BIP39 words and 7 binary bits ("0"s and "1"s), compute the
  * 12th (checksum) word that completes a valid mnemonic.
  *
@@ -5774,6 +5947,94 @@ export function register_lsp(worker_url, registration_json) {
 }
 
 /**
+ * v392 (S72, F — docs/design/routes/sigcheck-r1.md): a registry's answer, checked against each provider's own
+ * signature — the page's reader passes every list through here before it stores or uses it (the engine's own reads
+ * go through the same rule). `list_json`: the answer's `lsps` array. Returns `{"list":[…],"report":{…}}`: the list
+ * to use, each record marked `sig_check` (`ok` | `none` | `held`; a held record carries `sig_why`: `bad` | `older` |
+ * `unsigned`, and `sig_held_checked`), and the report (`registry`, `at_ms`, `signing`, `ok`, `none`, `held`,
+ * `left_out`). Something that is not a list comes back as an empty list with `report.error`.
+ * @param {string} registry_url
+ * @param {string} list_json
+ * @returns {string}
+ */
+export function registry_list_check(registry_url, list_json) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(registry_url, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(list_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.registry_list_check(ptr0, len0, ptr1, len1);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * v393: the page names the registries of its own table that sign (a JSON list of https addresses), BEFORE the wallet
+ * starts — so the engine's own first read is held to it too. From then on an unsigned record from one of them is
+ * refused at the first contact (registry_check::must_sign). Returns how many were newly marked; a list that does
+ * not read marks none.
+ * @param {string} urls_json
+ * @returns {number}
+ */
+export function registry_must_sign(urls_json) {
+    const ptr0 = passStringToWasm0(urls_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.registry_must_sign(ptr0, len0);
+    return ret >>> 0;
+}
+
+/**
+ * v392: the report of the engine's OWN last read of a registry (the start ladder, switch_lsp, list_lsps) — the same
+ * shape as `registry_list_check`'s report; "" before the first read.
+ * @returns {string}
+ */
+export function registry_own_report() {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const ret = wasm.registry_own_report();
+        deferred1_0 = ret[0];
+        deferred1_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+    }
+}
+
+/**
+ * v392: the text a provider signed for this record, as this engine rebuilds it (the registry's canonicalRegisterMsg)
+ * — for the gates, which compare it with the registry's own function. Err: the text cannot be rebuilt.
+ * @param {string} record_json
+ * @returns {string}
+ */
+export function registry_record_text(record_json) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(record_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.registry_record_text(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * @param {boolean} v
  */
 export function set_backup_off(v) {
@@ -6043,6 +6304,10 @@ function __wbg_get_imports() {
         }, arguments); },
         __wbg_call_6bcf8d3e20937e46: function() { return handleError(function (arg0, arg1, arg2) {
             const ret = arg0.call(arg1, arg2);
+            return ret;
+        }, arguments); },
+        __wbg_call_7bbd9cceba9949ad: function() { return handleError(function (arg0, arg1, arg2, arg3) {
+            const ret = arg0.call(arg1, arg2, arg3);
             return ret;
         }, arguments); },
         __wbg_call_c1ad1cb1b78e8130: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
@@ -6391,7 +6656,7 @@ function __wbg_get_imports() {
             console.warn(arg0, arg1, arg2, arg3);
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2659, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2724, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed);
             return ret;
         },
@@ -6402,16 +6667,16 @@ function __wbg_get_imports() {
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("ErrorEvent")], shim_idx: 9, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_281);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_294);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 9, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_282);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_295);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 2363, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 2428, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f);
             return ret;
         },
@@ -6454,12 +6719,12 @@ function wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_281(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_281(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_294(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_294(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_282(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_282(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_295(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_295(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed(arg0, arg1, arg2) {

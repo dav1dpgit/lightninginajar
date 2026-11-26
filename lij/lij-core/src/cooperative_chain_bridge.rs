@@ -479,6 +479,9 @@ impl CooperativeChainBridge {
                     "cooperative_chain_bridge: received wallet→LSP message at wallet — ignoring"
                 );
             }
+            // v383: an LSPS0 message never reaches this queue — the handler gives it to lijox_rpc.rs. Named here so
+            // the match stays complete.
+            CooperativeChainMessage::Lsps0(_) => {}
         }
     }
 }

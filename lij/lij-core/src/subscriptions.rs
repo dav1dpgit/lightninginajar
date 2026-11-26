@@ -746,7 +746,8 @@ fn read_refund(v: &serde_json::Value) -> Option<Refund> {
     let r = v.get("refund")?;
     let state = r.get("state").and_then(|x| x.as_str())?;
     // "expired" (round 3): the refund could not be delivered in 30 days — the wallet sends a new address
-    if !matches!(state, "owed" | "approved" | "paid" | "none" | "expired") { return None; }
+    // "declined" (round 5, v393): the seller said no to this refund — the wallet says so and sends no address
+    if !matches!(state, "owed" | "approved" | "paid" | "none" | "expired" | "declined") { return None; }
     Some(Refund { amount_msat: r.get("amount_msat").and_then(|x| x.as_u64()).unwrap_or(0), state: state.to_string() })
 }
 
@@ -1206,7 +1207,7 @@ impl Store {
     pub fn refund_readdress(&mut self, sub_key: &str, refund_to: RefundTo, now: u64) -> Result<(), String> {
         let s = self.find_mut(sub_key)?;
         let e = s.end.as_mut().ok_or("no end was asked for")?;
-        if e.refund.as_ref().map(|r| r.state == "paid" || r.state == "none").unwrap_or(false) { return Err("no refund is waiting".into()); }
+        if e.refund.as_ref().map(|r| r.state == "paid" || r.state == "none" || r.state == "declined").unwrap_or(false) { return Err("no refund is waiting".into()); }
         e.refund_to = Some(refund_to); e.asked_at = now; e.acked = false;
         Ok(())
     }
@@ -2191,5 +2192,19 @@ mod tests {
         st2.refund_readdress(V_SUB_KEY, RefundTo::Lnaddr("once--m3x8q2k9a7bc@p.example".into()), T0 + 9).unwrap();
         let e = st2.find(V_SUB_KEY).unwrap().end.clone().unwrap();
         assert!(!e.acked && e.refund_to == Some(RefundTo::Lnaddr("once--m3x8q2k9a7bc@p.example".into())));
+        // v393 — an end that carried NO address takes one later, while the refund is owed (the page asks its provider
+        // for a one-use address again at each open); and the refund's sixth state (format round 5): declined by the
+        // seller — read, kept on the end, and it takes no address
+        let mut st3 = Store::default(); st3.add(record()).unwrap();
+        st3.end_asked(V_SUB_KEY, "now", None, T0).unwrap();
+        st3.end_acked(V_SUB_KEY, T0 + 5, Some(Refund { amount_msat: 9, state: "owed".into() }), T0 + 1).unwrap();
+        st3.refund_readdress(V_SUB_KEY, RefundTo::Lnaddr("once--m3x8q2k9a7bc@p.example".into()), T0 + 9).unwrap();
+        let e3 = st3.find(V_SUB_KEY).unwrap().end.clone().unwrap();
+        assert!(!e3.acked && e3.refund_to == Some(RefundTo::Lnaddr("once--m3x8q2k9a7bc@p.example".into())), "asked again, with the address");
+        assert_eq!(read_refund(&serde_json::json!({ "refund": { "amount_msat": 7, "state": "declined" } })), Some(Refund { amount_msat: 7, state: "declined".into() }));
+        assert_eq!(read_refund(&serde_json::json!({ "refund": { "amount_msat": 7, "state": "gone" } })), None, "a state the format does not have is still not read");
+        st3.end_acked(V_SUB_KEY, T0 + 5, Some(Refund { amount_msat: 9, state: "declined".into() }), T0 + 10).unwrap();
+        assert!(st3.refund_readdress(V_SUB_KEY, RefundTo::Lnaddr("once--zzzzzzzzzzzz@p.example".into()), T0 + 11).is_err(), "a declined refund takes no address");
+        assert_eq!(st3.find(V_SUB_KEY).unwrap().end.as_ref().unwrap().refund_to, Some(RefundTo::Lnaddr("once--m3x8q2k9a7bc@p.example".into())));
     }
 }

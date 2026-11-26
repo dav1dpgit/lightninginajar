@@ -187,6 +187,16 @@ pub fn refuse_reason_channel(v: &ChannelView) -> Option<&'static str> {
 /// older adapter, or cannot be reached. The caller treats None as "nothing known": never a reason to act.
 #[cfg(target_arch = "wasm32")]
 pub async fn fetch_funding_status(endpoint: &str, route_macaroon: &str, client_pubkey_hex: &str, funding_key: &str) -> Option<String> {
+    // v387 (F3b-2): inside the Lightning connection when the provider in use serves it there — the web request named the
+    // wallet's key and its channel's funding outpoint together. No answer inside is "nothing known", as a web request
+    // that got none was; the web request is not tried then.
+    if let Some(r) = crate::inside::ask(endpoint, "lijox.funding_status", serde_json::json!({ "funding": funding_key }).to_string(), 8_000).await {
+        return match r {
+            Ok(a) if a.ok => parse_funding_status(&a.text),
+            Ok(a) => { log::debug!("[jit-trust] funding status for {funding_key} inside the connection: HTTP {}", a.status); None }
+            Err(e) => { log::debug!("[jit-trust] funding status not answered inside the connection for {funding_key}: {e}"); None }
+        };
+    }
     let url = format!("{}/v1/jit-funding/status?client_pubkey={}&funding={}", endpoint.trim_end_matches('/'), client_pubkey_hex, funding_key);
     match crate::node::fetch_get_with_macaroon(&url, route_macaroon).await {
         Ok(text) => parse_funding_status(&text),

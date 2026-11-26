@@ -168,6 +168,11 @@ export class LijWalletHandle {
      */
     close_values_json(): string;
     /**
+     * v393: the wait a channel's money has after a close by force — `[{"channel_id","own_close_delay","anchors"}]`
+     * (node::close_waits_json). WALLET_BUSY when the engine cannot be asked this instant.
+     */
+    close_waits_json(): string;
+    /**
      * v309 (S56): what the cloud holds for this wallet — {"found":true,"channels":n,"version":v,"saved_at_ms":t} or
      * {"found":false}; REJECTS when the service gave no answer. Nothing is written. The warning before a device file
      * is loaded compares the file's date and number with these.
@@ -344,6 +349,29 @@ export class LijWalletHandle {
      * ("vault · vNNN · synced").
      */
     last_backup_version(): number;
+    /**
+     * v383 (S72, DP 2026-11-24 on "Section F"; docs/design/routes/f2-r1.md): ONE REQUEST TO THE PROVIDER INSIDE THE
+     * LIGHTNING CONNECTION (LSPS0, message 37913). Resolves to the JSON text {"ok","status","body"} — the same shape
+     * for an answer and for a refusal, the body being what the request's web route answers — or, when the path itself
+     * failed, {"ok":false,"status":0,"path_error":{"code","message"}}. Rejects with "not_connected" (the provider is
+     * not connected: nothing was sent), "timeout" (no answer within `timeout_ms`, 1 to 120 s), "WALLET_BUSY" (try
+     * again in a moment) or the engine's refusal of the request. THE WALLET'S LOCK IS HELD ONLY WHILE THE MESSAGE IS
+     * QUEUED, never while this waits: the answer arrives as a frame from the provider, and a frame waits for the lock.
+     */
+    lijox_call(provider_pubkey: string, method: string, params_json: string, timeout_ms: number): Promise<any>;
+    /**
+     * v383: the path's counts — JSON {sent, answered, refused, path_errors, ended_by_disconnect, cancelled, parts_out,
+     * parts_in, ignored, waiting}. Read by Diagnostics → Performance.
+     */
+    lijox_counts(): string;
+    /**
+     * v384 (F3a-1): THE PAGE HANDS OVER WHAT A PROVIDER SERVES INSIDE THE CONNECTION — `methods_json` is a JSON array
+     * of method names, that provider's own `lijox.hello` answer as the page keeps it. The engine's own requests to
+     * the provider in use (the route request, the route report, the outcome check) then go inside the connection
+     * for the methods on the list and are not sent as web requests. The whole list for that provider is replaced;
+     * "[]" means it serves none. → how many names are kept. Rejects with "WALLET_BUSY" (try again in a moment).
+     */
+    lijox_served_set(provider_pubkey: string, methods_json: string): number;
     /**
      * Return the closed-channel log as JSON.
      */
@@ -1102,6 +1130,13 @@ export class LijWalletHandle {
      */
     send_payment_with_retries(bolt11: string, route_endpoint: string, route_macaroon_hex: string, max_retries: number, progress_callback: Function, amount_sats_override?: bigint | null, amount_msat_override?: bigint | null): Promise<any>;
     /**
+     * v386: the ends of this wallet's sent Lightning payments as the engine wrote them down when it learned them
+     * (lij-core sent_log.rs) — `[{hash, state: "sent" | "failed", at, preimage?, fee_msat?, reason?}]`, newest
+     * first. Unlike list_recent_payments_json (LDK's own tracking, which drops a payment the moment it fails back),
+     * this is there after a restart and whenever the page comes to look. try_lock, as its neighbour.
+     */
+    sent_outcomes_json(): string;
+    /**
      * v274: the channel(s) each settled outbound payment left by (see node::sent_parts_json).
      * try_lock — the page asks again on WALLET_BUSY.
      */
@@ -1501,6 +1536,32 @@ export function bip39_suggest(prefix: string, max: number): any[];
 export function bolt11_facts(bolt11: string): string;
 
 /**
+ * v389: ONE REQUEST INSIDE THE CHECK CONNECTION. Resolves to the same JSON text as lijox_call —
+ * {"ok","status","body"}, or {"ok":false,"status":0,"path_error":{…}} — and rejects with "not_connected" (no check
+ * connection is open and ready), "timeout" (no answer within `timeout_ms`, 1 to 120 s) or the refusal of the params.
+ */
+export function check_call(method: string, params_json: string, timeout_ms: number): Promise<any>;
+
+/**
+ * v389: close the check connection (the checks are done, or the start was stopped). Nothing happens when none is open.
+ */
+export function check_close(): void;
+
+/**
+ * v389 (S72, F2b — docs/design/routes/f2b-r1.md): OPEN THE CHECK CONNECTION — a short Lightning connection to the
+ * provider `provider_pubkey_hex` at `wss_url`, under a key made for this one start. `wallet_pubkey_hex` is the
+ * wallet's own node key: the one-time key is refused if it were ever the same. Resolves to the one-time key (hex)
+ * once the handshake is done and requests can be sent; rejects when the socket closes first or `timeout_ms` (1 to
+ * 30 s) passes. THE WALLET'S LOCK IS NOT TAKEN — this connection is beside the wallet, not through it.
+ */
+export function check_open(provider_pubkey_hex: string, wss_url: string, wallet_pubkey_hex: string, timeout_ms: number): Promise<any>;
+
+/**
+ * v389: true while a check connection is open and its handshake is done.
+ */
+export function check_ready(): boolean;
+
+/**
  * Given 11 valid BIP39 words and 7 binary bits ("0"s and "1"s), compute the
  * 12th (checksum) word that completes a valid mnemonic.
  *
@@ -1588,6 +1649,36 @@ export function pull_backup(worker_url: string, auth_token: string, pubkey_hex: 
 export function push_backup(worker_url: string, auth_token: string, blob_json: string): Promise<void>;
 
 export function register_lsp(worker_url: string, registration_json: string): Promise<void>;
+
+/**
+ * v392 (S72, F — docs/design/routes/sigcheck-r1.md): a registry's answer, checked against each provider's own
+ * signature — the page's reader passes every list through here before it stores or uses it (the engine's own reads
+ * go through the same rule). `list_json`: the answer's `lsps` array. Returns `{"list":[…],"report":{…}}`: the list
+ * to use, each record marked `sig_check` (`ok` | `none` | `held`; a held record carries `sig_why`: `bad` | `older` |
+ * `unsigned`, and `sig_held_checked`), and the report (`registry`, `at_ms`, `signing`, `ok`, `none`, `held`,
+ * `left_out`). Something that is not a list comes back as an empty list with `report.error`.
+ */
+export function registry_list_check(registry_url: string, list_json: string): string;
+
+/**
+ * v393: the page names the registries of its own table that sign (a JSON list of https addresses), BEFORE the wallet
+ * starts — so the engine's own first read is held to it too. From then on an unsigned record from one of them is
+ * refused at the first contact (registry_check::must_sign). Returns how many were newly marked; a list that does
+ * not read marks none.
+ */
+export function registry_must_sign(urls_json: string): number;
+
+/**
+ * v392: the report of the engine's OWN last read of a registry (the start ladder, switch_lsp, list_lsps) — the same
+ * shape as `registry_list_check`'s report; "" before the first read.
+ */
+export function registry_own_report(): string;
+
+/**
+ * v392: the text a provider signed for this record, as this engine rebuilds it (the registry's canonicalRegisterMsg)
+ * — for the gates, which compare it with the registry's own function. Err: the text cannot be rebuilt.
+ */
+export function registry_record_text(record_json: string): string;
 
 export function set_backup_off(v: boolean): void;
 
@@ -1677,6 +1768,10 @@ export interface InitOutput {
     readonly anchors_refused_json: () => [number, number];
     readonly bip39_suggest: (a: number, b: number, c: number) => [number, number];
     readonly bolt11_facts: (a: number, b: number) => [number, number, number, number];
+    readonly check_call: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly check_close: () => void;
+    readonly check_open: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
+    readonly check_ready: () => number;
     readonly checksum_word_for_bits: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly derive_account_zpub: (a: number, b: number) => [number, number, number, number];
     readonly derive_receive_address: (a: number, b: number, c: number) => [number, number, number, number];
@@ -1712,6 +1807,7 @@ export interface InitOutput {
     readonly lijwallethandle_close_channel: (a: number, b: number, c: number) => [number, number];
     readonly lijwallethandle_close_event_log: (a: number) => [number, number];
     readonly lijwallethandle_close_values_json: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_close_waits_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_cloud_backup_info: (a: number) => any;
     readonly lijwallethandle_cloud_backup_meta: (a: number) => any;
     readonly lijwallethandle_coin_mark: (a: number, b: number, c: number) => [number, number, number, number];
@@ -1740,6 +1836,9 @@ export interface InitOutput {
     readonly lijwallethandle_import_backup_blob: (a: number, b: number, c: number) => [number, number, number, number];
     readonly lijwallethandle_import_backup_file: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly lijwallethandle_last_backup_version: (a: number) => [number, number, number];
+    readonly lijwallethandle_lijox_call: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => any;
+    readonly lijwallethandle_lijox_counts: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_lijox_served_set: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly lijwallethandle_list_closed_channels: (a: number) => [number, number, number, number];
     readonly lijwallethandle_list_lsps: (a: number) => any;
     readonly lijwallethandle_list_peers: (a: number) => any;
@@ -1865,6 +1964,7 @@ export interface InitOutput {
     readonly lijwallethandle_send_payment: (a: number, b: number, c: number) => any;
     readonly lijwallethandle_send_payment_via_lsp_route: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
     readonly lijwallethandle_send_payment_with_retries: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: any, j: number, k: bigint, l: number, m: bigint) => any;
+    readonly lijwallethandle_sent_outcomes_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_sent_parts_json: (a: number) => [number, number, number, number];
     readonly lijwallethandle_set_quorum_endpoints: (a: number, b: number, c: number) => [number, number];
     readonly lijwallethandle_sign_message: (a: number, b: number, c: number) => [number, number, number, number];
@@ -1938,6 +2038,10 @@ export interface InitOutput {
     readonly pull_backup: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
     readonly push_backup: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
     readonly register_lsp: (a: number, b: number, c: number, d: number) => any;
+    readonly registry_list_check: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly registry_must_sign: (a: number, b: number) => number;
+    readonly registry_own_report: () => [number, number];
+    readonly registry_record_text: (a: number, b: number) => [number, number, number, number];
     readonly set_backup_off: (a: number) => void;
     readonly set_broadcast_one: (a: number) => void;
     readonly set_coop_cpfp_auto: (a: number) => number;
@@ -1963,8 +2067,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_281: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_282: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_294: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_295: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

@@ -67,6 +67,10 @@ pub enum CooperativeChainMessage {
     BroadcastAck(BroadcastAck),
     FeeRatesKw(FeeRatesKw),   // v362
     JitFundingAbandoned(JitFundingAbandoned),   // v363
+    /// v383 (S72, docs/design/routes/f2-r1.md §7.1): LSPS0 (bLIP-50), message 37913 — one JSON-RPC 2.0 object as its
+    /// UTF-8 bytes. A request inside the Lightning connection, or its answer (lijox_rpc.rs). It never enters the
+    /// inbound queue of the chain-data kinds: handle_custom_message hands it to LijoxRpc.
+    Lsps0(Vec<u8>),
 }
 
 impl Writeable for CooperativeChainMessage {
@@ -84,6 +88,7 @@ impl Writeable for CooperativeChainMessage {
             Self::BroadcastAck(m) => m.write(w),
             Self::FeeRatesKw(m) => m.write(w),
             Self::JitFundingAbandoned(m) => m.write(w),
+            Self::Lsps0(bytes) => w.write_all(bytes),   // v383: the payload is the JSON text itself
         }
     }
 }
@@ -103,6 +108,7 @@ impl Type for CooperativeChainMessage {
             Self::BroadcastAck(_) => TYPE_BROADCAST_ACK,
             Self::FeeRatesKw(_) => TYPE_FEE_RATES_KW,
             Self::JitFundingAbandoned(_) => TYPE_JIT_FUNDING_ABANDONED,
+            Self::Lsps0(_) => crate::lijox_rpc::TYPE_LSPS0,   // v383
         }
     }
 }
@@ -155,6 +161,11 @@ pub struct CooperativeChainHandler {
     /// the provider is not yet connected is dropped by LDK; peer_connected sends this one again AT ONCE, so the
     /// process_events that follows the socket read delivers it in the same pass (it used to wait for the next tick).
     last_subscribe: Mutex<Option<SubscribeChainData>>,
+    /// v383 (S72): requests inside the Lightning connection (LSPS0, message 37913). This handler is the peer manager's
+    /// one custom message handler, so it carries the path's messages too: a 37913 message that arrives goes to
+    /// `rpc.on_message`, and the path's own queue is drained beside the chain queue. The twelve chain-data kinds pass
+    /// through the same lines as before.
+    rpc: std::sync::Arc<crate::lijox_rpc::LijoxRpc>,
 }
 
 impl CooperativeChainHandler {
@@ -165,7 +176,18 @@ impl CooperativeChainHandler {
             subscribe_target: Mutex::new(None),
             resubscribe_wanted: std::sync::atomic::AtomicBool::new(false),
             last_subscribe: Mutex::new(None),
+            rpc: std::sync::Arc::new(crate::lijox_rpc::LijoxRpc::new({
+                let r = crate::peer::ephemeral_bytes();
+                let mut seed = [0u8; 8];
+                seed.copy_from_slice(&r[..8]);
+                seed
+            })),
         }
+    }
+
+    /// v383: the path for requests inside the Lightning connection (lijox_rpc.rs).
+    pub fn rpc(&self) -> std::sync::Arc<crate::lijox_rpc::LijoxRpc> {
+        self.rpc.clone()
     }
 
     /// v249: true once, when the subscribe target has (re)connected or disconnected since
@@ -279,6 +301,18 @@ impl CustomMessageReader for CooperativeChainHandler {
             TYPE_JIT_FUNDING_ABANDONED => {
                 CooperativeChainMessage::JitFundingAbandoned(Readable::read(buffer)?)
             }
+            // v383: LSPS0 — the whole payload is one JSON text; it is read to its end and judged by lijox_rpc.rs.
+            crate::lijox_rpc::TYPE_LSPS0 => {
+                let mut bytes = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    let n = buffer.read(&mut chunk)?;
+                    if n == 0 { break; }
+                    bytes.extend_from_slice(&chunk[..n]);
+                    if bytes.len() > 65_535 { return Err(DecodeError::InvalidValue); }
+                }
+                CooperativeChainMessage::Lsps0(bytes)
+            }
             _ => return Ok(None),
         };
         Ok(Some(msg))
@@ -298,6 +332,11 @@ impl CustomMessageHandler for CooperativeChainHandler {
             msg.type_id(),
             sender_node_id
         );
+        // v383: a request's answer (or a part of one) goes to the path, never into the chain-data queue
+        if let CooperativeChainMessage::Lsps0(bytes) = &msg {
+            self.rpc.on_message(sender_node_id, bytes, crate::storage::now_ms());
+            return Ok(());
+        }
         self.inbound.lock().unwrap().push_back(ReceivedMessage {
             sender: sender_node_id,
             message: msg,
@@ -306,8 +345,13 @@ impl CustomMessageHandler for CooperativeChainHandler {
     }
 
     fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)> {
-        let mut q = self.outbound.lock().unwrap();
-        q.drain(..).collect()
+        let mut out: Vec<(PublicKey, Self::CustomMessage)> = {
+            let mut q = self.outbound.lock().unwrap();
+            q.drain(..).collect()
+        };
+        // v383: the path's own queue, after the chain-data messages
+        out.extend(self.rpc.drain_outbound().into_iter().map(|(peer, bytes)| (peer, CooperativeChainMessage::Lsps0(bytes))));
+        out
     }
 
     fn provided_node_features(&self) -> NodeFeatures {
@@ -320,6 +364,7 @@ impl CustomMessageHandler for CooperativeChainHandler {
     }
 
     fn peer_disconnected(&self, their_node_id: PublicKey) {
+        self.rpc.peer_disconnected(&their_node_id);   // v383: a request that waits on this peer ends now, with the reason
         // v249: the LSP's stream is gone with the socket — subscribe again on the next connect.
         if *self.subscribe_target.lock().unwrap() == Some(their_node_id) {
             log::info!("cooperative_chain_handler: LSP peer disconnected — SubscribeChainData will be re-issued on reconnect");
@@ -614,4 +659,64 @@ mod tests {
     // referenced in tests but is exported by cooperative_chain_msg.
     #[allow(dead_code)]
     fn _unused_imports_anchor(_: ScriptBuf) {}
+
+    // ── v383 (S72): the path for requests rides the same handler ──
+    #[test]
+    fn v383_the_reader_takes_37913_whole_and_still_says_unknown_for_other_types() {
+        let h = CooperativeChainHandler::new();
+        let text = br#"{"jsonrpc":"2.0","id":"a-1","result":{"ok":true}}"#;
+        let got = h.read(crate::lijox_rpc::TYPE_LSPS0, &mut &text[..]).unwrap().unwrap();
+        assert_eq!(got, CooperativeChainMessage::Lsps0(text.to_vec()));
+        assert_eq!(got.type_id(), 37913);
+        let mut w = Vec::new();
+        got.write(&mut w).unwrap();
+        assert_eq!(w, text.to_vec(), "written as the JSON text itself, nothing added");
+        assert!(h.read(37915, &mut &text[..]).unwrap().is_none());
+        assert!(h.read(40001, &mut &b""[..]).unwrap().is_none());
+        // a payload of the largest size a Lightning message holds is read whole
+        let big = vec![b' '; 65_533];
+        assert_eq!(h.read(crate::lijox_rpc::TYPE_LSPS0, &mut &big[..]).unwrap(), Some(CooperativeChainMessage::Lsps0(big)));
+    }
+
+    #[test]
+    fn v383_an_answer_reaches_the_request_and_never_the_chain_queue() {
+        use futures::FutureExt;
+        let h = CooperativeChainHandler::new();
+        let lsp = dummy_pubkey(9);
+        let (id, rx) = h.rpc().call(lsp, "lijox.prefs_set", serde_json::json!({ "hold_ms": 60000 })).unwrap();
+        // the request leaves through the handler's one queue, as message 37913
+        let out = h.get_and_clear_pending_msg();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, lsp);
+        assert_eq!(out[0].1.type_id(), 37913);
+        let answer = serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": { "ok": true } }).to_string().into_bytes();
+        h.handle_custom_message(CooperativeChainMessage::Lsps0(answer), lsp).unwrap();
+        assert_eq!(h.inbound_depth(), 0, "a 37913 message is not a chain-data message");
+        assert_eq!(rx.now_or_never().unwrap().unwrap().to_json(), serde_json::json!({ "ok": true, "status": 200, "body": { "ok": true } }));
+    }
+
+    #[test]
+    fn v383_chain_messages_and_requests_leave_in_one_drain_chain_first() {
+        let h = CooperativeChainHandler::new();
+        let lsp = dummy_pubkey(9);
+        let _ = h.rpc().call(lsp, "lijox.hello", serde_json::json!({})).unwrap();
+        h.send_register_watch_tx(lsp, RegisterWatchTx { txid: dummy_txid(1), script_pubkey: ScriptBuf::new() });
+        let out = h.get_and_clear_pending_msg();
+        assert_eq!(out.iter().map(|(_, m)| m.type_id()).collect::<Vec<_>>(), vec![TYPE_REGISTER_WATCH_TX, 37913]);
+        assert!(h.get_and_clear_pending_msg().is_empty());
+        // a chain-data message that arrives still goes to the chain queue
+        h.handle_custom_message(CooperativeChainMessage::BlockHeightUpdate(BlockHeightUpdate { new_height: 7, new_blockhash: dummy_blockhash(1) }), lsp).unwrap();
+        assert_eq!(h.inbound_depth(), 1);
+    }
+
+    #[test]
+    fn v383_a_disconnect_ends_the_requests_that_wait_on_that_peer() {
+        use futures::FutureExt;
+        let h = CooperativeChainHandler::new();
+        let lsp = dummy_pubkey(9);
+        let (_id, rx) = h.rpc().call(lsp, "lijox.hello", serde_json::json!({})).unwrap();
+        h.peer_disconnected(lsp);
+        let o = rx.now_or_never().unwrap().unwrap();
+        assert!(matches!(o, crate::lijox_rpc::RpcOutcome::PathError { code: crate::lijox_rpc::E_DISCONNECTED, .. }));
+    }
 }

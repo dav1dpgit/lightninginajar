@@ -1,0 +1,705 @@
+{
+ "what": "records as this registry lists them, and the text each was signed over (lij-worker/make-wallet-vectors.mjs)",
+ "clock_ms": 1795000000000,
+ "cases": [
+  {
+   "name": "v1, the fewest fields",
+   "rec": {
+    "name": "Plain",
+    "pubkey": "03321ae1cf8bf9efdbcbe52a36a429fb51ea427f5c289856f0182aacb4b416ceca",
+    "endpoint": "https://lsp.example.org",
+    "fee_ppm": 250,
+    "fee_base_sats": 0,
+    "channel_open_fee_sats": 0,
+    "max_channel_size_sats": 0,
+    "supports_jit": true,
+    "route_endpoint": null,
+    "route_macaroon": null,
+    "wss_url": null,
+    "filter_url": null,
+    "filter_sp": false,
+    "uptime": 100,
+    "registered_at": 1795000000000,
+    "ts": 1795000000,
+    "signature": "rn7idbpzms8jcttw3xmk4851rco6swmr9cysnzj5ydqojiysg7ngqca6aehpz6oe43snerpfdej7tkpg8impokz9x54dz6ngw31f4jah",
+    "first_registered_at": 1795000000000,
+    "last_seen_ms": 1795000000000,
+    "stale": false
+   },
+   "text": "lijox-register:v1:03321ae1cf8bf9efdbcbe52a36a429fb51ea427f5c289856f0182aacb4b416ceca:1795000000:Plain:https%3A%2F%2Flsp.example.org::::250:0:0:0:1"
+  },
+  {
+   "name": "v1, every base field",
+   "rec": {
+    "name": "Plotzwerks LSP-1",
+    "pubkey": "0349d90539fd6ebe9ea6fa77f7f5ac50e21bd38b8e1ce88369ec6efa9ca6349630",
+    "endpoint": "https://lsp.example.org",
+    "fee_ppm": 250,
+    "fee_base_sats": 1,
+    "channel_open_fee_sats": 2500,
+    "max_channel_size_sats": 5000000,
+    "supports_jit": true,
+    "route_endpoint": "https://lsp.example.org",
+    "route_macaroon": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    "wss_url": "wss://lsp.example.org/ws",
+    "filter_url": null,
+    "filter_sp": false,
+    "uptime": 100,
+    "registered_at": 1795000000000,
+    "ts": 1794999999,
+    "signature": "rdtjfdapffccobyhiucebgwojs3p1u88i7ey37py7opjoacwhajtw61qchc9dc7tzc1oejwt8m3pqcrbzcsdoheafnx3k4ebsjtf135d",
+    "first_registered_at": 1795000000000,
+    "last_seen_ms": 1795000000000,
+    "stale": false
+   },
+   "text": "lijox-register:v1:0349d90539fd6ebe9ea6fa77f7f5ac50e21bd38b8e1ce88369ec6efa9ca6349630:1794999999:Plotzwerks%20LSP-1:https%3A%2F%2Flsp.example.org:wss%3A%2F%2Flsp.example.org%2Fws:https%3A%2F%2Flsp.example.org:a1b2c3d4e5f60718293a4b5c6d7e8f90:250:1:2500:5000000:1"
+  },
+  {
+   "name": "v1, a name full of marks",
+   "rec": {
+    "name": "Bob's Umbrel ⚡ café :;|%&+/?#=~!*() 日本",
+    "pubkey": "039b083d5b09fae7d0d5d9b8ebfafe4a553c1ce901212231d4021ad5aa7835f957",
+    "endpoint": "https://lsp.example.org",
+    "fee_ppm": 250,
+    "fee_base_sats": 1,
+    "channel_open_fee_sats": 2500,
+    "max_channel_size_sats": 5000000,
+    "supports_jit": true,
+    "route_endpoint": "https://lsp.example.org",
+    "route_macaroon": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    "wss_url": "wss://lsp.example.org/ws",
+    "filter_url": null,
+    "filter_sp": false,
+    "uptime": 100,
+    "registered_at": 1795000000000,
+    "ts": 1794999998,
+    "signature": "dh1hnogz7auzd9jhtex1gw1oc9aks54iea1iujsa93o9eb6sm94psawarqqsjpoj47buptuw7pa3kqx74dqap6hjki4cfe1nemi6hywy",
+    "first_registered_at": 1795000000000,
+    "last_seen_ms": 1795000000000,
+    "stale": false
+   },
+   "text": "lijox-register:v1:039b083d5b09fae7d0d5d9b8ebfafe4a553c1ce901212231d4021ad5aa7835f957:1794999998:Bob's%20Umbrel%20%E2%9A%A1%20caf%C3%A9%20%3A%3B%7C%25%26%2B%2F%3F%23%3D~!*()%20%E6%97%A5%E6%9C%AC:https%3A%2F%2Flsp.example.org:wss%3A%2F%2Flsp.example.org%2Fws:https%3A%2F%2Flsp.example.org:a1b2c3d4e5f60718293a4b5c6d7e8f90:250:1:2500:5000000:1"
+  },
+  {
+   "name": "v1, supports_jit false and a fee that is not whole",
+   "rec": {
+    "name": "Half",
+    "pubkey": "03e4fd8ff17aa921f8575292f8bc144abf4ab12645990677c8feb5a0391d043019",
+    "endpoint": "https://lsp.example.org",
+    "fee_ppm": 0.5,
+    "fee_base_sats": 1,
+    "channel_open_fee_sats": 2500,
+    "max_channel_size_sats": 5000000,
+    "supports_jit": false,
+    "route_endpoint": "https://lsp.example.org",
+    "route_macaroon": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    "wss_url": "wss://lsp.example.org/ws",
+    "filter_url": null,
+    "filter_sp": false,
+    "uptime": 100,
+    "registered_at": 1795000000000,
+    "ts": 1794999997,
+    "signature": "ryxn6g3g57jayr1gkxp8as91as4or1ohfxjujm48ti8yw3eof5bje9shzej5yhd9y4p3sx5fnbaa61eejdhhom335k6hho3cooifj1km",
+    "first_registered_at": 1795000000000,
+    "last_seen_ms": 1795000000000,
+    "stale": false
+   },
+   "text": "lijox-register:v1:03e4fd8ff17aa921f8575292f8bc144abf4ab12645990677c8feb5a0391d043019:1794999997:Half:https%3A%2F%2Flsp.example.org:wss%3A%2F%2Flsp.example.org%2Fws:https%3A%2F%2Flsp.example.org:a1b2c3d4e5f60718293a4b5c6d7e8f90:0.5:1:2500:5000000:0"
+  },
+  {
+   "name": "v2, a filter server",
+   "rec": {
+    "name": "Filters",
+    "pubkey": "0323a11a46e9f25ad54c0416a576d83875eb92f6494e81cbd549175b9f657011cd",
+    "endpoint": "https://lsp.example.org",
+    "fee_ppm": 250,
+    "fee_base_sats": 1,
+    "channel_open_fee_sats": 2500,
+    "max_channel_size_sats": 5000000,
+    "supports_jit": true,
+    "route_endpoint": "https://lsp.example.org",
+    "route_macaroon": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    "wss_url": "wss://lsp.example.org/ws",
+    "filter_url": "https://filters.example.org",
+    "filter_sp": true,
+    "uptime": 100,
+    "registered_at": 1795000000000,
+    "ts": 1794999996,
+    "signature": "rydwc3r1hacaugcr7b4t7m4i79akfdaqg3s1esqri96xzqkcxq4qwmfb64fsc95jkw9d3miqgr8pakqriwf86p58wm8khms8e9qn1nxh",
+    "first_registered_at": 1795000000000,
+    "last_seen_ms": 1795000000000,
+    "stale": false
+   },
+   "text": "lijox-register:v2:0323a11a46e9f25ad54c0416a576d83875eb92f6494e81cbd549175b9f657011cd:1794999996:Filters:https%3A%2F%2Flsp.example.org:wss%3A%2F%2Flsp.example.org%2Fws:https%3A%2F%2Flsp.example.org:a1b2c3d4e5f60718293a4b5c6d7e8f90:250:1:2500:5000000:1:https%3A%2F%2Ffilters.example.org:1"
+  },
+  {
+   "name": "v2, a filter server without the silent-payment index",
+   "rec": {
+    "name": "Filters no sp",
+    "pubkey": "02d62ec8df0129df039c888bf6c9ecb3ef4834ed87ae0ec25cc9aba55e960f9f8b",
+    "endpoint": "https://lsp.example.org",
+    "fee_ppm": 250,
+    "fee_base_sats": 1,
+    "channel_open_fee_sats": 2500,
+    "max_channel_size_sats": 5000000,
+    "supports_jit": true,
+    "route_endpoint": "https://lsp.example.org",
+    "route_macaroon": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    "wss_url": "wss://lsp.example.org/ws",
+    "filter_url": "https://filters.example.org/x",
+    "filter_sp": false,
+    "uptime": 100,
+    "registered_at": 1795000000000,
+    "ts": 1794999995,
+    "signature": "rbbciidn3ianrddjwqkx5md37w6tf9ueaan1cpeqerpjx865io5hki1ntix46utkrnagbagr4kr8jpr9wpfb4rz5wkr5j4pnunzrxa67",
+    "first_registered_at": 1795000000000,
+    "last_seen_ms": 1795000000000,
+    "stale": false
+   },
+   "text": "lijox-register:v2:02d62ec8df0129df039c888bf6c9ecb3ef4834ed87ae0ec25cc9aba55e960f9f8b:1794999995:Filters%20no%20sp:https%3A%2F%2Flsp.example.org:wss%3A%2F%2Flsp.example.org%2Fws:https%3A%2F%2Flsp.example.org:a1b2c3d4e5f60718293a4b5c6d7e8f90:250:1:2500:5000000:1:https%3A%2F%2Ffilters.example.org%2Fx:0"
+  },
+  {
+   "name": "v3, the Tatara block",
+   "rec": {
+    "name": "Tatara",
+    "pubkey": "039dfc089f3886dda3d48d1599e81805b5a5d60ade01f74e704c1daceda18054b0",
+    "endpoint": "https://lsp.example.org",
+    "fee_ppm": 250,
+    "fee_base_sats": 1,
+    "channel_open_fee_sats": 2500,
+    "max_channel_size_sats": 5000000,
+    "supports_jit": true,
+    "route_endpoint": "https://lsp.example.org",
+    "route_macaroon": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    "wss_url": "wss://lsp.example.org/ws",
+    "filter_url": "https://filters.example.org",
+    "filter_sp": true,
+    "tatara": {
+     "v": 1,
+     "sizes": [
+      50000,
+      100000,
+      250000,
+      1000000
+     ],
+     "min_people": 3,
+     "max_people": 6,
+     "countdown_s": 600,
+     "wake_window_s": 180,
+     "max_retries": 2,
+     "strikes": 4,
+     "max_pools_per_size": 3,
+     "max_pools_total": 10,
+     "max_list_per_size": 60,
+     "max_fee_rate": 20,
+     "channel_pools": true,
+     "channel_sizes": [
+      250000,
+      1000000
+     ],
+     "relay_url": "wss://lsp.example.org/tatara/relay",
+     "relay_for_others": true,
+     "forward_payouts": false,
+     "forward_coin_checks": true,
+     "coin_check_url": "https://filters.example.org/coin",
+     "ring_hash": "abababababababababababababababababababababababababababababababab"
+    },
+    "uptime": 100,
+    "registered_at": 1795000000000,
+    "ts": 1794999994,
+    "signature": "ryb4m4hf5jrdny5s8o1e4yg36sdtc4oym5nhp5t3wncwompmu9rphq4e1i4ow6ptj6tdiyrqr9wgje8pixa6tooxez58p3kcpd9gh8hr",
+    "first_registered_at": 1795000000000,
+    "last_seen_ms": 1795000000000,
+    "stale": false
+   },
+   "text": "lijox-register:v3:039dfc089f3886dda3d48d1599e81805b5a5d60ade01f74e704c1daceda18054b0:1794999994:Tatara:https%3A%2F%2Flsp.example.org:wss%3A%2F%2Flsp.example.org%2Fws:https%3A%2F%2Flsp.example.org:a1b2c3d4e5f60718293a4b5c6d7e8f90:250:1:2500:5000000:1:https%3A%2F%2Ffilters.example.org:1:1:50000%2C100000%2C250000%2C1000000:3:6:600:180:2:4:3:10:60:20:1:250000%2C1000000:wss%3A%2F%2Flsp.example.org%2Ftatara%2Frelay:1:0:1:https%3A%2F%2Ffilters.example.org%2Fcoin:abababababababababababababababababababababababababababababababab"
+  },
+  {
+   "name": "v3, the Tatara block without a filter server",
+   "rec": {
+    "name": "Tatara alone",
+    "pubkey": "0272188738d39899786e92d42472310293f3f0eccb463c4f302538418b9ad3a22a",
+    "endpoint": "https://lsp.example.org",
+    "fee_ppm": 250,
+    "fee_base_sats": 1,
+    "channel_open_fee_sats": 2500,
+    "max_channel_size_sats": 5000000,
+    "supports_jit": true,
+    "route_endpoint": "https://lsp.example.org",
+    "route_macaroon": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    "wss_url": "wss://lsp.example.org/ws",
+    "filter_url": null,
+    "filter_sp": false,
+    "tatara": {
+     "v": 1,
+     "sizes": [
+      50000,
+      100000,
+      250000,
+      1000000
+     ],
+     "min_people": 3,
+     "max_people": 6,
+     "countdown_s": 600,
+     "wake_window_s": 180,
+     "max_retries": 2,
+     "strikes": 4,
+     "max_pools_per_size": 3,
+     "max_pools_total": 10,
+     "max_list_per_size": 60,
+     "max_fee_rate": 20,
+     "channel_pools": false,
+     "channel_sizes": [],
+     "relay_url": "wss://lsp.example.org/tatara/relay",
+     "relay_for_others": true,
+     "forward_payouts": false,
+     "forward_coin_checks": true,
+     "coin_check_url": null,
+     "ring_hash": "abababababababababababababababababababababababababababababababab"
+    },
+    "uptime": 100,
+    "registered_at": 1795000000000,
+    "ts": 1794999993,
+    "signature": "d9z1hw5am8dr4azme3q7a154jtsjzyxio5oqru4i1om98izseqbsg5pstjo6pdy6ipd335d3ccpbi38m6b5xbf1unaxj1z9dp6xtrfzq",
+    "first_registered_at": 1795000000000,
+    "last_seen_ms": 1795000000000,
+    "stale": false
+   },
+   "text": "lijox-register:v3:0272188738d39899786e92d42472310293f3f0eccb463c4f302538418b9ad3a22a:1794999993:Tatara%20alone:https%3A%2F%2Flsp.example.org:wss%3A%2F%2Flsp.example.org%2Fws:https%3A%2F%2Flsp.example.org:a1b2c3d4e5f60718293a4b5c6d7e8f90:250:1:2500:5000000:1::0:1:50000%2C100000%2C250000%2C1000000:3:6:600:180:2:4:3:10:60:20:0::wss%3A%2F%2Flsp.example.org%2Ftatara%2Frelay:1:0:1::abababababababababababababababababababababababababababababababab"
+  },
+  {
+   "name": "v4, two routes",
+   "rec": {
+    "name": "Routes",
+    "pubkey": "032a7b88a2c85f3456092683e43eaefd0c7de7ef41e877959688c93303e72012c5",
+    "endpoint": "https://direct-lsp.example.org",
+    "fee_ppm": 250,
+    "fee_base_sats": 1,
+    "channel_open_fee_sats": 2500,
+    "max_channel_size_sats": 5000000,
+    "supports_jit": true,
+    "route_endpoint": "https://direct-lsp.example.org",
+    "route_macaroon": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    "wss_url": "wss://direct-ws.example.org",
+    "filter_url": "https://direct-filters.example.org",
+    "filter_sp": true,
+    "routes": [
+     {
+      "reach": "direct",
+      "endpoint": "https://direct-lsp.example.org",
+      "wss_url": "wss://direct-ws.example.org",
+      "filter_url": "https://direct-filters.example.org"
+     },
+     {
+      "reach": "cloudflare",
+      "endpoint": "https://lsp.example.org:8443/a",
+      "wss_url": "wss://ws.example.org:8443/a",
+      "filter_url": null
+     }
+    ],
+    "uptime": 100,
+    "registered_at": 1795000000000,
+    "ts": 1794999992,
+    "signature": "rb69juyhyuma7bjjdkr5zhjd18zrjxm51zonkwppjhsitnwo5ae66atcaf5hqsuexhqbhmcdsttsdz94faeks36wd11619cu64shdxzn",
+    "first_registered_at": 1795000000000,
+    "last_seen_ms": 1795000000000,
+    "stale": false
+   },
+   "text": "lijox-register:v4:032a7b88a2c85f3456092683e43eaefd0c7de7ef41e877959688c93303e72012c5:1794999992:Routes:https%3A%2F%2Fdirect-lsp.example.org:wss%3A%2F%2Fdirect-ws.example.org:https%3A%2F%2Fdirect-lsp.example.org:a1b2c3d4e5f60718293a4b5c6d7e8f90:250:1:2500:5000000:1:https%3A%2F%2Fdirect-filters.example.org:1:0::0:0:0:0:0:0:0:0:0:0:0:::0:0:0:::direct%7Chttps%3A%2F%2Fdirect-lsp.example.org%7Cwss%3A%2F%2Fdirect-ws.example.org%7Chttps%3A%2F%2Fdirect-filters.example.org%3Bcloudflare%7Chttps%3A%2F%2Flsp.example.org%3A8443%2Fa%7Cwss%3A%2F%2Fws.example.org%3A8443%2Fa%7C"
+  },
+  {
+   "name": "v4, two routes and the Tatara block",
+   "rec": {
+    "name": "Routes and Tatara",
+    "pubkey": "0354743aae0e29ce4fc6ca1ba9d10f101a5a34c5dbae770830f1c523bbceba4bda",
+    "endpoint": "https://direct-lsp.example.org",
+    "fee_ppm": 250,
+    "fee_base_sats": 1,
+    "channel_open_fee_sats": 2500,
+    "max_channel_size_sats": 5000000,
+    "supports_jit": true,
+    "route_endpoint": "https://direct-lsp.example.org",
+    "route_macaroon": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    "wss_url": "wss://direct-ws.example.org",
+    "filter_url": "https://direct-filters.example.org",
+    "filter_sp": true,
+    "tatara": {
+     "v": 1,
+     "sizes": [
+      50000,
+      100000,
+      250000,
+      1000000
+     ],
+     "min_people": 3,
+     "max_people": 6,
+     "countdown_s": 600,
+     "wake_window_s": 180,
+     "max_retries": 2,
+     "strikes": 4,
+     "max_pools_per_size": 3,
+     "max_pools_total": 10,
+     "max_list_per_size": 60,
+     "max_fee_rate": 20,
+     "channel_pools": true,
+     "channel_sizes": [
+      250000,
+      1000000
+     ],
+     "relay_url": "wss://lsp.example.org/tatara/relay",
+     "relay_for_others": true,
+     "forward_payouts": false,
+     "forward_coin_checks": true,
+     "coin_check_url": "https://filters.example.org/coin",
+     "ring_hash": "abababababababababababababababababababababababababababababababab"
+    },
+    "routes": [
+     {
+      "reach": "direct",
+      "endpoint": "https://direct-lsp.example.org",
+      "wss_url": "wss://direct-ws.example.org",
+      "filter_url": "https://direct-filters.example.org"
+     },
+     {
+      "reach": "cloudflare",
+      "endpoint": "https://lsp.example.org:8443/a",
+      "wss_url": "wss://ws.example.org:8443/a",
+      "filter_url": null
+     }
+    ],
+    "uptime": 100,
+    "registered_at": 1795000000000,
+    "ts": 1794999991,
+    "signature": "dhh53q3wdnu1nsi7b1rh3nqmrfhnr7yxxxycxpwih9gnd3rgshnd4r9ftha4wwz8uyxn9ct9zdzrsj6q6tk983196513ybhidgkyq7yi",
+    "first_registered_at": 1795000000000,
+    "last_seen_ms": 1795000000000,
+    "stale": false
+   },
+   "text": "lijox-register:v4:0354743aae0e29ce4fc6ca1ba9d10f101a5a34c5dbae770830f1c523bbceba4bda:1794999991:Routes%20and%20Tatara:https%3A%2F%2Fdirect-lsp.example.org:wss%3A%2F%2Fdirect-ws.example.org:https%3A%2F%2Fdirect-lsp.example.org:a1b2c3d4e5f60718293a4b5c6d7e8f90:250:1:2500:5000000:1:https%3A%2F%2Fdirect-filters.example.org:1:1:50000%2C100000%2C250000%2C1000000:3:6:600:180:2:4:3:10:60:20:1:250000%2C1000000:wss%3A%2F%2Flsp.example.org%2Ftatara%2Frelay:1:0:1:https%3A%2F%2Ffilters.example.org%2Fcoin:abababababababababababababababababababababababababababababababab:direct%7Chttps%3A%2F%2Fdirect-lsp.example.org%7Cwss%3A%2F%2Fdirect-ws.example.org%7Chttps%3A%2F%2Fdirect-filters.example.org%3Bcloudflare%7Chttps%3A%2F%2Flsp.example.org%3A8443%2Fa%7Cwss%3A%2F%2Fws.example.org%3A8443%2Fa%7C"
+  },
+  {
+   "name": "v5, a tower",
+   "rec": {
+    "name": "Tower",
+    "pubkey": "022fbee3addeb799cfbed96b8035c36a1671aab5fada01b5d3bdd26703f8d7889d",
+    "endpoint": "https://direct-lsp.example.org",
+    "fee_ppm": 250,
+    "fee_base_sats": 1,
+    "channel_open_fee_sats": 2500,
+    "max_channel_size_sats": 5000000,
+    "supports_jit": true,
+    "route_endpoint": "https://direct-lsp.example.org",
+    "route_macaroon": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    "wss_url": "wss://direct-ws.example.org",
+    "filter_url": "https://direct-filters.example.org",
+    "filter_sp": true,
+    "routes": [
+     {
+      "reach": "direct",
+      "endpoint": "https://direct-lsp.example.org",
+      "wss_url": "wss://direct-ws.example.org",
+      "filter_url": "https://direct-filters.example.org"
+     },
+     {
+      "reach": "cloudflare",
+      "endpoint": "https://lsp.example.org:8443/a",
+      "wss_url": "wss://ws.example.org:8443/a",
+      "filter_url": null
+     }
+    ],
+    "tower": {
+     "offered": true,
+     "quota_bytes": 5242880,
+     "keep_days_silent": 400,
+     "form": "teos-v1"
+    },
+    "uptime": 100,
+    "registered_at": 1795000000000,
+    "ts": 1794999990,
+    "signature": "ry75zwqbf1qmaoejf58kmjghbat65n1fh6qrbbgbhwod7x7nxzqnazny7hcczh3d3cwhdqzuzb9dfurg6ya7b1epbzup9gn6cktiu4jb",
+    "first_registered_at": 1795000000000,
+    "last_seen_ms": 1795000000000,
+    "stale": false
+   },
+   "text": "lijox-register:v5:022fbee3addeb799cfbed96b8035c36a1671aab5fada01b5d3bdd26703f8d7889d:1794999990:Tower:https%3A%2F%2Fdirect-lsp.example.org:wss%3A%2F%2Fdirect-ws.example.org:https%3A%2F%2Fdirect-lsp.example.org:a1b2c3d4e5f60718293a4b5c6d7e8f90:250:1:2500:5000000:1:https%3A%2F%2Fdirect-filters.example.org:1:0::0:0:0:0:0:0:0:0:0:0:0:::0:0:0:::direct%7Chttps%3A%2F%2Fdirect-lsp.example.org%7Cwss%3A%2F%2Fdirect-ws.example.org%7Chttps%3A%2F%2Fdirect-filters.example.org%3Bcloudflare%7Chttps%3A%2F%2Flsp.example.org%3A8443%2Fa%7Cwss%3A%2F%2Fws.example.org%3A8443%2Fa%7C:1:5242880:400:teos-v1"
+  },
+  {
+   "name": "v5, a tower that is not offered, no routes",
+   "rec": {
+    "name": "Tower off",
+    "pubkey": "034de1ba9180037647dc51bff649a8651b409b141369246456b14a099b1196a8f7",
+    "endpoint": "https://lsp.example.org",
+    "fee_ppm": 250,
+    "fee_base_sats": 1,
+    "channel_open_fee_sats": 2500,
+    "max_channel_size_sats": 5000000,
+    "supports_jit": true,
+    "route_endpoint": "https://lsp.example.org",
+    "route_macaroon": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    "wss_url": "wss://lsp.example.org/ws",
+    "filter_url": null,
+    "filter_sp": false,
+    "tower": {
+     "offered": false,
+     "quota_bytes": 5242880,
+     "keep_days_silent": 400,
+     "form": "teos-v1"
+    },
+    "uptime": 100,
+    "registered_at": 1795000000000,
+    "ts": 1794999989,
+    "signature": "ryqtgunipexqimybb5ecjddma5ixrb449umx4sj8dw73i363tihjkrssi97q4nc1xxjd77j78k5t6jrspeezjhkgze5z8r7nmkyr4ort",
+    "first_registered_at": 1795000000000,
+    "last_seen_ms": 1795000000000,
+    "stale": false
+   },
+   "text": "lijox-register:v5:034de1ba9180037647dc51bff649a8651b409b141369246456b14a099b1196a8f7:1794999989:Tower%20off:https%3A%2F%2Flsp.example.org:wss%3A%2F%2Flsp.example.org%2Fws:https%3A%2F%2Flsp.example.org:a1b2c3d4e5f60718293a4b5c6d7e8f90:250:1:2500:5000000:1::0:0::0:0:0:0:0:0:0:0:0:0:0:::0:0:0::::0:5242880:400:teos-v1"
+  },
+  {
+   "name": "v6, chan_confs",
+   "rec": {
+    "name": "Confs",
+    "pubkey": "0382fb4077c4cb444503d8313b8c592de02581aeaa828ba11c965fe5b85af29a2c",
+    "endpoint": "https://direct-lsp.example.org",
+    "fee_ppm": 250,
+    "fee_base_sats": 1,
+    "channel_open_fee_sats": 2500,
+    "max_channel_size_sats": 5000000,
+    "supports_jit": true,
+    "route_endpoint": "https://direct-lsp.example.org",
+    "route_macaroon": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    "wss_url": "wss://direct-ws.example.org",
+    "filter_url": "https://direct-filters.example.org",
+    "filter_sp": true,
+    "routes": [
+     {
+      "reach": "direct",
+      "endpoint": "https://direct-lsp.example.org",
+      "wss_url": "wss://direct-ws.example.org",
+      "filter_url": "https://direct-filters.example.org"
+     },
+     {
+      "reach": "cloudflare",
+      "endpoint": "https://lsp.example.org:8443/a",
+      "wss_url": "wss://ws.example.org:8443/a",
+      "filter_url": null
+     }
+    ],
+    "tower": {
+     "offered": true,
+     "quota_bytes": 5242880,
+     "keep_days_silent": 400,
+     "form": "teos-v1"
+    },
+    "chan_confs": {
+     "min": 3,
+     "max": 6
+    },
+    "uptime": 100,
+    "registered_at": 1795000000000,
+    "ts": 1794999988,
+    "signature": "rnt7qh186ikncegyne6mbp4eog68n95y3k1uwwmrfad3j8q6fnjdcqwskq4gkwemqxs7gjs1kic1mty61ann5tdxzuid1bs6dof8enrh",
+    "first_registered_at": 1795000000000,
+    "last_seen_ms": 1795000000000,
+    "stale": false
+   },
+   "text": "lijox-register:v6:0382fb4077c4cb444503d8313b8c592de02581aeaa828ba11c965fe5b85af29a2c:1794999988:Confs:https%3A%2F%2Fdirect-lsp.example.org:wss%3A%2F%2Fdirect-ws.example.org:https%3A%2F%2Fdirect-lsp.example.org:a1b2c3d4e5f60718293a4b5c6d7e8f90:250:1:2500:5000000:1:https%3A%2F%2Fdirect-filters.example.org:1:0::0:0:0:0:0:0:0:0:0:0:0:::0:0:0:::direct%7Chttps%3A%2F%2Fdirect-lsp.example.org%7Cwss%3A%2F%2Fdirect-ws.example.org%7Chttps%3A%2F%2Fdirect-filters.example.org%3Bcloudflare%7Chttps%3A%2F%2Flsp.example.org%3A8443%2Fa%7Cwss%3A%2F%2Fws.example.org%3A8443%2Fa%7C:1:5242880:400:teos-v1:3:6"
+  },
+  {
+   "name": "v6, chan_confs and nothing else",
+   "rec": {
+    "name": "Confs alone",
+    "pubkey": "023f77608ffbab22ae54ec7569e3e57265e01fbfa8f25705ab2361f5b046f4accd",
+    "endpoint": "https://lsp.example.org",
+    "fee_ppm": 250,
+    "fee_base_sats": 0,
+    "channel_open_fee_sats": 0,
+    "max_channel_size_sats": 0,
+    "supports_jit": true,
+    "route_endpoint": null,
+    "route_macaroon": null,
+    "wss_url": null,
+    "filter_url": null,
+    "filter_sp": false,
+    "chan_confs": {
+     "min": 1,
+     "max": 144
+    },
+    "uptime": 100,
+    "registered_at": 1795000000000,
+    "ts": 1794999987,
+    "signature": "d7owtj8c13hkasq4445rihuz383x1csfww9hjmgtxmumaiyk931hgyptdrxmhy9xijdbhxp1h5kmxhjkkt5zgtrrwtm156nju7dusj63",
+    "first_registered_at": 1795000000000,
+    "last_seen_ms": 1795000000000,
+    "stale": false
+   },
+   "text": "lijox-register:v6:023f77608ffbab22ae54ec7569e3e57265e01fbfa8f25705ab2361f5b046f4accd:1794999987:Confs%20alone:https%3A%2F%2Flsp.example.org::::250:0:0:0:1::0:0::0:0:0:0:0:0:0:0:0:0:0:::0:0:0::::0:0:0::1:144"
+  },
+  {
+   "name": "v7, the rpc list",
+   "rec": {
+    "name": "Inside",
+    "pubkey": "039f40dccee67e77a454b186cf0b6df0d3880d120bf036b968a5fba145b3e9ca09",
+    "endpoint": "https://direct-lsp.example.org",
+    "fee_ppm": 250,
+    "fee_base_sats": 1,
+    "channel_open_fee_sats": 2500,
+    "max_channel_size_sats": 5000000,
+    "supports_jit": true,
+    "route_endpoint": "https://direct-lsp.example.org",
+    "route_macaroon": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    "wss_url": "wss://direct-ws.example.org",
+    "filter_url": "https://direct-filters.example.org",
+    "filter_sp": true,
+    "tatara": {
+     "v": 1,
+     "sizes": [
+      50000,
+      100000,
+      250000,
+      1000000
+     ],
+     "min_people": 3,
+     "max_people": 6,
+     "countdown_s": 600,
+     "wake_window_s": 180,
+     "max_retries": 2,
+     "strikes": 4,
+     "max_pools_per_size": 3,
+     "max_pools_total": 10,
+     "max_list_per_size": 60,
+     "max_fee_rate": 20,
+     "channel_pools": true,
+     "channel_sizes": [
+      250000,
+      1000000
+     ],
+     "relay_url": "wss://lsp.example.org/tatara/relay",
+     "relay_for_others": true,
+     "forward_payouts": false,
+     "forward_coin_checks": true,
+     "coin_check_url": "https://filters.example.org/coin",
+     "ring_hash": "abababababababababababababababababababababababababababababababab"
+    },
+    "routes": [
+     {
+      "reach": "direct",
+      "endpoint": "https://direct-lsp.example.org",
+      "wss_url": "wss://direct-ws.example.org",
+      "filter_url": "https://direct-filters.example.org"
+     },
+     {
+      "reach": "cloudflare",
+      "endpoint": "https://lsp.example.org:8443/a",
+      "wss_url": "wss://ws.example.org:8443/a",
+      "filter_url": null
+     }
+    ],
+    "tower": {
+     "offered": true,
+     "quota_bytes": 5242880,
+     "keep_days_silent": 400,
+     "form": "teos-v1"
+    },
+    "chan_confs": {
+     "min": 3,
+     "max": 6
+    },
+    "rpc": [
+     "lsps0"
+    ],
+    "uptime": 100,
+    "registered_at": 1795000000000,
+    "ts": 1794999986,
+    "signature": "rdt8z4tkpyrts13wewg7ija7gr4abwuifni8zao1zxz4c4ghnq9gcayx8uytcgfgy5nnr39ezged6epdf9uw6e8mkrpurgochkcci14m",
+    "first_registered_at": 1795000000000,
+    "last_seen_ms": 1795000000000,
+    "stale": false
+   },
+   "text": "lijox-register:v7:039f40dccee67e77a454b186cf0b6df0d3880d120bf036b968a5fba145b3e9ca09:1794999986:Inside:https%3A%2F%2Fdirect-lsp.example.org:wss%3A%2F%2Fdirect-ws.example.org:https%3A%2F%2Fdirect-lsp.example.org:a1b2c3d4e5f60718293a4b5c6d7e8f90:250:1:2500:5000000:1:https%3A%2F%2Fdirect-filters.example.org:1:1:50000%2C100000%2C250000%2C1000000:3:6:600:180:2:4:3:10:60:20:1:250000%2C1000000:wss%3A%2F%2Flsp.example.org%2Ftatara%2Frelay:1:0:1:https%3A%2F%2Ffilters.example.org%2Fcoin:abababababababababababababababababababababababababababababababab:direct%7Chttps%3A%2F%2Fdirect-lsp.example.org%7Cwss%3A%2F%2Fdirect-ws.example.org%7Chttps%3A%2F%2Fdirect-filters.example.org%3Bcloudflare%7Chttps%3A%2F%2Flsp.example.org%3A8443%2Fa%7Cwss%3A%2F%2Fws.example.org%3A8443%2Fa%7C:1:5242880:400:teos-v1:3:6:lsps0"
+  },
+  {
+   "name": "v7, two words",
+   "rec": {
+    "name": "Inside two",
+    "pubkey": "0368b82063f5f13c66b49a8a8a27237a2d2b8972509c9d47f89299de9b6e0c2b16",
+    "endpoint": "https://direct-lsp.example.org",
+    "fee_ppm": 250,
+    "fee_base_sats": 1,
+    "channel_open_fee_sats": 2500,
+    "max_channel_size_sats": 5000000,
+    "supports_jit": true,
+    "route_endpoint": "https://direct-lsp.example.org",
+    "route_macaroon": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    "wss_url": "wss://direct-ws.example.org",
+    "filter_url": "https://direct-filters.example.org",
+    "filter_sp": true,
+    "routes": [
+     {
+      "reach": "direct",
+      "endpoint": "https://direct-lsp.example.org",
+      "wss_url": "wss://direct-ws.example.org",
+      "filter_url": "https://direct-filters.example.org"
+     },
+     {
+      "reach": "cloudflare",
+      "endpoint": "https://lsp.example.org:8443/a",
+      "wss_url": "wss://ws.example.org:8443/a",
+      "filter_url": null
+     }
+    ],
+    "tower": {
+     "offered": true,
+     "quota_bytes": 5242880,
+     "keep_days_silent": 400,
+     "form": "teos-v1"
+    },
+    "chan_confs": {
+     "min": 3,
+     "max": 6
+    },
+    "rpc": [
+     "lsps0",
+     "x2"
+    ],
+    "uptime": 100,
+    "registered_at": 1795000000000,
+    "ts": 1794999985,
+    "signature": "d95rxxa4eknurm4y5sxzozj1eya8zoqe7xzmbgypgon3dk4srksmy4g5xxj5cnrdf1qgcdukmim9hi1i1o31y7hdeostjseefsfrr86k",
+    "first_registered_at": 1795000000000,
+    "last_seen_ms": 1795000000000,
+    "stale": false
+   },
+   "text": "lijox-register:v7:0368b82063f5f13c66b49a8a8a27237a2d2b8972509c9d47f89299de9b6e0c2b16:1794999985:Inside%20two:https%3A%2F%2Fdirect-lsp.example.org:wss%3A%2F%2Fdirect-ws.example.org:https%3A%2F%2Fdirect-lsp.example.org:a1b2c3d4e5f60718293a4b5c6d7e8f90:250:1:2500:5000000:1:https%3A%2F%2Fdirect-filters.example.org:1:0::0:0:0:0:0:0:0:0:0:0:0:::0:0:0:::direct%7Chttps%3A%2F%2Fdirect-lsp.example.org%7Cwss%3A%2F%2Fdirect-ws.example.org%7Chttps%3A%2F%2Fdirect-filters.example.org%3Bcloudflare%7Chttps%3A%2F%2Flsp.example.org%3A8443%2Fa%7Cwss%3A%2F%2Fws.example.org%3A8443%2Fa%7C:1:5242880:400:teos-v1:3:6:lsps0%2Cx2"
+  },
+  {
+   "name": "v7, the rpc list and nothing else",
+   "rec": {
+    "name": "Inside alone",
+    "pubkey": "02538df2dfae2d4e135d0917ebf6e309d0350f9f3be27cd02f145782bbb3be492f",
+    "endpoint": "https://lsp.example.org",
+    "fee_ppm": 250,
+    "fee_base_sats": 0,
+    "channel_open_fee_sats": 0,
+    "max_channel_size_sats": 0,
+    "supports_jit": true,
+    "route_endpoint": null,
+    "route_macaroon": null,
+    "wss_url": null,
+    "filter_url": null,
+    "filter_sp": false,
+    "rpc": [
+     "lsps0"
+    ],
+    "uptime": 100,
+    "registered_at": 1795000000000,
+    "ts": 1794999984,
+    "signature": "rynt79o1coeohprwkzycjn3xkzgrz1s8gi3tjw81r5aiqk1kk4f364kqk7ssiuzk765tp3uenpd6w4fc5xx5y8zzu9r4r9zat3ysax6j",
+    "first_registered_at": 1795000000000,
+    "last_seen_ms": 1795000000000,
+    "stale": false
+   },
+   "text": "lijox-register:v7:02538df2dfae2d4e135d0917ebf6e309d0350f9f3be27cd02f145782bbb3be492f:1794999984:Inside%20alone:https%3A%2F%2Flsp.example.org::::250:0:0:0:1::0:0::0:0:0:0:0:0:0:0:0:0:0:::0:0:0::::0:0:0::0:0:lsps0"
+  }
+ ]
+}

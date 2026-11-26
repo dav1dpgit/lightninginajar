@@ -204,7 +204,7 @@ pub fn compute_filter_header(filter_bytes: &[u8], prev_filter_header: &[u8; 32])
 pub async fn yield_now() {
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = wasm_timer::Delay::new(std::time::Duration::from_millis(0)).await;
+        crate::wait::sleep_ms(0).await;   // v385: the browser's own timer (wait.rs)
     }
 }
 /// Filters matched between yields (see yield_now).

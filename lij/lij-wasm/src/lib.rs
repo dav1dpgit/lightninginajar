@@ -23,14 +23,70 @@ use lij_core::{
     wallet::LijWallet,
 };
 
+/// v393 (S72 Thu 2026-11-26, DP 07:44 "2. Yes"): THE WALLET'S LOCK ANSWERS "BUSY"; IT NEVER TRAPS.
+/// The browser runs this engine on one thread. A call that takes the wallet while another call holds it across a
+/// network wait can never get it by waiting — and std's Mutex does not wait there: `lock()` PANICS ("cannot
+/// recursively acquire mutex"), which in WebAssembly is a trap. The page saw it as the error "unreachable": the call
+/// was lost, and the engine's panic hook wrote a page error. Measured on v390 and v392: six 300 ms registry reads
+/// through `list_lsps` → 14 panics, 12 page errors (docs/design/routes/sigcheck-r2.md §1).
+/// Every lock of the wallet now goes through this type. `lock()` takes the wallet when it is free and answers
+/// `WalletLockError::Busy` when it is held — an ordinary error the caller hands to the page (its text begins
+/// WALLET_BUSY, the word the page already knows from the calls that used `try_lock`). No call site can trap on the
+/// wallet's lock again, whichever call holds it.
+pub(crate) struct WalletLock(std::sync::Mutex<LijWallet>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WalletLockError {
+    /// another engine call holds the wallet (across its own wait)
+    Busy,
+    /// an earlier fault left the lock broken (cannot happen where a panic is a trap; kept so nothing is assumed)
+    Poisoned,
+}
+
+impl std::fmt::Display for WalletLockError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WalletLockError::Busy => f.write_str("WALLET_BUSY: the wallet is in the middle of another step — ask again in a moment"),
+            WalletLockError::Poisoned => f.write_str("the wallet's lock was left broken by an earlier fault — reload the page"),
+        }
+    }
+}
+
+impl WalletLock {
+    pub(crate) fn new(wallet: LijWallet) -> Self { WalletLock(std::sync::Mutex::new(wallet)) }
+
+    /// The wallet, when no other call holds it. Never waits and never panics. A refusal is counted (Diagnostics,
+    /// Performance), so a call that keeps the wallet through a wait shows up in numbers.
+    pub(crate) fn lock(&self) -> Result<std::sync::MutexGuard<'_, LijWallet>, WalletLockError> {
+        match self.0.try_lock() {
+            Ok(g) => Ok(g),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                lij_core::perf::count("engine calls answered WALLET_BUSY: another call held the wallet");
+                Err(WalletLockError::Busy)
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => Err(WalletLockError::Poisoned),
+        }
+    }
+
+    /// The same, for the callers that expect to be refused and deal with it themselves (the tick, inbound bytes, the
+    /// synchronous getters): not counted.
+    pub(crate) fn try_lock(&self) -> Result<std::sync::MutexGuard<'_, LijWallet>, WalletLockError> {
+        match self.0.try_lock() {
+            Ok(g) => Ok(g),
+            Err(std::sync::TryLockError::WouldBlock) => Err(WalletLockError::Busy),
+            Err(std::sync::TryLockError::Poisoned(_)) => Err(WalletLockError::Poisoned),
+        }
+    }
+}
+
 // Thread-local storage for internal WebSocket callbacks to reach the wallet
 // without round-tripping through JS.
 thread_local! {
-    static CURRENT_WALLET_INNER: std::cell::RefCell<Option<Arc<std::sync::Mutex<LijWallet>>>>
+    static CURRENT_WALLET_INNER: std::cell::RefCell<Option<Arc<WalletLock>>>
         = std::cell::RefCell::new(None);
 }
 
-fn set_current_wallet_inner(inner: Arc<std::sync::Mutex<LijWallet>>) {
+fn set_current_wallet_inner(inner: Arc<WalletLock>) {
     // v219 (DEFECT B, F4): a replaced instance's sockets must not keep feeding
     // the new PeerManager. Close them first; WS_MAP entries leave via their
     // own on_close path.
@@ -38,7 +94,7 @@ fn set_current_wallet_inner(inner: Arc<std::sync::Mutex<LijWallet>>) {
     CURRENT_WALLET_INNER.with(|slot| *slot.borrow_mut() = Some(inner));
 }
 
-fn current_wallet_inner() -> Option<Arc<std::sync::Mutex<LijWallet>>> {
+fn current_wallet_inner() -> Option<Arc<WalletLock>> {
     CURRENT_WALLET_INNER.with(|slot| slot.borrow().clone())
 }
 
@@ -103,7 +159,18 @@ pub fn lij_init() {
 /// (an incremental build that skipped WASM regen). Bump on every WASM rebuild.
 #[wasm_bindgen]
 pub fn wasm_build_version() -> String {
-    "phase11-v382".to_string()  // v382 (S71 Fri 2026-11-20, DP 09:45 "'The choices are: catch up, or close on purpose.' Agreed. Carry on and go beyond A-E — approved." · 11:30 "Let's go and fold in." — incident 2026-11-20 r2 §4.1): THE STATEMENT AND THE PASS. A provider's node closes a channel by force the moment a wallet reconnects with an older state, and the provider cannot read the wallet's reconnect message; what can decide is the wallet's own record. (1) state_statement.rs (NEW) + node state_statement_json(at_ms): each live channel record's update number, signed with the node key over "lijox-state-v1:<key>:<at>:<sha256 of the fixed form>" — the twin of lijox-adapter 0.136.0 state-marks.js, with its pinned vector. The provider keeps the highest number stated per channel; a wallet that states a lower one is behind and gets no pass. (2) ws_pass(provider key, pass): the next socket toward that provider presents the pass as a text frame ("lijox-pass:" + 64 hex) before the handshake's first bytes — on a fresh socket and on the pre-opened one (v322) alike; good once; not presented when older than 75 s. The page asks for the statement and the pass (POST /v1/state) before each Lightning connection. Tests v382_* x4.
+    "phase11-v393".to_string()  // v393 (S72 Thu 2026-11-26, DP 07:44 "To your Questions: 1. Yes 2. Yes 3. Yes" and his two new items — docs/design/routes/sigcheck-r2.md, docs/design/channels/force-close-wait-r1.md, docs/design/subscriptions/refund-close-r2.md): (1) THE WALLET'S LOCK ANSWERS "BUSY"; IT NEVER TRAPS. In the browser a call that takes the wallet while another holds it across a network wait made std's Mutex panic ("cannot recursively acquire mutex") — a trap the page saw as "unreachable", the call lost. Every lock of the wallet now goes through WalletLock: free, it is taken; held, the caller gets an ordinary WALLET_BUSY error. list_lsps and switch_lsp read the registry WITHOUT the wallet (they held it through the whole read). (2) REGISTRIES THAT SIGN, KNOWN BEFORE ANY ANSWER: registry_must_sign — the page names the registries of its own table that sign, before the wallet starts; an unsigned record from one of them is refused at the first contact (until now only after one good signature had been seen from it). (3) close_waits_json: for each channel, the number of blocks this wallet's own output waits after ITS close transaction is in a block (the provider's to_self_delay) and whether the channel has anchors; maturing_balances_json says whose close transaction each amount comes out of. For the CHANNELS drill-down's row "Available to you". One read-only getter added to the vendored LDK (lij_holder_csv). (4) Subscriptions, format round 5: a refund's state "declined" is read and kept, and a declined refund takes no new address; an end that carried no address takes one later (test). Tests: v393_a_registry_named_as_signing_is_held_to_it_at_the_first_contact; the refund lines in s71_the_sidecars_answers_pass_the_wallets_checks.
+    // "phase11-v392".to_string()  // v392 (S72 Wed 2026-11-25, DP 19:19 "'…does not check the signature itself', yes, but build in F"; 22:49 "Go on Sig check. Finish F." — docs/design/routes/sigcheck-r1.md): THE WALLET CHECKS A PROVIDER'S SIGNATURE ON ITS REGISTRY RECORD ITSELF. A provider signs its record with its node key; the registry checked that and did not hand the signature on, so a wallet took the list as given — the registry, or anything in the way, could change the addresses a wallet's web requests go to, the fees shown, or take the `rpc` word out (which sends a wallet back to web forms). lij-worker 0.25.0 hands on `signature` and `ts`. New module registry_check.rs: the signed text rebuilt from the record as listed (a Rust copy of canonicalRegisterMsg v1–v7, kept in step by a table the registry's own code makes — testdata/registry_vectors.json), the signer recovered the way the registry does it. One rule for both readers (check_list): a good record is used and HELD; a registry that has never sent a signature is read as before; a record that does not match, an older signed record than the held one, and an unsigned record from a registry that has signed are REFUSED and the held record of that provider is used — left out only when none is held. The first run fills the held records from the list the page had stored, so no provider a wallet knew is lost. fetch_lsp_registry (the start ladder, switch_lsp, list_lsps) passes every answer through it; the page's reader uses the same through registry_list_check. 12 new tests.
+    // "phase11-v391".to_string()  // v391 (S72 Wed 2026-11-25, DP 20:56 "Agreed with all. Go."): SMALL LIGHTNING PAYMENTS ARE NOT REFUSED BY THE WALLET'S OWN CHANNEL AT LOW FEES, AND SUCH A REFUSAL IS NAMED. His 2,267-sat payment of 17:34 failed with "no route to the recipient": LDK caps the total of payments below the dust line in flight at the fee estimate × 10,000 — 2,530 sats at the fee floor, 27 above one payment of dust-line size (2,503) — counts the channel's own commitment fee above the estimate against it, and with no room for one more such payment reports that size as the channel's minimum; a route through that channel is then refused and LDK answers "RouteNotFound". (1) lij-core node.rs DUST_EXPOSURE_FEERATE_MULTIPLIER = 50,000 (about 12,650 sats at the fee floor), set for new channels in all four places a channel manager is made and given to OPEN channels by apply_dust_cap_to_open_channels (first tick, then once a minute; nothing else of a channel's settings is touched). (2) A payment below what every usable channel will send, fees included, is refused before a route is asked for, as own_channel_minimum:<msat>; LDK's refusal of a route is given the same name when that is its cause. The page says it in plain words. 4 tests.
+    // "phase11-v390".to_string()  // v390 (S72 Wed 2026-11-25, DP 09:59 "all of F completed in as few steps as possible" — F2b, docs/design/routes/f2b-r2.md): A CHECK CONNECTION OPENED WHILE THE ENGINE LOADS IS NOT CLOSED WHEN THE WALLET IS INSTALLED. Found by the page's gate: the page opens the check connection as the engine begins to load, so that its handshake runs beside the load; installing the wallet closes every open socket (the v219 rule, for a replaced wallet's sockets), and the check connection's socket was among them — "closed before it was ready", and that start's checks went as web requests. close_all_sockets now leaves the one socket of the check connection: its bytes go to its own peer manager, never to a wallet's. Nothing else changes.
+    // "phase11-v389".to_string()  // v389 (S72 Wed 2026-11-25, DP 09:59 "all of F completed in as few steps as possible" — F2b, docs/design/routes/f2b-r1.md): THE CHECK CONNECTION — a short Lightning connection to the provider under a key made for one start, for the checks a wallet makes BEFORE it connects as itself (its statement and the pass, its channel state file, its channel list). Those checks cannot go inside the wallet's own connection: the provider's node closes a channel by force the moment a wallet reconnects with an older state. A key with no channels has nothing to re-establish. lij-core check_conn.rs (new): a SECOND peer manager on a throwaway key manager — LDK's own handshake and encryption, none written by hand; no channel handler, no gossip, no onion messages; one handler that carries message 37913 to lijox_rpc.rs. The one-time key is refused if it were the wallet's or the provider's. lij-wasm: a WebSocket of its own whose first frame is the text lijox-check (adapter 0.145.0 then asks for no pass); it never takes the socket opened early for the wallet's own connection and never the pass; its bytes go to the check connection's peer manager without the wallet's lock. Three calls for the page: check_open, check_call, check_close (and check_ready). Nothing calls them until the page that follows.
+    // "phase11-v388".to_string()  // v388 (S72 Wed 2026-11-25, DP 09:59 "all of F completed in as few steps as possible" — docs/design/routes/f4-r1.md §1): THE CHANNEL RECORD GOES INSIDE THE LIGHTNING CONNECTION when the provider in use serves lijox.channel_record there (adapter 0.144.0). registry_client.rs upload_channel_record asks lij_core::inside first: one request, the canonical record under `record`; the provider stores it under the connection's key, so no challenge is fetched and nothing is signed (it was two web requests). The answer is checked by the one function both forms now share (check_channel_post_answer: ok, and the stored record equal to the record sent, byte for byte). No answer inside: the record stays queued and the 30-second retry sends it again — never as a web request to a provider that serves the method inside. Both callers run as their own task, without the wallet's lock. Nothing else in the engine changes.
+    // "phase11-v387".to_string()  // v387 (S72 Wed 2026-11-25, DP 09:59 "I do want everything move from the web form as possible in F, and all of F completed in as few steps as possible" — docs/design/routes/f3c-r1.md): THE ENGINE'S OWN RECEIVE PATH AND ITS PUSH SUBSCRIPTION GO INSIDE THE LIGHTNING CONNECTION when the provider in use serves them there (adapter 0.141.0 and 0.142.0). lij-core inside.rs (new): lij-wasm hands lij-core one function at start (lij-core cannot call lij-wasm); the channel terms (lijox.jit_info), the buy (lijox.jit_buy), the invoice's payment secret in both forms (lijox.register_secret) and the funding check (lijox.funding_status) ask it first. It goes inside only when the address the request was going to IS the provider in use (lijox_active_serves_at) and the method is on its list; otherwise the web request, as before. A refusal reads as the web request's did ("buy HTTP <status> — <body>"). No answer inside is a failure; the web request is not tried. register_push_subscription asks inside (lijox.push_subscribe: the connection's key is the proof — no challenge, no signature) BEFORE it takes the wallet's lock; its web form held the lock across the request. lijox_inside_raw is the one sender; lijox_inside (v384's three requests) reads it and keeps its shapes. NOT MOVED: the channel record (POST /lsps/registry/channels — no method for it at the provider yet) and the checks made before connecting. lij-core: +2 tests.
+    // "phase11-v386".to_string()  // v386 (S72 Wed 2026-11-25, DP 03:03 "Let's figure out why that happened and why it wasn't caught, and put in a proper fix so it doesn't happen again"): THE END OF EVERY SENT LIGHTNING PAYMENT IS WRITTEN DOWN WHEN THE ENGINE LEARNS IT. Field: a 5,088-sat Lightning payment held by the recipient's provider came back while the phone was closed; the balance was right and the row still read "Held on the way". Read in the code: the engine kept a sent payment's end in memory only (payment_outcomes, for the send waiting on it); LDK drops its own record the moment the last HTLC fails back; so an end that came when no send was waiting left nothing for the page, which then waited on a 24-hour clock. lij-core sent_log.rs (new): one record per payment hash — "sent" with the preimage and the fee, or "failed" with LDK's reason — written from the PaymentSent and PaymentFailed events into the engine's own storage (lij_sent_log; 200 records, 30 days), as push_latch and onchain_pay_latch already do for their payments. "sent" is final; a "failed" is replaced by a later "sent". Export sent_outcomes_json (try_lock). Nothing else changed: no payment path, no timing. lij-core: +4 tests.
+    // "phase11-v385".to_string()  // v385 (S72 Tue 2026-11-24, DP 16:23 "Go ahead and fix the engine at v385"): EVERY WAIT IN THE ENGINE IS ON THE BROWSER'S OWN TIMER. One function, lij_core::wait::sleep_ms (one setTimeout behind one Promise, taken from the global object; where there is no setTimeout the old Delay, so a wait is never shorter than asked), replaces wasm_timer::Delay in the ten places that waited on it: wait_for_outcome's 100-ms look at a sent payment's fate; perf_watch_htlc's 50 ms; lijox_inside's 250 ms (not connected), 20 ms (wallet busy) and its answer limit; the in-flight guard's 2 s; the fail-back drain's 100 ms; WasmEsploraHttp's request limit; the registry read's 8-s limit (lsp.rs); the scan's yield_now (tier2_sync.rs). No wait changed length. WHY: wasm-timer 0.2.5 serves all waits from one list by a chain of browser timers (vendor/wasm-timer/src/timer/global/wasm.rs) — a chain link that finds more than 20 handles on the list ends without setting the next timer, and one that finds the list empty sleeps 5 s — so a short wait could go unserved for seconds. Field, 16:06: the provider's LND settled a Lightning send 3.98 s after Send (its forwarding record) and the wallet showed it paid at 9.78 s; test browser: an 8,000-ms wait took 10,237 ms once in six. The library's state on the phone was not seen. wasm_timer stays for SystemTime (node.rs) and as sleep_ms's no-setTimeout case. lij-core: wait.rs (+1 test). Nothing else changed.
+    // "phase11-v384".to_string()  // v384 (S72 Tue 2026-11-24, DP 11:42 "Go on building step 1, and finish F" — docs/design/routes/f3a-r1.md): THE SEND PATH'S THREE ASKS GO INSIDE THE LIGHTNING CONNECTION WHEN THE PROVIDER SERVES THEM THERE (F3a-1). The route request (POST /v1/route/build, six callers: a send, its further tries, each part of a payment in parts, the refit ask, both fee quotes), the outcome check (GET /v1/outcome, three callers) and the routing report (POST /v1/route/report) each ask lijox_inside first. When the method is on the list of the provider in use, the request goes as lijox.route_build / lijox.outcome / lijox.route_report in a Lightning custom message (LSPS0, type 37913) and is NOT sent as a web request: no answer or a refusal is the failure, in the web helper's own two error shapes. When it is not on the list, the web request goes exactly as before. The list is the provider's own lijox.hello answer, kept by the page and handed over with lijox_served_set(provider key, methods); the engine keeps no memory of its own. The routing report inside the connection carries no challenge and no signature (the provider knows whose connection it is), which saves its two web round trips. The wallet's lock is taken for the moment the list is read and the message queued, never while waiting: each of these callers already asked its provider without the lock. LijoxRpc::served_set / serves, LijNode::lijox_served_set / lijox_active_serves. No money moves by these three requests; the payment is the Lightning payment that follows.
+    // "phase11-v383".to_string()  // v383 (S72 Tue 2026-11-24, DP 08:33 "We are starting at big one … Section F. Read and get going, and don't break things." — docs/design/routes/f2-r1.md): REQUESTS INSIDE THE LIGHTNING CONNECTION, THE WALLET'S SIDE OF THE PATH (F2a). (1) lij-core lijox_rpc.rs: LSPS0 (bLIP-50) — one Lightning message type, 37913, carrying one JSON-RPC 2.0 object; a request waits for its answer by id and takes it only from the peer it was sent to; JSON over 60,000 bytes goes as lijox.part messages (44,000-byte slices, at most 32); a request whose peer disconnects ends at once with the reason; rid_from makes the 32-hex rid a request that transfers money will carry. (2) The cooperative-chain handler — the peer manager's one custom message handler — gains one message kind, Lsps0: the reader takes 37913 whole, handle_custom_message gives it to LijoxRpc and never to the chain-data queue, and the path's queue is drained after the chain queue. The twelve chain-data kinds pass through the same lines as before; the PeerManager's type is unchanged. (3) LijNode::lijox_call_begin and the wasm export lijox_call(provider key, method, params JSON, timeout ms): resolves to {ok, status, body} — the body is what the request's web route answers, for an answer and for a refusal alike — or {path_error}; rejects not_connected / timeout / WALLET_BUSY. It holds the wallet's lock only while the message is queued. lijox_counts() for the Performance report. (4) A FRAME FROM THE PROVIDER THAT ARRIVES WHILE THE WALLET IS BUSY IS KEPT, NOT DROPPED (ws_transport handle_incoming_bytes → work_held_frames): frames go on a queue worked in arrival order; while the lock is held they wait and a 4-ms timer comes back for them; a frame whose socket closed meanwhile is let go. Until now such a frame was thrown away, which ended the connection (the bytes are encrypted in sequence). The Performance count is renamed "frames from the provider that waited: the wallet was busy". NOTHING IS MOVED BY THE ENGINE ITSELF IN THIS RELEASE: no request the engine makes (route build, JIT, outcome) and no check made before connecting uses the path; the page asks lijox.hello and sends the wallet's settings through it, only to a provider that says it serves them. Tests: 634 (17 new: the form, answers and refusals, the wrong peer, the deadline, the disconnect, parts both ways and every way they break, base64, the reader and the one drain).
+    // "phase11-v382".to_string()  // v382 (S71 Fri 2026-11-20, DP 09:45 "'The choices are: catch up, or close on purpose.' Agreed. Carry on and go beyond A-E — approved." · 11:30 "Let's go and fold in." — incident 2026-11-20 r2 §4.1): THE STATEMENT AND THE PASS. A provider's node closes a channel by force the moment a wallet reconnects with an older state, and the provider cannot read the wallet's reconnect message; what can decide is the wallet's own record. (1) state_statement.rs (NEW) + node state_statement_json(at_ms): each live channel record's update number, signed with the node key over "lijox-state-v1:<key>:<at>:<sha256 of the fixed form>" — the twin of lijox-adapter 0.136.0 state-marks.js, with its pinned vector. The provider keeps the highest number stated per channel; a wallet that states a lower one is behind and gets no pass. (2) ws_pass(provider key, pass): the next socket toward that provider presents the pass as a text frame ("lijox-pass:" + 64 hex) before the handshake's first bytes — on a fresh socket and on the pre-opened one (v322) alike; good once; not presented when older than 75 s. The page asks for the statement and the pass (POST /v1/state) before each Lightning connection. Tests v382_* x4.
     // "phase11-v381".to_string()  // v381 (S71 Fri 2026-11-20, DP 09:45 "Carry on and go beyond A-E — approved" — incident 2026-11-20 r2): THE REFUSAL NAMES THE COPY THE REGISTRY HOLDS, AND THE PHONE READS IT. lij-worker 0.23.0 puts existing_fingerprint (and the number and date) beside the unchanged words of a refused upload. storage::parse_stale_refusal_fingerprint reads it; upload_copy settles a refusal from that one answer — the copy held is one of this phone's unanswered uploads: no conflict, a fresh copy goes up as the next number; any other copy: the conflict — with no second question (v380's question after a refusal could be answered from the registry's 30-s cache with an older copy; it still stands for a registry before 0.23.0). Tests v381_* x4.
     // "phase11-v380".to_string()  // v380 (S71 Fri 2026-11-20, DP 08:39 "Go ahead with the the writeup and A-E fixes" — incident 2026-11-20 r1, finding A): THE PHONE KNOWS ITS OWN UPLOAD WHILE IT STAYS OPEN. FOUND in the tapes of DP's phone: a routine cloud upload was stored as no. 7314 but its answer never reached the phone; the next upload, a new copy under the same number, replaced the note of the first and was refused; the refusal cleared the note; "Your cloud copy is newer than this phone" followed on a phone that held the newest state, and both channels were closed by force two taps later. (1) storage: the note keeps every copy sent under one number that got no answer (number + up to 8 fingerprints; one fingerprint is the v319 form byte for byte); backup_meta_is_own matches any of them; backup_unanswered, backup_refusal_may_be_own, backup_take_own. (2) storage::upload_copy (backup_now and maybe_backup both send through it; the steps are compiled and tested off the browser against a stand-in that keeps the registry's own rule) — before a copy goes up under a number that has an unanswered upload the cloud is asked what it holds (own: the number is taken, the copy goes up as the next number); a refusal naming that very number is asked about once more before it is a conflict (own: no conflict, a fresh copy goes up next; no usable answer — none at all, or a lower number because the registry reads through a cache of up to 30 s: no warning yet, asked again at the next upload, and the warning only once 8 uploads in a row brought no usable answer, the note kept for the next start); a copy that never left the phone (no challenge: no connection) leaves no note. maybe_backup's answer adds "own":N when a number was taken. (3) wallet::inject_state_blob drops the note — after any copy is loaded the cloud's copy is never read as this phone's own. A copy from another device still raises the warning. Tests v380_* x12.
     // "phase11-v379".to_string()  // v379 (S71 Thu 2026-11-19, DP 22:08 "1, 2, & 3 are go ... and go on the finer report"): (1) a channel's record carries confirmations_required — how many confirmations the other node asked for — and funded_by_this_wallet (a channel he funded on another provider said "~1 block" and was usable at the third); (2) THE FINER PERFORMANCE RECORD, a diagnostic that changes nothing the wallet does (lij_core::perf): every go of the engine's async work on the browser's thread is measured, and a go of 50 ms or more is written down with its call and step; each Lightning send's timeline (called, the provider asked and answering, handed to the channel, taken by the provider, the provider's answer, the outcome); a count of frames from the provider dropped because the wallet was busy. perf_report() / perf_clear(). outbound_htlc_stage() reads where a payment's HTLC stands.
@@ -290,6 +357,108 @@ pub fn ws_preopen_drop() {
     ws_transport::drop_preopen();
 }
 
+/// v389 (S72, F2b — docs/design/routes/f2b-r1.md): OPEN THE CHECK CONNECTION — a short Lightning connection to the
+/// provider `provider_pubkey_hex` at `wss_url`, under a key made for this one start. `wallet_pubkey_hex` is the
+/// wallet's own node key: the one-time key is refused if it were ever the same. Resolves to the one-time key (hex)
+/// once the handshake is done and requests can be sent; rejects when the socket closes first or `timeout_ms` (1 to
+/// 30 s) passes. THE WALLET'S LOCK IS NOT TAKEN — this connection is beside the wallet, not through it.
+#[wasm_bindgen]
+pub fn check_open(provider_pubkey_hex: String, wss_url: String, wallet_pubkey_hex: String, timeout_ms: u32) -> js_sys::Promise {
+    timed_promise("check_open", async move {
+        let (id, our) = ws_transport::open_check_websocket(&wss_url, &provider_pubkey_hex, &wallet_pubkey_hex)?;
+        let mut left = timeout_ms.clamp(1_000, 30_000) as i64;
+        loop {
+            match ws_transport::check_slot() {
+                Some(s) if s.id == id => {
+                    if s.conn.ready() { return Ok(JsValue::from_str(&our)); }
+                    if s.conn.is_closed() { return Err(JsValue::from_str("check_connection: closed before it was ready")); }
+                }
+                _ => return Err(JsValue::from_str("check_connection: closed before it was ready")),
+            }
+            if left <= 0 {
+                ws_transport::check_close();
+                return Err(JsValue::from_str("check_connection: not ready in time"));
+            }
+            lij_core::wait::sleep_ms(20).await;
+            left -= 20;
+        }
+    })
+}
+
+/// v389: ONE REQUEST INSIDE THE CHECK CONNECTION. Resolves to the same JSON text as lijox_call —
+/// {"ok","status","body"}, or {"ok":false,"status":0,"path_error":{…}} — and rejects with "not_connected" (no check
+/// connection is open and ready), "timeout" (no answer within `timeout_ms`, 1 to 120 s) or the refusal of the params.
+#[wasm_bindgen]
+pub fn check_call(method: String, params_json: String, timeout_ms: u32) -> js_sys::Promise {
+    timed_promise("check_call", async move {
+        let slot = match ws_transport::check_slot() {
+            Some(s) => s,
+            None => return Err(JsValue::from_str("not_connected")),
+        };
+        let (id, rx) = slot.conn.call_json(&method, &params_json).map_err(|m| JsValue::from_str(&m))?;
+        let timer = lij_core::wait::sleep_ms(timeout_ms.clamp(1_000, 120_000));
+        futures::pin_mut!(timer);
+        match futures::future::select(rx, timer).await {
+            futures::future::Either::Left((Ok(outcome), _)) => Ok(JsValue::from_str(&outcome.to_json().to_string())),
+            futures::future::Either::Left((Err(_), _)) => Err(JsValue::from_str("timeout")),   // the request was let go before an answer
+            futures::future::Either::Right(_) => { slot.conn.cancel(&id); Err(JsValue::from_str("timeout")) }
+        }
+    })
+}
+
+/// v389: close the check connection (the checks are done, or the start was stopped). Nothing happens when none is open.
+#[wasm_bindgen]
+pub fn check_close() {
+    ws_transport::check_close();
+}
+
+/// v389: true while a check connection is open and its handshake is done.
+#[wasm_bindgen]
+pub fn check_ready() -> bool {
+    ws_transport::check_slot().map_or(false, |s| s.conn.ready())
+}
+
+/// v392 (S72, F — docs/design/routes/sigcheck-r1.md): a registry's answer, checked against each provider's own
+/// signature — the page's reader passes every list through here before it stores or uses it (the engine's own reads
+/// go through the same rule). `list_json`: the answer's `lsps` array. Returns `{"list":[…],"report":{…}}`: the list
+/// to use, each record marked `sig_check` (`ok` | `none` | `held`; a held record carries `sig_why`: `bad` | `older` |
+/// `unsigned`, and `sig_held_checked`), and the report (`registry`, `at_ms`, `signing`, `ok`, `none`, `held`,
+/// `left_out`). Something that is not a list comes back as an empty list with `report.error`.
+#[wasm_bindgen]
+pub fn registry_list_check(registry_url: &str, list_json: &str) -> String {
+    let list = match serde_json::from_str::<serde_json::Value>(list_json) {
+        Ok(serde_json::Value::Array(a)) => a,
+        _ => return serde_json::json!({ "list": [], "report": { "error": "not a list", "registry": lij_core::registry_check::registry_key(registry_url) } }).to_string(),
+    };
+    let (out, report) = lij_core::registry_check::check_list(&lij_core::registry_check::BrowserStore, registry_url, &list, lij_core::storage::now_ms());
+    serde_json::json!({ "list": out, "report": report }).to_string()
+}
+
+/// v393: the page names the registries of its own table that sign (a JSON list of https addresses), BEFORE the wallet
+/// starts — so the engine's own first read is held to it too. From then on an unsigned record from one of them is
+/// refused at the first contact (registry_check::must_sign). Returns how many were newly marked; a list that does
+/// not read marks none.
+#[wasm_bindgen]
+pub fn registry_must_sign(urls_json: &str) -> u32 {
+    let urls: Vec<String> = serde_json::from_str(urls_json).unwrap_or_default();
+    lij_core::registry_check::must_sign(&lij_core::registry_check::BrowserStore, &urls, lij_core::storage::now_ms()) as u32
+}
+
+/// v392: the text a provider signed for this record, as this engine rebuilds it (the registry's canonicalRegisterMsg)
+/// — for the gates, which compare it with the registry's own function. Err: the text cannot be rebuilt.
+#[wasm_bindgen]
+pub fn registry_record_text(record_json: &str) -> Result<String, JsValue> {
+    let rec = serde_json::from_str::<serde_json::Value>(record_json).map_err(|e| JsValue::from_str(&format!("not JSON: {e}")))?;
+    lij_core::registry_check::canonical_register_text(&rec).map_err(|e| JsValue::from_str(&e))
+}
+
+/// v392: the report of the engine's OWN last read of a registry (the start ladder, switch_lsp, list_lsps) — the same
+/// shape as `registry_list_check`'s report; "" before the first read.
+#[wasm_bindgen]
+pub fn registry_own_report() -> String {
+    lij_core::registry_check::LAST_OWN_REPORT.lock().ok().and_then(|g| g.clone()).unwrap_or_default()
+}
+
 /// v382 (incident 2026-11-20 r2 §4.1): the provider's PASS for the next Lightning connection to that provider (its
 /// node key in hex, the pass as 64 hex). The next socket opened toward that key presents it as a text frame
 /// ("lijox-pass:" + the pass) before the handshake's first bytes; the provider's tunnel takes it before anything is
@@ -418,8 +587,124 @@ fn route_answer_parts_sats(response_text: &str) -> Option<Vec<u64>> {
     if out.len() >= 2 && out.len() == a.len() { Some(out) } else { None }
 }
 /// v368: one route request for the WHOLE amount, read only for its parts_sats, laid over this wallet's channels.
+thread_local! {
+    /// v384: every method name that some provider's handed list carries — a copy read WITHOUT the wallet's lock.
+    /// With no list handed (every wallet before a provider on adapter 0.138.0 has spoken) a request does not touch
+    /// the lock here at all and goes as the web request it always was.
+    static LIJOX_SERVED_NAMES: std::cell::RefCell<std::collections::HashMap<String, Vec<String>>> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// v384 (S72, F3a-1 — DP 2026-11-24 "Go on building step 1, and finish F"; docs/design/routes/f3a-r1.md): ONE OF THE
+/// ENGINE'S OWN REQUESTS TO THE PROVIDER IN USE, INSIDE THE LIGHTNING CONNECTION WHEN THAT PROVIDER SERVES IT THERE.
+///   None           the method is not on the provider's list, or there is no provider in use: the caller sends its
+///                  web request, exactly as before.
+///   Some(Ok(text)) the provider's answer — the body its web route answers, as JSON text.
+///   Some(Err(..))  no answer, or a refusal. THE WEB REQUEST IS NOT TRIED: a method a provider serves inside the
+///                  connection is not sent to it as a web request, so nobody who carries the web requests can turn
+///                  the wallet back. The error's text has the web helper's two shapes ("HTTP 502: …", "Fetch
+///                  failed: …"), so each caller reads it as it reads a web failure.
+/// THE WALLET'S LOCK is taken only for the moment the list is read and the message queued — never while this waits.
+/// The answer is a frame from the provider, and a frame needs the lock to be read: a caller must not hold the lock
+/// around this call. Not connected: it waits up to 8 s for the connection (a look every 250 ms), then fails — the
+/// payment that would follow needs that connection too.
+async fn lijox_inside(inner: &Arc<WalletLock>, method: &str, params_json: &str, timeout_ms: u64) -> Option<lij_core::error::LijResult<String>> {
+    // v387: the same request as before, read from the one function below (the three callers of v384 read these shapes)
+    match lijox_inside_raw(inner, None, method, params_json, timeout_ms).await {
+        None => None,
+        Some(Err(e)) => Some(Err(e)),
+        Some(Ok(a)) if a.ok => Some(Ok(a.text)),
+        Some(Ok(a)) => {
+            let why = serde_json::from_str::<serde_json::Value>(&a.text).ok().and_then(|v| v.get("error").and_then(|e| e.as_str()).map(|s| s.to_string())).unwrap_or_else(|| "refused by the provider".to_string());
+            Some(Err(lij_core::error::LijError::Lsp(format!("HTTP {}: {}", a.status, why))))
+        }
+    }
+}
+
+/// v387 (S72, F3b-2): THE REQUEST ITSELF, with the provider's answer as it came — `ok`, the web route's status, the
+/// body as JSON text. `endpoint`, when given, must be the web address of the provider in use (a request the engine
+/// was about to send to another address is not turned into a request to the provider in use): then None, and the
+/// caller sends its web request. lij-core's own requests come here through the function handed to it at start
+/// (`lij_core::inside`).
+async fn lijox_inside_raw(inner: &Arc<WalletLock>, endpoint: Option<&str>, method: &str, params_json: &str, timeout_ms: u64) -> Option<lij_core::error::LijResult<lij_core::inside::Answer>> {
+    use lij_core::lijox_rpc::RpcOutcome;
+    use lij_core::error::LijError;
+    use lij_core::inside::Answer;
+    use lij_core::wait::sleep_ms;   // v385: the browser's own timer (lij-core wait.rs)
+    let fail = |m: String| Some(Err(LijError::Lsp(m)));
+    // no provider's list names this method: the web request, and the wallet's lock is not touched
+    if !LIJOX_SERVED_NAMES.with(|m| m.borrow().values().any(|v| v.iter().any(|x| x == method))) { return None; }
+    let (mut busy, mut waited) = (0u32, 0u32);
+    let (id, rx, rpc) = loop {
+        // Some(Ok(begun)) · Some(Err(None)) not connected · Some(Err(Some(why))) refused by the engine · None the wallet is busy this instant
+        let step = match inner.try_lock() {
+            Err(_) => None,
+            Ok(wallet) => {
+                let node = wallet.node();
+                let served = match endpoint { Some(ep) => node.lijox_active_serves_at(ep, method), None => node.lijox_active_serves(method) };
+                let pk = match served { Some(pk) => pk, None => return None };
+                Some(match node.lijox_call_begin(&pk, method, params_json) {
+                    Ok(x) => Ok(x),
+                    Err(e) => { let m = e.to_string(); if m.ends_with("not_connected") { Err(None) } else { Err(Some(m)) } }
+                })
+            }
+        };
+        match step {
+            Some(Ok(x)) => break x,
+            Some(Err(Some(m))) => return fail(format!("Fetch failed: {m}")),
+            Some(Err(None)) => {
+                waited += 1;
+                if waited > 32 { return fail("Fetch failed: not connected to the provider (waited 8 s)".into()); }
+                sleep_ms(250).await;
+            }
+            None => {
+                busy += 1;
+                if busy > 300 { return fail("Fetch failed: the wallet was busy for 6 s".into()); }
+                sleep_ms(20).await;
+            }
+        }
+    };
+    let timer = sleep_ms(timeout_ms.clamp(1_000, 120_000) as u32);
+    futures::pin_mut!(timer);
+    match futures::future::select(rx, timer).await {
+        futures::future::Either::Left((Ok(RpcOutcome::Answer { ok: true, body, .. }), _)) => Some(Ok(Answer { ok: true, status: 200, text: body.to_string() })),
+        futures::future::Either::Left((Ok(RpcOutcome::Answer { status, body, .. }), _)) =>
+            Some(Ok(Answer { ok: false, status: if (100..=599).contains(&status) { status as u16 } else { 502 }, text: body.to_string() })),
+        futures::future::Either::Left((Ok(RpcOutcome::PathError { code, message }), _)) => fail(format!("Fetch failed: inside the connection the provider answered {code}: {message}")),
+        futures::future::Either::Left((Err(_), _)) => fail("Fetch failed: the request was let go before an answer".into()),
+        futures::future::Either::Right(_) => { rpc.cancel(&id); fail(format!("Fetch failed: no answer inside the connection in {} s", timeout_ms.clamp(1_000, 120_000) / 1000)) }
+    }
+}
+
+/// v387: THE FUNCTION lij-core IS HANDED WHEN A WALLET STARTS (lij_core::inside). lij-core's own provider requests — the
+/// channel terms, the buy, the invoice's secret, the funding check — ask it first; it sends them inside the Lightning
+/// connection when the address they were going to IS the provider in use and that provider serves the method there.
+fn hand_inside_to_core(inner: &Arc<WalletLock>) {
+    let inner = inner.clone();
+    lij_core::inside::set_hook(std::rc::Rc::new(move |endpoint: String, method: String, params: String, timeout_ms: u64| {
+        let inner = inner.clone();
+        Box::pin(async move { lijox_inside_raw(&inner, Some(&endpoint), &method, &params, timeout_ms).await }) as lij_core::inside::AskFuture
+    }));
+}
+
+/// v384: POST /v1/route/build, or `lijox.route_build` inside the connection when the provider in use serves it there.
+/// The body is the same either way; so is the answer's text.
+async fn provider_route_build(inner: &Arc<WalletLock>, url: &str, macaroon_hex: &str, body: &str) -> lij_core::error::LijResult<String> {
+    match lijox_inside(inner, "lijox.route_build", body, 15_000).await {
+        Some(r) => r,
+        None => lij_core::node::fetch_post_with_macaroon(url, macaroon_hex, body).await,
+    }
+}
+
+/// v384: GET /v1/outcome?hash=, or `lijox.outcome` inside the connection when the provider in use serves it there.
+async fn provider_outcome(inner: &Arc<WalletLock>, base: &str, hash_hex: &str, macaroon_hex: &str) -> lij_core::error::LijResult<String> {
+    match lijox_inside(inner, "lijox.outcome", &serde_json::json!({ "hash": hash_hex }).to_string(), 8_000).await {
+        Some(r) => r,
+        None => lij_core::node::fetch_get_with_macaroon(&format!("{base}/v1/outcome?hash={hash_hex}"), macaroon_hex).await,
+    }
+}
+
 async fn refit_ask(
-    inner: &Arc<std::sync::Mutex<LijWallet>>, bolt11: &str, route_endpoint: &str, route_macaroon_hex: &str,
+    inner: &Arc<WalletLock>, bolt11: &str, route_endpoint: &str, route_macaroon_hex: &str,
     total_sats: u64, amount_sats_override: Option<u64>,
 ) -> Option<Vec<lij_core::node::MppPart>> {
     let (url, body) = {
@@ -427,7 +712,7 @@ async fn refit_ask(
         let p = wallet.node().prepare_lsp_route_request(bolt11, route_endpoint, &[], Some(total_sats)).ok()?;
         (p.url, p.request_body)
     };
-    let resp = lij_core::node::fetch_post_with_macaroon(&url, route_macaroon_hex, &body).await.ok()?;
+    let resp = provider_route_build(inner, &url, route_macaroon_hex, &body).await.ok()?;   // v384
     let sizes = route_answer_parts_sats(&resp)?;
     let wallet = inner.lock().ok()?;
     match wallet.node().mpp_refit(bolt11, amount_sats_override, &sizes) {
@@ -564,7 +849,7 @@ fn mix_refuse_known_pool(storage: &dyn lij_core::storage::LijStorage, pool_id: &
 }
 
 /// Step 8: the sealed store.
-fn mix_storage(inner: &Arc<std::sync::Mutex<LijWallet>>) -> Result<Arc<dyn lij_core::storage::LijStorage>, JsValue> {
+fn mix_storage(inner: &Arc<WalletLock>) -> Result<Arc<dyn lij_core::storage::LijStorage>, JsValue> {
     let (root_key, _independent, _network) = {
         let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
         wallet.onchain_handles()
@@ -573,7 +858,7 @@ fn mix_storage(inner: &Arc<std::sync::Mutex<LijWallet>>) -> Result<Arc<dyn lij_c
 }
 
 /// Step 8: the root key, the sealed store and the backup's dirty flag.
-fn mix_handles(inner: &Arc<std::sync::Mutex<LijWallet>>) -> Result<(Arc<lij_core::key::RootKey>, Arc<dyn lij_core::storage::LijStorage>, Arc<lij_core::storage::DirtyFlag>), JsValue> {
+fn mix_handles(inner: &Arc<WalletLock>) -> Result<(Arc<lij_core::key::RootKey>, Arc<dyn lij_core::storage::LijStorage>, Arc<lij_core::storage::DirtyFlag>), JsValue> {
     let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
     let (root_key, _independent, _network) = wallet.onchain_handles();
     let storage = t2_storage(&root_key);
@@ -625,7 +910,7 @@ fn mix_now() -> u64 {
 /// backup marked dirty when a record was written or wiped. Phase 1b (step 11b): the pool channel's side of the step —
 /// the exit the machine named is handed to LDK as the channel's funding (fund_channel; a refusal stops the attempt),
 /// and a stop before this phone's coin signature drops the half-open channel (§6.2.4).
-fn mix_step<E: std::fmt::Display>(attempt_id: &str, storage: &dyn lij_core::storage::LijStorage, dirty: &lij_core::storage::DirtyFlag, inner: &Arc<std::sync::Mutex<LijWallet>>,
+fn mix_step<E: std::fmt::Display>(attempt_id: &str, storage: &dyn lij_core::storage::LijStorage, dirty: &lij_core::storage::DirtyFlag, inner: &Arc<WalletLock>,
     f: impl FnOnce(&mut lij_core::tatara::phone::Phone, u64) -> Result<lij_core::tatara::phone::Out, E>) -> Result<String, JsValue> {
     let now = mix_now();
     MIX_PHONES.with(|m| {
@@ -970,7 +1255,7 @@ pub fn lsps2_buy_promise(
 
 #[wasm_bindgen]
 pub struct LijWalletHandle {
-    inner: Arc<std::sync::Mutex<LijWallet>>,
+    inner: Arc<WalletLock>,
 }
 
 #[wasm_bindgen]
@@ -990,8 +1275,9 @@ impl LijWalletHandle {
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
             let handle = LijWalletHandle {
-                inner: Arc::new(std::sync::Mutex::new(wallet)),
+                inner: Arc::new(WalletLock::new(wallet)),
             };
+            hand_inside_to_core(&handle.inner);   // v387: lij-core's own provider requests can go inside the connection
 
             set_current_wallet_inner(handle.inner.clone());
             // Step 8a: swap StubEsploraHttp for the real WasmEsploraHttp now
@@ -1036,8 +1322,9 @@ impl LijWalletHandle {
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
             let handle = LijWalletHandle {
-                inner: Arc::new(std::sync::Mutex::new(wallet)),
+                inner: Arc::new(WalletLock::new(wallet)),
             };
+            hand_inside_to_core(&handle.inner);   // v387: lij-core's own provider requests can go inside the connection
 
             set_current_wallet_inner(handle.inner.clone());
             // Step 8a: swap StubEsploraHttp for the real WasmEsploraHttp now
@@ -4502,7 +4789,7 @@ impl LijWalletHandle {
             }; // mutex released here
 
             // Phase 2: HTTP fetch WITHOUT the wallet lock held
-            let response_text = lij_core::node::fetch_post_with_macaroon(
+            let response_text = provider_route_build(&inner,   // v384
                 &prep.url,
                 &route_macaroon_hex,
                 &prep.request_body,
@@ -4652,6 +4939,18 @@ impl LijWalletHandle {
             }))).collect();
             if refusals.is_empty() { return Ok(JsValue::from_str(r#"{"ok":true,"sent":false,"refusals":0,"note":"no refusal to report"}"#)); }
             let refusals_json = serde_json::Value::Array(refusals.clone()).to_string();
+            // v384 (F3a-1): inside the connection the report needs no challenge and no signature — the provider knows
+            // whose connection it is. The web form below is sent only to a provider that does not serve it there.
+            let inside_body = serde_json::json!({ "payment_hash": h, "tries_used": m.tries_used, "succeeded": m.succeeded, "failures": refusals }).to_string();
+            if let Some(r) = lijox_inside(&inner, "lijox.route_report", &inside_body, 10_000).await {
+                return Ok(JsValue::from_str(&match r {
+                    Ok(t) => {
+                        log::info!("[v384] routing report sent inside the connection: {} refusal(s) for {}… — provider: {}", refusals.len(), &h[..16.min(h.len())], t.chars().take(200).collect::<String>());
+                        serde_json::json!({ "ok": true, "sent": true, "refusals": refusals.len(), "body": t, "form": "connection" })
+                    }
+                    Err(e) => serde_json::json!({ "ok": false, "sent": false, "refusals": refusals.len(), "error": e.to_string(), "form": "connection" }),
+                }.to_string()));
+            }
             let km = {
                 let wallet = inner.lock().map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
                 wallet.node().keys_manager_arc()
@@ -4693,7 +4992,7 @@ fn payment_hash_hex_of(bolt11: &str) -> Option<String> {
 /// run once at the start, as before.
 #[allow(clippy::too_many_arguments)]
 async fn send_loop(
-    inner: Arc<std::sync::Mutex<LijWallet>>,
+    inner: Arc<WalletLock>,
     bolt11: String,
     route_endpoint: String,
     route_macaroon_hex: String,
@@ -4789,7 +5088,7 @@ async fn send_loop(
                             }
                         };
                         // fetch (lock released)
-                        let resp = match lij_core::node::fetch_post_with_macaroon(
+                        let resp = match provider_route_build(&inner,   // v384
                             &url, &route_macaroon_hex, &body).await
                         {
                             Ok(t) => t,
@@ -4935,10 +5234,9 @@ async fn send_loop(
                 if let Some(pid_hex) = preexisting {
                     log::warn!("[6a-guard] in-flight HTLC already tracked for this invoice (payment_id={}) — waiting, not dispatching", pid_hex);
                     emit(r#"{"phase":"awaiting_release","inherited":true}"#.to_string());
-                    use wasm_timer::Delay as GuardDelay;
                     let guard_started = js_sys::Date::now();
                     loop {
-                        let _ = GuardDelay::new(std::time::Duration::from_millis(2000)).await;
+                        lij_core::wait::sleep_ms(2000).await;   // v385: the browser's own timer
                         let still = {
                             let wallet = inner.lock()
                                 .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
@@ -5038,7 +5336,7 @@ async fn send_loop(
                     let hash_hex = hex::encode(prep.payment_hash.0);
                     let base = prep.url.split("/v1/").next().unwrap_or("").to_string();
                     let verdict = if base.is_empty() { None } else {
-                        match lij_core::node::fetch_get_with_macaroon(&format!("{base}/v1/outcome?hash={hash_hex}"), &route_macaroon_hex).await {
+                        match provider_outcome(&inner, &base, &hash_hex, &route_macaroon_hex).await {
                             Ok(t) => serde_json::from_str::<serde_json::Value>(&t).ok(),
                             Err(e) => { log::warn!("[v244] hold verdict ask failed: {e}"); None }
                         }
@@ -5058,7 +5356,7 @@ async fn send_loop(
                         }
                         _ => String::from(r#"{"ok":false,"error":"destination_is_lsp","routes":[],"internal":true}"#),
                     }
-                } else { lsp_height = None; match lij_core::node::fetch_post_with_macaroon(
+                } else { lsp_height = None; match provider_route_build(&inner,   // v384
                     &prep.url,
                     &route_macaroon_hex,
                     &prep.request_body,
@@ -5415,9 +5713,8 @@ async fn send_loop(
                                 log::info!("[6a-guard] fail-back confirmed after timeout — retry permitted");
                                 emit(format!(r#"{{"phase":"release_confirmed","attempt":{}}}"#, attempt));
                                 {
-                                    use wasm_timer::Delay as DrainDelay;
                                     for _ in 0..15 {
-                                        let _ = DrainDelay::new(std::time::Duration::from_millis(100)).await;
+                                        lij_core::wait::sleep_ms(100).await;   // v385: the browser's own timer
                                         if outcomes_handle.lock().unwrap().remove(&payment_id).is_some() { break; }
                                     }
                                 }
@@ -5472,10 +5769,11 @@ impl LijWalletHandle {
         let dest = dest_pubkey_hex.to_string();
         let endpoint = route_endpoint.to_string();
         let mac = route_macaroon_hex.to_string();
+        let inner = self.inner.clone();   // v384: the route request asks the wallet which form the provider serves
         timed_promise("quote_route_fee_to_pubkey", async move {
             let (url, body) = lij_core::node::prepare_route_quote_to_pubkey(&dest, &endpoint, amount_sats)
                 .map_err(|e| JsValue::from_str(&format!("{e}")))?;
-            let response_text = lij_core::node::fetch_post_with_macaroon(&url, &mac, &body).await
+            let response_text = provider_route_build(&inner, &url, &mac, &body).await   // v384
                 .map_err(|e| JsValue::from_str(&format!("quote fetch: {}", e)))?;
             let amount_msat = amount_sats.saturating_mul(1000);
             let fee_msat = lij_core::node::quote_total_fee_msat_from_response(&response_text, amount_msat);
@@ -5537,7 +5835,7 @@ impl LijWalletHandle {
                     r#"{{"fee_msat":0,"fee_sats":0,"amount_msat":{},"policy_seen":{},"synth":false,"internal":true}}"#,
                     amount_msat, policy_seen)));
             }
-            let response_text = lij_core::node::fetch_post_with_macaroon(
+            let response_text = provider_route_build(&inner,   // v384
                 &prep.url, &route_macaroon_hex, &prep.request_body).await
                 .map_err(|e| JsValue::from_str(&format!("quote fetch: {}", e)))?;
             let fee_msat = lij_core::node::quote_total_fee_msat_from_response(
@@ -5788,7 +6086,7 @@ impl LijWalletHandle {
             // v249: the provider's height, so the self-hop clears LND's floor whatever the phone's tip says
             let base = prep.url.split("/v1/").next().unwrap_or("").to_string();
             let lsp_height: Option<u32> = if base.is_empty() { None } else {
-                match lij_core::node::fetch_get_with_macaroon(&format!("{base}/v1/outcome?hash={hash_hex}"), &route_macaroon_hex).await {
+                match provider_outcome(&inner, &base, &hash_hex, &route_macaroon_hex).await {
                     Ok(t) => serde_json::from_str::<serde_json::Value>(&t).ok().and_then(|v| v.get("height").and_then(|h| h.as_u64()).map(|h| h as u32)),
                     Err(_) => None,
                 }
@@ -5987,7 +6285,7 @@ impl LijWalletHandle {
             // v249: the provider's height, so the self-hop clears LND's floor whatever the phone's tip says
             let base = prep.url.split("/v1/").next().unwrap_or("").to_string();
             let lsp_height: Option<u32> = if base.is_empty() { None } else {
-                match lij_core::node::fetch_get_with_macaroon(&format!("{base}/v1/outcome?hash={inv_hash}"), &route_macaroon_hex).await {
+                match provider_outcome(&inner, &base, &inv_hash, &route_macaroon_hex).await {
                     Ok(t) => serde_json::from_str::<serde_json::Value>(&t).ok().and_then(|v| v.get("height").and_then(|h| h.as_u64()).map(|h| h as u32)),
                     Err(_) => None,
                 }
@@ -6103,11 +6401,19 @@ impl LijWalletHandle {
     pub fn list_lsps(&self) -> js_sys::Promise {
         let inner = self.inner.clone();
         timed_promise("list_lsps", async move {
-            let wallet = inner.lock()
-                .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
-            let lsps = wallet.list_lsps()
+            // v393: the registry is read WITHOUT the wallet. Until now this call held the wallet through the whole
+            // read (up to the read's own time limit), and every engine call the page made in that time was lost.
+            // The wallet is taken twice, each time for a moment with no wait inside: for the registry's address,
+            // and to rank the answer against the provider in use.
+            let url = inner.lock()
+                .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?
+                .registry_url();
+            let listed = lij_core::lsp::fetch_lsp_registry(&url)
                 .await
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let lsps = inner.lock()
+                .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?
+                .rank_listed(&listed);
             let json = serde_json::to_string(&lsps)
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
             Ok(JsValue::from_str(&json))
@@ -6371,6 +6677,17 @@ impl LijWalletHandle {
         Ok(wallet.node().maturing_balances_json())
     }
 
+    /// v393: the wait a channel's money has after a close by force — `[{"channel_id","own_close_delay","anchors"}]`
+    /// (node::close_waits_json). WALLET_BUSY when the engine cannot be asked this instant.
+    #[wasm_bindgen]
+    pub fn close_waits_json(&self) -> Result<String, JsValue> {
+        let wallet = match self.inner.try_lock() {
+            Ok(w) => w,
+            Err(_) => return Err(JsValue::from_str("WALLET_BUSY")),
+        };
+        Ok(wallet.node().close_waits_json())
+    }
+
     /// v206: payments CLAIMED this session, as `[{"hash":"<hex>","sats":N}]`.
     /// The frontend ledger completes a pending receive only when its
     /// payment_hash appears here — an authoritative claim signal that replaces
@@ -6422,6 +6739,19 @@ impl LijWalletHandle {
         wallet.node().abandon_payment_by_id_hex(payment_id_hex)
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
         Ok(())
+    }
+
+    /// v386: the ends of this wallet's sent Lightning payments as the engine wrote them down when it learned them
+    /// (lij-core sent_log.rs) — `[{hash, state: "sent" | "failed", at, preimage?, fee_msat?, reason?}]`, newest
+    /// first. Unlike list_recent_payments_json (LDK's own tracking, which drops a payment the moment it fails back),
+    /// this is there after a restart and whenever the page comes to look. try_lock, as its neighbour.
+    #[wasm_bindgen]
+    pub fn sent_outcomes_json(&self) -> Result<String, JsValue> {
+        let wallet = match self.inner.try_lock() {
+            Ok(w) => w,
+            Err(_) => return Err(JsValue::from_str("WALLET_BUSY")),
+        };
+        Ok(wallet.node().sent_outcomes_json())
     }
 
     #[wasm_bindgen]
@@ -6510,9 +6840,20 @@ impl LijWalletHandle {
         let inner = self.inner.clone();
         let lsp_pubkey = lsp_pubkey.to_string();
         timed_promise("switch_lsp", async move {
+            // v393: the registry is read WITHOUT the wallet (see list_lsps); the wallet is taken for the switch
+            // itself, which has no network wait inside (the same step as switch_lsp_with).
+            let url = inner.lock()
+                .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?
+                .registry_url();
+            let target = lij_core::lsp::fetch_lsp_registry(&url)
+                .await
+                .map_err(|e| JsValue::from_str(&e.to_string()))?
+                .into_iter()
+                .find(|l| l.pubkey == lsp_pubkey)
+                .ok_or_else(|| JsValue::from_str(&format!("LSP error: LSP not found in registry: {lsp_pubkey}")))?;
             let mut wallet = inner.lock()
                 .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
-            wallet.switch_lsp(&lsp_pubkey)
+            wallet.switch_lsp_with(target)
                 .await
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
             Ok(JsValue::undefined())
@@ -6624,6 +6965,18 @@ impl LijWalletHandle {
     pub fn register_push_subscription(&self, subscription_json: String) -> js_sys::Promise {
         let inner = self.inner.clone();
         timed_promise("register_push_subscription", async move {
+            // v387 (F3c): inside the Lightning connection when the provider in use serves it there — the connection's
+            // key is the proof, so no challenge is fetched and nothing is signed. Asked BEFORE the lock is taken: the
+            // web form below holds the wallet's lock across its request, and a request inside the connection needs
+            // that lock free.
+            if let Ok(sub) = serde_json::from_str::<serde_json::Value>(&subscription_json) {
+                let params = serde_json::json!({ "subscription": sub }).to_string();
+                match lijox_inside(&inner, "lijox.push_subscribe", &params, 10_000).await {
+                    Some(Ok(_)) => return Ok(JsValue::undefined()),
+                    Some(Err(e)) => return Err(JsValue::from_str(&e.to_string())),
+                    None => {}
+                }
+            }
             let wallet = inner.lock()
                 .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
             wallet.register_push_subscription(&subscription_json)
@@ -6764,6 +7117,60 @@ impl LijWalletHandle {
     /// v379 (S71): the engine's own record of time — JSON {long_ms, stretches:[{at, ms, call, step}],
     /// sends:[{hash8, marks:[[what, at]]}], counts:{what: n}} (lij_core::perf). Read by Diagnostics → Performance.
     pub fn perf_report(&self) -> String { lij_core::perf::report_json() }
+
+    /// v383 (S72, DP 2026-11-24 on "Section F"; docs/design/routes/f2-r1.md): ONE REQUEST TO THE PROVIDER INSIDE THE
+    /// LIGHTNING CONNECTION (LSPS0, message 37913). Resolves to the JSON text {"ok","status","body"} — the same shape
+    /// for an answer and for a refusal, the body being what the request's web route answers — or, when the path itself
+    /// failed, {"ok":false,"status":0,"path_error":{"code","message"}}. Rejects with "not_connected" (the provider is
+    /// not connected: nothing was sent), "timeout" (no answer within `timeout_ms`, 1 to 120 s), "WALLET_BUSY" (try
+    /// again in a moment) or the engine's refusal of the request. THE WALLET'S LOCK IS HELD ONLY WHILE THE MESSAGE IS
+    /// QUEUED, never while this waits: the answer arrives as a frame from the provider, and a frame waits for the lock.
+    #[wasm_bindgen]
+    pub fn lijox_call(&self, provider_pubkey: String, method: String, params_json: String, timeout_ms: u32) -> js_sys::Promise {
+        let inner = self.inner.clone();
+        timed_promise("lijox_call", async move {
+            let (id, rx, rpc) = {
+                let wallet = match inner.try_lock() { Ok(w) => w, Err(_) => return Err(JsValue::from_str("WALLET_BUSY")) };
+                wallet.node().lijox_call_begin(&provider_pubkey, &method, &params_json).map_err(|e| {
+                    let m = e.to_string();
+                    JsValue::from_str(if m.ends_with("not_connected") { "not_connected" } else { &m })
+                })?
+            };
+            let wait = timeout_ms.clamp(1_000, 120_000) as i32;
+            let timer = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::new(&mut |res, _rej| {
+                let fired = match web_sys::window() { Some(w) => w.set_timeout_with_callback_and_timeout_and_arguments_0(&res, wait).is_ok(), None => false };
+                if !fired { let _ = res.call0(&JsValue::NULL); }
+            }));
+            futures::pin_mut!(timer);
+            match futures::future::select(rx, timer).await {
+                futures::future::Either::Left((Ok(outcome), _)) => Ok(JsValue::from_str(&outcome.to_json().to_string())),
+                futures::future::Either::Left((Err(_), _)) => Err(JsValue::from_str("timeout")),   // the request was let go before an answer
+                futures::future::Either::Right(_) => { rpc.cancel(&id); Err(JsValue::from_str("timeout")) }
+            }
+        })
+    }
+
+    /// v384 (F3a-1): THE PAGE HANDS OVER WHAT A PROVIDER SERVES INSIDE THE CONNECTION — `methods_json` is a JSON array
+    /// of method names, that provider's own `lijox.hello` answer as the page keeps it. The engine's own requests to
+    /// the provider in use (the route request, the route report, the outcome check) then go inside the connection
+    /// for the methods on the list and are not sent as web requests. The whole list for that provider is replaced;
+    /// "[]" means it serves none. → how many names are kept. Rejects with "WALLET_BUSY" (try again in a moment).
+    #[wasm_bindgen]
+    pub fn lijox_served_set(&self, provider_pubkey: &str, methods_json: &str) -> Result<u32, JsValue> {
+        let wallet = match self.inner.try_lock() { Ok(w) => w, Err(_) => return Err(JsValue::from_str("WALLET_BUSY")) };
+        let n = wallet.node().lijox_served_set(provider_pubkey, methods_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let names: Vec<String> = serde_json::from_str(methods_json).unwrap_or_default();
+        LIJOX_SERVED_NAMES.with(|m| { m.borrow_mut().insert(provider_pubkey.trim().to_ascii_lowercase(), names); });   // the copy read without the lock (lijox_inside)
+        Ok(n as u32)
+    }
+
+    /// v383: the path's counts — JSON {sent, answered, refused, path_errors, ended_by_disconnect, cancelled, parts_out,
+    /// parts_in, ignored, waiting}. Read by Diagnostics → Performance.
+    #[wasm_bindgen]
+    pub fn lijox_counts(&self) -> Result<String, JsValue> {
+        let wallet = match self.inner.try_lock() { Ok(w) => w, Err(_) => return Err(JsValue::from_str("WALLET_BUSY")) };
+        Ok(wallet.node().lijox_counts_json())
+    }
     /// v379: both records emptied.
     pub fn perf_clear(&self) { lij_core::perf::clear() }
 
@@ -7425,6 +7832,13 @@ pub mod ws_transport {
         pub static WS_MAP: RefCell<HashMap<u64, WsEntry>> = RefCell::new(HashMap::new());
     }
 
+    // v383 (S72): frames from the provider that wait for the wallet's lock, in arrival order (handle_incoming_bytes),
+    // and whether the timer that comes back for them is set.
+    thread_local! {
+        static HELD_FRAMES: RefCell<std::collections::VecDeque<(u64, Vec<u8>)>> = RefCell::new(std::collections::VecDeque::new());
+        static HELD_RETRY: std::cell::Cell<bool> = std::cell::Cell::new(false);
+    }
+
     /// v322 (S58, DP 2026-10-12 20:18 — the CHAIN dot): one WebSocket opened toward the provider while the start-up checks
     /// run. It carries nothing until connect_to_peer adopts it (open_websocket below) and sends the handshake's first bytes.
     pub struct Preopen {
@@ -7731,8 +8145,13 @@ pub mod ws_transport {
     /// WS_MAP via its own on_close path — the sanctioned removal — so no
     /// closure is dropped while its events are in flight.
     pub fn close_all_sockets() {
+        // v390 (F2b, docs/design/routes/f2b-r2.md §2 "when it is opened"): THE CHECK CONNECTION'S SOCKET IS LEFT OPEN.
+        // It is not the wallet's: its bytes go to the check connection's own peer manager and never to a wallet's, so
+        // the reason for this close (v219: a replaced wallet's sockets must not feed the new peer manager) does not
+        // hold for it. The page opens the check connection while the engine loads; installing the wallet closed it.
+        let keep = check_slot().map(|s| s.id);
         let sockets: Vec<web_sys::WebSocket> = WS_MAP.with(|map| {
-            map.borrow().values().map(|e| e.ws.clone()).collect()
+            map.borrow().iter().filter(|(id, _)| Some(**id) != keep).map(|(_, e)| e.ws.clone()).collect()
         });
         if !sockets.is_empty() {
             log::info!("Closing {} lingering WebSocket(s) before wallet install", sockets.len());
@@ -7740,70 +8159,220 @@ pub mod ws_transport {
         for ws in sockets { let _ = ws.close(); }
     }
 
-    fn handle_incoming_bytes(id: u64, bytes: Vec<u8>) {
-        use lij_core::peer::LijSocketDescriptor;
-        let _perf = lij_core::perf::scope("lightning_message");   // v379
+    // ── v389 (S72, F2b — docs/design/routes/f2b-r1.md §2): THE CHECK CONNECTION'S SOCKET ──
+    // A WebSocket of its own to the provider's route. Its first frame is the text "lijox-check" (the provider's tunnel
+    // then asks for no pass), then the handshake of a connection made under a key for this one start
+    // (lij_core::check_conn). It never takes the socket opened early for the wallet's own connection, and never the
+    // pass. Its bytes go to the check connection's own peer manager — not to the wallet's, and without the wallet's
+    // lock. One check connection at a time.
+    pub struct CheckSlot {
+        pub id: u64,
+        pub conn: lij_core::check_conn::CheckConn,
+    }
 
-        let inner = match crate::current_wallet_inner() {
-            Some(i) => i,
-            None => {
-                log::error!("Received bytes for id {id} but no wallet instance");
-                return;
-            }
-        };
+    thread_local! {
+        static CHECK: RefCell<Option<std::rc::Rc<CheckSlot>>> = RefCell::new(None);
+    }
 
-        // Phase 3.8.D v1 (band-aid): try_lock instead of blocking lock.
-        // Prevents recursive-mutex panic when Phase 10b's send_payment_via_lsp_route
-        // holds the wallet lock during its HTTP fetch .await. Dropped WS messages
-        // during the (short) fetch window are recovered via LDK's auto-reconnect.
-        // TODO post-3.D: remove once user-action bindings release lock before await.
-        let wallet = match inner.try_lock() {
-            Ok(w) => w,
-            Err(std::sync::TryLockError::Poisoned(e)) => {
-                log::error!("Wallet lock poisoned: {e}"); return;
-            }
-            Err(std::sync::TryLockError::WouldBlock) => {
-                lij_core::perf::count("frames from the provider dropped: the wallet was busy");   // v379
-                log::warn!("WS id {id}: wallet busy, dropping {} bytes (Phase 3.8.D band-aid)", bytes.len());
-                return;
-            }
-        };
+    /// The check connection that is open now, if any.
+    pub fn check_slot() -> Option<std::rc::Rc<CheckSlot>> {
+        CHECK.with(|c| c.borrow().clone())
+    }
 
-        let pm = match wallet.node().peer_manager() {
-            Ok(p) => p,
-            Err(e) => { log::error!("PeerManager unavailable: {e}"); return; }
-        };
-
-        let mut descriptor = LijSocketDescriptor::new(id);
-        match pm.read_event(&mut descriptor, &bytes) {
-            Ok(_pause_read) => {}
-            Err(e) => {
-                log::warn!("read_event error on id {id}: {:?}", e);
-                // v249: CLOSE ONLY. This runs inside the socket's own on_message closure;
-                // removing the WsEntry here dropped that closure while it executed — the
-                // "closure invoked recursively or after being dropped" throw on every boot
-                // that opened two sockets. The on_close handler removes the entry on a
-                // later microtask (the v219 rule); LDK's socket_disconnected for a
-                // descriptor it already dropped is a no-op by its own contract.
-                let ws_opt = WS_MAP.with(|map| map.borrow().get(&id).map(|e| e.ws.clone()));
-                if let Some(ws) = ws_opt { let _ = ws.close(); }
-                return;
-            }
+    /// Close the check connection, if one is open. What waits on it ends with the reason.
+    pub fn check_close() {
+        let slot = CHECK.with(|c| c.borrow_mut().take());
+        if let Some(s) = slot {
+            s.conn.closed();
+            close_socket(s.id);
         }
+    }
 
-        pm.process_events();
-        // v321 (S58, DP 2026-10-12 — the CHAIN dot): the provider's chain messages are handled now, not on the next tick
-        // (the first ChainDataBundle waited up to a second in the inbound queue — DP's Performance report: socket open →
-        // bundle handled 2,567 ms while the provider answers the subscribe in 12 ms).
-        wallet.node().cooperative_process_inbound_now();
-        drop(wallet);
+    fn check_incoming(id: u64, bytes: Vec<u8>) {
+        let slot = match check_slot() {
+            Some(s) if s.id == id => s,
+            _ => return,   // bytes for a check connection that is gone
+        };
+        if let Err(e) = slot.conn.read(&bytes) {
+            log::warn!("check connection {id}: {e}");
+            close_socket(id);
+        }
+    }
 
-        // v227 (S43, speed): run the ChannelManager event pass on the NEXT
-        // turn — never inside this socket callback — so a receiver claims the
-        // moment its HTLC lands and a sender learns "paid" the moment the
-        // fulfill arrives, instead of on the 1-second tick. Same routine the
-        // tick runs (process_channel_events); it only runs sooner.
-        crate::schedule_early_event_pass();
+    fn check_closed(id: u64) {
+        let slot = CHECK.with(|c| {
+            let mut c = c.borrow_mut();
+            let hit = matches!(c.as_ref(), Some(s) if s.id == id);
+            if hit { c.take() } else { None }
+        });
+        if let Some(s) = slot {
+            s.conn.closed();
+        }
+    }
+
+    /// Open a check connection toward the provider `provider_hex` at `url`. → (its socket number, the one-time key).
+    pub fn open_check_websocket(url: &str, provider_hex: &str, wallet_key_hex: &str) -> Result<(u64, String), JsValue> {
+        if !(url.starts_with("wss://") || url.starts_with("ws://127.0.0.1")) {
+            return Err(JsValue::from_str("check_open: not a wss:// address"));
+        }
+        check_close();
+        let (conn, first_bytes) = lij_core::check_conn::CheckConn::open_hex(provider_hex, wallet_key_hex)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let id = conn.socket_id();
+        let our = conn.our_key().to_string();
+
+        let ws = WebSocket::new(url).map_err(|e| JsValue::from_str(&format!("WebSocket::new failed: {:?}", e)))?;
+        ws.set_binary_type(BinaryType::Arraybuffer);
+
+        let ws_open = ws.clone();
+        let on_open = Closure::wrap(Box::new(move || {
+            log::info!("check connection {id}: socket open, the check frame and {} first bytes go out", first_bytes.len());
+            if let Err(e) = ws_open.send_with_str(lij_core::check_conn::CHECK_FRAME) {
+                log::error!("check connection {id}: the check frame was not sent: {:?}", e);
+            }
+            if let Err(e) = ws_open.send_with_u8_array(&first_bytes) {
+                log::error!("check connection {id}: the first bytes were not sent: {:?}", e);
+            }
+        }) as Box<dyn FnMut()>);
+        ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+
+        let on_message = Closure::wrap(Box::new(move |e: MessageEvent| {
+            let data = match e.data().dyn_into::<js_sys::ArrayBuffer>() {
+                Ok(buf) => js_sys::Uint8Array::new(&buf).to_vec(),
+                Err(_) => return,
+            };
+            check_incoming(id, data);
+        }) as Box<dyn FnMut(MessageEvent)>);
+        ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+
+        let on_close = Closure::wrap(Box::new(move |e: CloseEvent| {
+            log::info!("check connection {id} closed: code={}, reason={}", e.code(), e.reason());
+            check_closed(id);
+            // the entry leaves WS_MAP on a later turn, never inside its own closure (the v219 rule)
+            wasm_bindgen_futures::spawn_local(async move {
+                WS_MAP.with(|map| { map.borrow_mut().remove(&id); });
+            });
+        }) as Box<dyn FnMut(CloseEvent)>);
+        ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
+
+        let on_error = Closure::wrap(Box::new(move |_e: ErrorEvent| {
+            log::error!("check connection {id}: socket error");   // the close event that follows carries the code
+        }) as Box<dyn FnMut(ErrorEvent)>);
+        ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+
+        let entry = WsEntry {
+            ws,
+            pubkey: "check".to_string(),   // NOT the provider's key: the one-socket-per-peer rule counts the wallet's own sockets only
+            opened_ms: js_sys::Date::now(),
+            _on_open: on_open,
+            _on_message: on_message,
+            _on_close: on_close,
+            _on_error: on_error,
+        };
+        WS_MAP.with(|map| { map.borrow_mut().insert(id, entry); });
+        CHECK.with(|c| { *c.borrow_mut() = Some(std::rc::Rc::new(CheckSlot { id, conn })); });
+        Ok((id, our))
+    }
+
+    /// v383 (S72, docs/design/routes/f2-r1.md §7.3): A FRAME THAT ARRIVES WHILE THE WALLET IS BUSY IS KEPT, NOT DROPPED.
+    /// Until v383 a frame that came while the wallet's lock was held was thrown away (the Phase 3.8.D band-aid); the
+    /// bytes are encrypted in sequence, so that ended the connection and the wallet reconnected. Every frame now goes
+    /// on a queue and the queue is worked in order: a frame leaves it only when the lock is free and it is being
+    /// processed. While the lock is held the queue waits and a 4-ms timer tries again.
+    fn handle_incoming_bytes(id: u64, bytes: Vec<u8>) {
+        HELD_FRAMES.with(|q| q.borrow_mut().push_back((id, bytes)));
+        work_held_frames();
+    }
+
+    fn work_held_frames() {
+        use lij_core::peer::LijSocketDescriptor;
+        loop {
+            if HELD_FRAMES.with(|q| q.borrow().is_empty()) { return; }
+            let _perf = lij_core::perf::scope("lightning_message");   // v379
+
+            let inner = match crate::current_wallet_inner() {
+                Some(i) => i,
+                None => {
+                    let n = HELD_FRAMES.with(|q| { let mut q = q.borrow_mut(); let n = q.len(); q.clear(); n });
+                    log::error!("Received {n} frame(s) but no wallet instance");
+                    return;
+                }
+            };
+
+            // The lock is tried, never waited for: an engine call may hold it across its own network wait.
+            let wallet = match inner.try_lock() {
+                Ok(w) => w,
+                Err(crate::WalletLockError::Poisoned) => {
+                    HELD_FRAMES.with(|q| q.borrow_mut().clear());
+                    log::error!("Wallet lock poisoned"); return;
+                }
+                Err(crate::WalletLockError::Busy) => {
+                    if !HELD_RETRY.with(|c| c.replace(true)) {
+                        lij_core::perf::count("frames from the provider that waited: the wallet was busy");   // v379 counted these as dropped
+                        let cb = wasm_bindgen::closure::Closure::once_into_js(|| {
+                            HELD_RETRY.with(|c| c.set(false));
+                            work_held_frames();
+                        });
+                        let armed = match web_sys::window() {
+                            Some(w) => w.set_timeout_with_callback_and_timeout_and_arguments_0(cb.unchecked_ref::<js_sys::Function>(), 4).is_ok(),
+                            None => false,
+                        };
+                        if !armed {
+                            // no timer to come back on: the frames cannot wait — let them go as before v383 (the connection ends and is made again)
+                            HELD_RETRY.with(|c| c.set(false));
+                            let n = HELD_FRAMES.with(|q| { let mut q = q.borrow_mut(); let n = q.len(); q.clear(); n });
+                            log::warn!("wallet busy and no timer: {n} frame(s) let go");
+                        }
+                    }
+                    return;
+                }
+            };
+
+            let Some((id, bytes)) = HELD_FRAMES.with(|q| q.borrow_mut().pop_front()) else { return; };
+            // a frame for a socket that has closed while it waited is let go
+            if !WS_MAP.with(|map| map.borrow().contains_key(&id)) {
+                log::debug!("WS id {id}: its socket closed while {} bytes waited — let go", bytes.len());
+                continue;
+            }
+
+            let pm = match wallet.node().peer_manager() {
+                Ok(p) => p,
+                Err(e) => { log::error!("PeerManager unavailable: {e}"); continue; }
+            };
+
+            let mut descriptor = LijSocketDescriptor::new(id);
+            match pm.read_event(&mut descriptor, &bytes) {
+                Ok(_pause_read) => {}
+                Err(e) => {
+                    log::warn!("read_event error on id {id}: {:?}", e);
+                    // v249: CLOSE ONLY. This runs inside the socket's own on_message closure;
+                    // removing the WsEntry here dropped that closure while it executed — the
+                    // "closure invoked recursively or after being dropped" throw on every boot
+                    // that opened two sockets. The on_close handler removes the entry on a
+                    // later microtask (the v219 rule); LDK's socket_disconnected for a
+                    // descriptor it already dropped is a no-op by its own contract.
+                    let ws_opt = WS_MAP.with(|map| map.borrow().get(&id).map(|e| e.ws.clone()));
+                    if let Some(ws) = ws_opt { let _ = ws.close(); }
+                    // what else waits for that socket goes with it
+                    HELD_FRAMES.with(|q| q.borrow_mut().retain(|(i, _)| *i != id));
+                    continue;
+                }
+            }
+
+            pm.process_events();
+            // v321 (S58, DP 2026-10-12 — the CHAIN dot): the provider's chain messages are handled now, not on the next tick
+            // (the first ChainDataBundle waited up to a second in the inbound queue — DP's Performance report: socket open →
+            // bundle handled 2,567 ms while the provider answers the subscribe in 12 ms).
+            wallet.node().cooperative_process_inbound_now();
+            drop(wallet);
+
+            // v227 (S43, speed): run the ChannelManager event pass on the NEXT
+            // turn — never inside this socket callback — so a receiver claims the
+            // moment its HTLC lands and a sender learns "paid" the moment the
+            // fulfill arrives, instead of on the 1-second tick. Same routine the
+            // tick runs (process_channel_events); it only runs sooner.
+            crate::schedule_early_event_pass();
+        }
     }
 
     fn handle_disconnect(id: u64) {
@@ -7818,8 +8387,8 @@ pub mod ws_transport {
         // See handle_incoming_bytes for rationale.
         let wallet = match inner.try_lock() {
             Ok(w) => w,
-            Err(std::sync::TryLockError::Poisoned(_)) => return,
-            Err(std::sync::TryLockError::WouldBlock) => {
+            Err(crate::WalletLockError::Poisoned) => return,
+            Err(crate::WalletLockError::Busy) => {
                 log::warn!("WS id {id}: wallet busy, deferring disconnect notification (Phase 3.8.D band-aid)");
                 return;
             }
@@ -7863,7 +8432,7 @@ impl lij_core::independent::EsploraHttp for WasmEsploraHttp {
             // the fetch future is dropped and the endpoint records a failure.
             use futures::future::{select, Either};
             let secs = self.timeout_secs;
-            let timeout = wasm_timer::Delay::new(std::time::Duration::from_secs(secs));
+            let timeout = lij_core::wait::sleep_ms(lij_core::wait::secs_to_ms(secs));   // v385: the browser's own timer
             let walk = self.filter_walk;
             // v264: the walk's errors name the block-filter server (the "LSP error:" label was wrong there)
             let fail = |why: String| {
@@ -7961,7 +8530,7 @@ impl LijWalletHandle {
 /// two lines into the send's timeline — "taken by the provider" (both sides hold the HTLC; the provider can pass it on)
 /// and "the provider's answer arrived" (paid or refused, on its way out of the channel). A look every 50 ms, for 30 s
 /// at most, ending with the outcome. It reads; it changes nothing. A look is skipped when the wallet is busy.
-fn perf_watch_htlc(inner: Arc<std::sync::Mutex<LijWallet>>, hash_hex: String) {
+fn perf_watch_htlc(inner: Arc<WalletLock>, hash_hex: String) {
     if hash_hex.is_empty() { return; }
     wasm_bindgen_futures::spawn_local(lij_core::perf::timed("perf_watch_htlc", async move {
         let (mut seen, mut taken) = (false, false);
@@ -7982,7 +8551,7 @@ fn perf_watch_htlc(inner: Arc<std::sync::Mutex<LijWallet>>, hash_hex: String) {
                 _ => {}
             }
             if lij_core::perf::send_has(&hash_hex, "outcome:") && !seen { return; }
-            let _ = wasm_timer::Delay::new(std::time::Duration::from_millis(50)).await;
+            lij_core::wait::sleep_ms(50).await;   // v385: the browser's own timer
         }
     }));
 }
@@ -7997,11 +8566,11 @@ async fn wait_for_outcome(
     payment_id: lightning::ln::channelmanager::PaymentId,
     timeout_ms: u64,
 ) -> Option<lij_core::node::PaymentOutcome> {
-    use wasm_timer::Delay;
-    use std::time::Duration;
-
+    // v385 (S72): the look-again wait is the browser's own timer (lij-core wait.rs). Until v384 it was the timer
+    // library's shared list, which could leave a 100-ms wait unserved for seconds — the wallet then showed a paid
+    // Lightning payment as paid seconds after the provider had settled it.
     let start_ms = js_sys::Date::now();
-    let poll_interval = Duration::from_millis(100);
+    let poll_interval_ms: u32 = 100;
 
     loop {
         // Brief lock: check + remove if present.
@@ -8020,9 +8589,8 @@ async fn wait_for_outcome(
             return None;
         }
 
-        // Sleep before next poll. Ignore Delay errors (shouldn't happen in
-        // WASM).
-        let _ = Delay::new(poll_interval).await;
+        // Wait before the next look.
+        lij_core::wait::sleep_ms(poll_interval_ms).await;
     }
 }
 

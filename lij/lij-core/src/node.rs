@@ -56,6 +56,7 @@ const KEY_LNURLP_NEXT_INDEX: &str = "lij_lnurlp_next_index";
 /// derivation index, and the pushes this wallet accepted from a link (hash → PushIn). All three
 /// ride in the state blob; an accepted push's KEY lives in the LNURLp pool (hash → preimage) so
 /// the one claim path finds it when the provider's delivery lands.
+const KEY_SENT_LOG: &str = "lij_sent_log";                    // v386: the end of each sent payment (sent_log.rs), keyed by payment hash
 const KEY_PUSH_OUT: &str = "lij_push_out";
 const KEY_PUSH_NEXT_INDEX: &str = "lij_push_next_index";
 const KEY_PUSH_IN: &str = "lij_push_in";
@@ -131,6 +132,69 @@ use crate::{
 /// cheaper than a force close. LDK's default is 1000; we sit above it on
 /// purpose. Ignored by LDK on channels where the LSP is the funder.
 const COOP_CLOSE_MAX_FEE_OVERAGE_SAT: u64 = 3000;
+
+/// v391 (S72 Wed 2026-11-25, DP 20:56 "Agreed with all. Go." after his 2,267-sat Lightning payment was refused by
+/// his own channel): THE CAP ON SMALL PAYMENTS IN FLIGHT. A payment below the channel's dust line cannot be claimed
+/// on-chain; LDK caps the total of such payments in flight at (the fee estimate, sat per 1000 weight) × this number,
+/// in millisats. LDK's default is 10,000: at the fee floor that is 2,530 sats against a dust line of about 2,503, and
+/// LDK also counts the channel's own commitment fee above the estimate against the cap (channel.rs "excess_feerate").
+/// With no room for one more payment of dust-line size, LDK reports that size as the channel's minimum and refuses
+/// every smaller payment — a 21-sat one too. 50,000 gives about 12,650 sats at the fee floor.
+pub const DUST_EXPOSURE_FEERATE_MULTIPLIER: u64 = 50_000;
+
+/// v391: does EVERY one of the wallet's usable channels want more than `amount_msat` for its next payment? → the
+/// smallest of their minimums. `minimums`: each usable channel's next_outbound_htlc_minimum_msat. None: at least one
+/// channel takes the amount, or there is no usable channel (that is another refusal, said elsewhere).
+pub fn own_minimum_refuses(amount_msat: u64, minimums: &[u64]) -> Option<u64> {
+    let least = *minimums.iter().min()?;
+    if minimums.iter().all(|m| *m > amount_msat) { Some(least) } else { None }
+}
+
+/// v391: is `amount_msat` below `minimum_msat` even with a route's fees on top of it? (The first hop carries the
+/// amount plus the fees of the hops after it; before a route is known, 1 % and 10 sats is taken as more than any
+/// route to a payment this small will add.) Only then is a send refused before a route is asked for.
+pub fn clearly_below_minimum(amount_msat: u64, minimum_msat: u64) -> bool {
+    amount_msat.saturating_add(amount_msat / 100).saturating_add(10_000) < minimum_msat
+}
+
+#[cfg(test)]
+mod v391_own_minimum_tests {
+    use super::{clearly_below_minimum, own_minimum_refuses, DUST_EXPOSURE_FEERATE_MULTIPLIER};
+
+    #[test]
+    fn v391_the_payment_of_2026_11_25_is_named_as_the_channels_own_refusal() {
+        // 2,267 sats against a channel whose next minimum LDK reported as 2,503,000 msat
+        assert_eq!(own_minimum_refuses(2_267_000, &[2_503_000]), Some(2_503_000));
+        assert!(clearly_below_minimum(2_267_000, 2_503_000));
+        // a 21-sat payment in the same state
+        assert_eq!(own_minimum_refuses(21_000, &[2_503_000]), Some(2_503_000));
+        assert!(clearly_below_minimum(21_000, 2_503_000));
+    }
+
+    #[test]
+    fn v391_one_channel_that_takes_the_amount_is_enough() {
+        assert_eq!(own_minimum_refuses(2_267_000, &[2_503_000, 1_000]), None);
+        assert_eq!(own_minimum_refuses(2_503_000, &[2_503_000]), None);   // the minimum itself is sent
+        assert_eq!(own_minimum_refuses(21_000, &[1_000]), None);          // the usual state: the provider's own small minimum
+        assert_eq!(own_minimum_refuses(21_000, &[]), None);               // no usable channel is another refusal
+        assert_eq!(own_minimum_refuses(500, &[2_503_000, 3_000_000]), Some(2_503_000));   // the smallest of the minimums is the one named
+    }
+
+    #[test]
+    fn v391_an_amount_within_a_routes_fees_of_the_minimum_is_left_to_ldk() {
+        assert!(!clearly_below_minimum(2_500_000, 2_503_000));   // 3 sats short: the fees of the hops after may carry it over
+        assert!(!clearly_below_minimum(2_470_000, 2_503_000));   // 1 % and 10 sats reach it
+        assert!(clearly_below_minimum(2_400_000, 2_503_000));
+        assert!(!clearly_below_minimum(u64::MAX, 1));            // no overflow
+    }
+
+    #[test]
+    fn v391_the_cap_at_the_fee_floor() {
+        // LDK: cap in msat = the limiting fee rate (sat per 1000 weight) × the multiplier (channel.rs get_max_dust_htlc_exposure_msat)
+        assert_eq!(253u64 * DUST_EXPOSURE_FEERATE_MULTIPLIER, 12_650_000);
+        assert_eq!(253u64 * 10_000, 2_530_000);   // LDK's default: 27 sats above one payment of 2,503 sats
+    }
+}
 
 // ── Logger ────────────────────────────────────────────────────────────────────
 
@@ -432,6 +496,12 @@ pub fn quote_total_fee_msat_from_response(response_text: &str, amount_msat: u64)
 
 /// v219 (DEFECT B): realm-global socket-id sequence — see next_socket_id().
 static NEXT_SOCKET_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// v389 (F2b): a socket number from the same realm-global sequence, taken without a wallet — the check connection is
+/// opened beside the wallet, not through it (check_conn.rs).
+pub fn next_socket_id_global() -> u64 {
+    NEXT_SOCKET_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
 
 /// v273 (S48, DP): one claimed inbound payment — the exact msat, the counterparty's skim, and the
 /// HTLCs that made it up as `(channel id hex, value msat)` (several for an MPP receive).
@@ -1356,6 +1426,7 @@ impl LijNode {
             c.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
             // Bound coop-close fee a devious LSP could negotiate (v41).
             c.channel_config.force_close_avoidance_max_fee_satoshis = COOP_CLOSE_MAX_FEE_OVERAGE_SAT;
+            c.channel_config.max_dust_htlc_exposure = lightning::util::config::MaxDustHTLCExposure::FeeRateMultiplier(DUST_EXPOSURE_FEERATE_MULTIPLIER);   // v391: the cap on small payments in flight (new channels; open ones in apply_dust_cap_to_open_channels)
             // Phase F-2 (LSPS2): zero-conf channels per LND require ANCHORS
             // commitment type, which LDK refuses by default. Flip the flag so
             // LDK will negotiate anchors_zero_fee_htlc_tx when proposed. Note:
@@ -1688,6 +1759,7 @@ impl LijNode {
                 config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
                 // Bound coop-close fee a devious LSP could negotiate (v41).
                 config.channel_config.force_close_avoidance_max_fee_satoshis = COOP_CLOSE_MAX_FEE_OVERAGE_SAT;
+                config.channel_config.max_dust_htlc_exposure = lightning::util::config::MaxDustHTLCExposure::FeeRateMultiplier(DUST_EXPOSURE_FEERATE_MULTIPLIER);   // v391: the cap on small payments in flight (new channels; open ones in apply_dust_cap_to_open_channels)
                 // Phase F-2 (LSPS2): see restore-path config — anchors required
                 // for zero-conf JIT receive.
                 config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
@@ -2521,6 +2593,7 @@ impl LijNode {
                             },
                         );
                     }
+                    self.sent_log_record(&hex::encode(payment_hash.0), "sent", Some(hex::encode(payment_preimage.0)), fee_paid_msat, None);   // v386: written down now, whoever is watching
                     self.push_latch(&hex::encode(payment_hash.0), true);   // v280: a push whose key was brought
                     self.onchain_pay_latch(&hex::encode(payment_hash.0), true);   // v361: A or B of an on-chain pay settled
                     self.subs_latch(&hex::encode(payment_hash.0), &hex::encode(payment_preimage.0), fee_paid_msat);   // S71: a subscription's payment completed — the preimage is its receipt
@@ -2599,6 +2672,7 @@ impl LijNode {
                         );
                     }
                     drop(map);
+                    if let Some(h) = payment_hash { self.sent_log_record(&hex::encode(h.0), "failed", None, None, Some(format!("{:?}", reason))); }   // v386: written down now, whoever is watching
                     if let Some(h) = payment_hash { self.push_latch(&hex::encode(h.0), false); }   // v280: a push nobody opened, or voided — back with the sender
                     if let Some(h) = payment_hash { self.onchain_pay_latch(&hex::encode(h.0), false); }   // v361: A or B of an on-chain pay came back
                 }
@@ -3165,8 +3239,47 @@ impl LijNode {
     /// Handles peer keepalives (every 10s), channel state (every 60s),
     /// event draining (every tick), HTLC forwarding (every tick),
     /// and ChannelManager persistence (after events + every 10s safety net).
+    /// v391: OPEN CHANNELS TAKE THE CAP TOO. A channel keeps the settings it was opened with; this gives every channel
+    /// whose cap differs the engine's own (DUST_EXPOSURE_FEERATE_MULTIPLIER). Nothing else of a channel's settings is
+    /// touched. → how many channels were changed. Run at the first tick and once a minute; where nothing differs it
+    /// only reads the list.
+    pub fn apply_dust_cap_to_open_channels(&self) -> usize {
+        let cm = match self.channel_manager.as_ref() { Some(c) => c, None => return 0 };
+        let want = lightning::util::config::MaxDustHTLCExposure::FeeRateMultiplier(DUST_EXPOSURE_FEERATE_MULTIPLIER);
+        let mut changed = 0usize;
+        for ch in cm.list_channels() {
+            if ch.config.map(|c| c.max_dust_htlc_exposure) == Some(want) { continue; }
+            let update = lightning::util::config::ChannelConfigUpdate { max_dust_htlc_exposure_msat: Some(want), ..Default::default() };
+            match cm.update_partial_channel_config(&ch.counterparty.node_id, &[ch.channel_id], &update) {
+                Ok(()) => { changed += 1; log::info!("v391: channel {} takes the cap on small payments in flight (the fee estimate × {})", ch.channel_id, DUST_EXPOSURE_FEERATE_MULTIPLIER); }
+                Err(e) => log::warn!("v391: channel {} did not take the new cap on small payments in flight: {:?}", ch.channel_id, e),
+            }
+        }
+        changed
+    }
+
+    /// v391: the smallest payment the wallet's own channels will send right now, when EVERY usable channel wants more
+    /// than `amount_msat` (own_minimum_refuses). None: the amount is not below every channel's minimum.
+    pub fn own_channel_minimum_over(&self, amount_msat: u64) -> Option<u64> {
+        let cm = self.channel_manager.as_ref()?;
+        let mins: Vec<u64> = cm.list_usable_channels().iter().map(|c| c.next_outbound_htlc_minimum_msat).collect();
+        own_minimum_refuses(amount_msat, &mins)
+    }
+
+    /// v391: LDK's own words for a send it refused at once — with the refusal NAMED when the wallet's own channel
+    /// would not send an amount this small. LDK answers that case with "RouteNotFound" (its router is asked again
+    /// without the channel and finds nothing); the page then said "no route to the recipient".
+    /// `first_hop_msat`: what the wallet's channel was asked to carry (the smallest part of the route).
+    fn name_send_refusal(&self, first_hop_msat: u64, ldk: String) -> String {
+        match self.own_channel_minimum_over(first_hop_msat) {
+            Some(min) => format!("own_channel_minimum:{} — the wallet's own channel sends no payment below this right now ({})", min, ldk),
+            None => ldk,
+        }
+    }
+
     pub fn background_tick(&self, tick_count: u64) -> LijResult<()> {
         use std::sync::atomic::{AtomicBool, Ordering};
+        if tick_count <= 1 || tick_count % 60 == 0 { let _ = self.apply_dust_cap_to_open_channels(); }   // v391
 
         let pm = self.peer_manager()?;
         let cm = self.channel_manager.as_ref()
@@ -4529,6 +4642,7 @@ impl LijNode {
         let mut config = UserConfig::default();
         config.channel_handshake_config.minimum_depth = 1;
         config.channel_config.force_close_avoidance_max_fee_satoshis = COOP_CLOSE_MAX_FEE_OVERAGE_SAT;
+        config.channel_config.max_dust_htlc_exposure = lightning::util::config::MaxDustHTLCExposure::FeeRateMultiplier(DUST_EXPOSURE_FEERATE_MULTIPLIER);   // v391: the cap on small payments in flight (new channels; open ones in apply_dust_cap_to_open_channels)
         config.channel_handshake_config.their_channel_reserve_proportional_millionths = LSP_RESERVE_PPM.load(std::sync::atomic::Ordering::Relaxed);
         config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
         config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;   // §6.4: no anchor
@@ -4676,6 +4790,7 @@ impl LijNode {
         let mut config = UserConfig::default();
         config.channel_handshake_config.minimum_depth = 1;
         config.channel_config.force_close_avoidance_max_fee_satoshis = COOP_CLOSE_MAX_FEE_OVERAGE_SAT; // v41 coop-close fee ceiling
+        config.channel_config.max_dust_htlc_exposure = lightning::util::config::MaxDustHTLCExposure::FeeRateMultiplier(DUST_EXPOSURE_FEERATE_MULTIPLIER);   // v391: the cap on small payments in flight (new channels; open ones in apply_dust_cap_to_open_channels)
         config.channel_handshake_config.their_channel_reserve_proportional_millionths = LSP_RESERVE_PPM.load(std::sync::atomic::Ordering::Relaxed); // v213 evil-LSP reserve dial
         // Accept a single inbound HTLC up to full channel value (LDK default is
         // 10%) so large LSPS1 receives over wallet-opened channels also work.
@@ -5119,6 +5234,31 @@ impl LijNode {
     // or the sender voided it). The recipient: a link's key is verified against its hash, the hash
     // is registered as an inbound for the window, and the key goes into the LNURLp pool so the
     // claim path claims the provider's delivery with it. Records and keys ride in the state blob.
+    // ── v386: the end of every sent payment (sent_log.rs) ──
+    fn sent_log_load(&self) -> std::collections::HashMap<String, crate::sent_log::SentEnd> {
+        match self.storage.get(KEY_SENT_LOG) {
+            Ok(Some(b)) => std::str::from_utf8(&b).ok().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default(),
+            _ => Default::default(),
+        }
+    }
+    /// Called from the event handler when LDK says a sent payment is paid or has failed for good. Never in the way of
+    /// the event: a record that cannot be saved is logged and the event goes on.
+    fn sent_log_record(&self, payment_hash_hex: &str, state: &str, preimage: Option<String>, fee_msat: Option<u64>, reason: Option<String>) {
+        let mut m = self.sent_log_load();
+        let end = crate::sent_log::SentEnd { state: state.to_string(), at: current_time_secs(), preimage, fee_msat, reason: reason.map(|r| r.chars().take(40).collect()) };
+        if crate::sent_log::record(&mut m, payment_hash_hex, end) {
+            match serde_json::to_string(&m) {
+                Ok(j) => { if let Err(e) = self.storage.set(KEY_SENT_LOG, j.as_bytes()) { log::error!("sent log persist failed: {e}"); } }
+                Err(e) => log::error!("sent log serialize failed: {e}"),
+            }
+        }
+    }
+    /// For the page: the ends of this wallet's sent payments as written down, newest first —
+    /// `[{"hash","state":"sent"|"failed","at",("preimage","fee_msat")|("reason")}]`.
+    pub fn sent_outcomes_json(&self) -> String {
+        crate::sent_log::to_json(&self.sent_log_load())
+    }
+
     fn push_load_out(&self) -> std::collections::HashMap<String, crate::push::PushOut> {
         match self.storage.get(KEY_PUSH_OUT) {
             Ok(Some(b)) => std::str::from_utf8(&b).ok().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default(),
@@ -6319,6 +6459,13 @@ impl LijNode {
             Some(m) => m,
             None => invoice_amount_msat,
         };
+        // v391: a payment the wallet's own channels will not send — too small for every one of them, fees included — is
+        // refused HERE, before a route is asked for, and named as that (the page says it in plain words).
+        if let Some(min) = self.own_channel_minimum_over(amount_msat) {
+            if clearly_below_minimum(amount_msat, min) {
+                return Err(LijError::Payment(format!("own_channel_minimum:{} — the wallet's own channel sends no payment below this right now", min)));
+            }
+        }
         let amount_sats = amount_msat / 1000;
         let final_cltv_delta = invoice.min_final_cltv_expiry_delta() as u32;
 
@@ -6591,7 +6738,7 @@ impl LijNode {
                 Ok(PaymentResult { success: true, preimage: None, fee_sats: None, fee_msat: None, error: None })
             }
             Err(e) => {
-                let msg = format!("{:?}", e);
+                let msg = self.name_send_refusal(route.paths.iter().map(|p| p.hops.iter().map(|h| h.fee_msat).sum::<u64>()).min().unwrap_or(prep.amount_msat), format!("{:?}", e));   // v391
                 log::warn!("Phase10b: payment failed (synchronous): {}", msg);
                 Ok(PaymentResult { success: false, preimage: None, fee_sats: None, fee_msat: None, error: Some(msg) })
             }
@@ -6915,7 +7062,7 @@ impl LijNode {
                 Ok(PaymentResult { success: true, preimage: None, fee_sats: None, fee_msat: None, error: None })
             }
             Err(e) => {
-                let msg = format!("{:?}", e);
+                let msg = self.name_send_refusal(route.paths.iter().map(|p| p.hops.iter().map(|h| h.fee_msat).sum::<u64>()).min().unwrap_or(0), format!("{:?}", e));   // v391
                 log::warn!("MPP: send failed (synchronous): {}", msg);
                 // v159: clear stale outbound-payment state. Safe even with a
                 // partially-sent shard (PartialFailure): LDK marks the payment
@@ -7834,6 +7981,63 @@ impl LijNode {
         Ok(crate::state_statement::body_json(&pk, at_ms, &ids, &sig))
     }
 
+    /// v383 (S72, DP 2026-11-24 on "Section F"; docs/design/routes/f2-r1.md §7.2): BEGIN ONE REQUEST INSIDE THE
+    /// LIGHTNING CONNECTION to the provider `peer_hex` (LSPS0, message 37913 — lijox_rpc.rs). The message is queued and
+    /// sent now (not at the next tick); the caller waits on the receiver with its own deadline and calls
+    /// `rpc.cancel(id)` when that passes. Refused with "not_connected" when that peer is not connected: a request
+    /// never waits in a queue for a connection that is not there, and it is never sent any other way from here.
+    /// Sync and short — the caller must not hold the wallet's lock while it waits for the answer.
+    pub fn lijox_call_begin(&self, peer_hex: &str, method: &str, params_json: &str)
+        -> LijResult<(String, futures::channel::oneshot::Receiver<crate::lijox_rpc::RpcOutcome>, Arc<crate::lijox_rpc::LijoxRpc>)> {
+        use std::str::FromStr;
+        let peer = bitcoin::secp256k1::PublicKey::from_str(peer_hex).map_err(|_| LijError::Lsp("lijox_call: the provider's key is not a node key".into()))?;
+        let params: serde_json::Value = if params_json.trim().is_empty() { serde_json::json!({}) } else {
+            serde_json::from_str(params_json).map_err(|e| LijError::Lsp(format!("lijox_call: params are not JSON: {e}")))?
+        };
+        let pm = self.peer_manager()?;
+        if !pm.list_peers().iter().any(|p| p.counterparty_node_id == peer) {
+            return Err(LijError::Lsp("not_connected".into()));
+        }
+        let rpc = self.cooperative_chain.rpc();
+        let (id, rx) = rpc.call(peer, method, params).map_err(|e| LijError::Lsp(format!("lijox_call: {e}")))?;
+        pm.process_events();
+        Ok((id, rx, rpc))
+    }
+
+    /// v383: the path's counts for the Performance report — {"sent","answered","refused","path_errors",
+    /// "ended_by_disconnect","cancelled","parts_out","parts_in","ignored","waiting"}.
+    /// v384 (F3a-1): the page hands over what a provider serves inside the connection — `methods_json` is a JSON
+    /// array of method names (that provider's `lijox.hello` answer, kept by the page). → how many are kept.
+    pub fn lijox_served_set(&self, peer_hex: &str, methods_json: &str) -> LijResult<usize> {
+        let methods: Vec<String> = serde_json::from_str(methods_json).map_err(|e| LijError::Lsp(format!("lijox_served_set: not a JSON array of names: {e}")))?;
+        Ok(self.cooperative_chain.rpc().served_set(peer_hex, &methods))
+    }
+
+    /// v384: does the provider in use serve `method` inside the connection? → its key when it does. None when there
+    /// is no provider in use or the method is not on its list: the caller then sends its web request, as before.
+    pub fn lijox_active_serves(&self, method: &str) -> Option<String> {
+        let pk = self.active_lsp.as_ref().map(|a| a.info.pubkey.to_ascii_lowercase())?;
+        if self.cooperative_chain.rpc().serves(&pk, method) { Some(pk) } else { None }
+    }
+
+    /// v387: as `lijox_active_serves`, and only when `endpoint` IS the provider in use's web address (its API address
+    /// or its route address). A request the engine is about to send to another address is never turned into a request
+    /// to the provider in use.
+    pub fn lijox_active_serves_at(&self, endpoint: &str, method: &str) -> Option<String> {
+        let a = self.active_lsp.as_ref()?;
+        let here = crate::inside::same_endpoint(endpoint, &a.info.endpoint)
+            || a.info.route_endpoint.as_deref().map(|r| crate::inside::same_endpoint(endpoint, r)).unwrap_or(false);
+        if here { self.lijox_active_serves(method) } else { None }
+    }
+
+    pub fn lijox_counts_json(&self) -> String {
+        let rpc = self.cooperative_chain.rpc();
+        let c = rpc.counts();
+        serde_json::json!({ "sent": c.sent, "answered": c.answered, "refused": c.refused, "path_errors": c.path_errors,
+            "ended_by_disconnect": c.ended_by_disconnect, "cancelled": c.cancelled, "parts_out": c.parts_out, "parts_in": c.parts_in,
+            "ignored": c.ignored, "waiting": rpc.waiting_len() }).to_string()
+    }
+
     /// v365: this copy's channel state fingerprint — what the wallet compares with its holder's on reconnect.
     /// "" when there is no channel manager yet.
     pub fn channel_state_fp(&self) -> LijResult<String> {
@@ -8158,17 +8362,58 @@ impl LijNode {
                     if let Balance::ClaimableAwaitingConfirmations {
                         amount_satoshis,
                         confirmation_height,
-                        ..
+                        source,
                     } = bal
                     {
+                        // v393: whose close transaction this money comes out of — the page's "Available to you" row
+                        // says a different wait for each (close_waits_json).
                         items.push(format!(
-                            "{{\"amount_sats\":{},\"confirmation_height\":{},\"channel_id\":\"{}\"}}",
+                            "{{\"amount_sats\":{},\"confirmation_height\":{},\"channel_id\":\"{}\",\"source\":\"{}\"}}",
                             amount_satoshis,
                             confirmation_height,
-                            hex::encode(channel_id.0)
+                            hex::encode(channel_id.0),
+                            Self::balance_source_word(&source)
                         ));
                     }
                 }
+            }
+        }
+        format!("[{}]", items.join(","))
+    }
+
+    /// v393: LDK's source of a balance, as one word for the page.
+    fn balance_source_word(source: &lightning::chain::channelmonitor::BalanceSource) -> &'static str {
+        use lightning::chain::channelmonitor::BalanceSource;
+        match source {
+            BalanceSource::HolderForceClosed => "own_close",
+            BalanceSource::CounterpartyForceClosed => "provider_close",
+            BalanceSource::CoopClose => "coop_close",
+            BalanceSource::Htlc => "htlc",
+        }
+    }
+
+    /// v393 (S72 Thu 2026-11-26, DP 07:44 "When a force closure happens, in the CHANNELS drilldown can we see the
+    /// number of blocks remaining until available to the wallet user, whether 1 or 144 or remaining?"): for every
+    /// channel this wallet still keeps a record of on the chain side (open, or closed and not yet put away), the
+    /// wait its money has after a close by force — `[{"channel_id":"<hex>","own_close_delay":N,"anchors":bool}]`.
+    /// `own_close_delay` is the number of blocks the provider set for this wallet's own output when THIS WALLET's
+    /// close transaction closes the channel (`to_self_delay`): the output can be spent N blocks after that
+    /// transaction is in a block. When the PROVIDER's close transaction closes it, this wallet's output has no such
+    /// delay (1 block on a channel with anchors). Read-only; the same monitor walk as maturing_balances_json.
+    pub fn close_waits_json(&self) -> String {
+        let cm = match self.chain_monitor.as_ref() {
+            Some(c) => c,
+            None => return "[]".to_string(),
+        };
+        let mut items: Vec<String> = Vec::new();
+        for channel_id in self.live_monitor_ids() {
+            if let Ok(monitor) = cm.get_monitor(channel_id) {
+                items.push(format!(
+                    "{{\"channel_id\":\"{}\",\"own_close_delay\":{},\"anchors\":{}}}",
+                    hex::encode(channel_id.0),
+                    monitor.lij_holder_csv(),
+                    monitor.channel_type_features().supports_anchors_zero_fee_htlc_tx()
+                ));
             }
         }
         format!("[{}]", items.join(","))
