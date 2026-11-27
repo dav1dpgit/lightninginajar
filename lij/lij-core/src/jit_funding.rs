@@ -145,12 +145,14 @@ pub struct ChannelView {
 }
 
 /// Why the rule refused — a plain sentence for the log.
-pub fn refuse_reason(sender_is_counterparty: bool, sender_is_active_lsp: bool, v: &ChannelView) -> Option<&'static str> {
+/// v394: `sender_is_wallets_provider` is true for the provider in use AND, for the length of a balance transfer, for
+/// the provider this wallet is moving to (move_target.rs) — the caller decides, the rule is the same.
+pub fn refuse_reason(sender_is_counterparty: bool, sender_is_wallets_provider: bool, v: &ChannelView) -> Option<&'static str> {
     if !sender_is_counterparty {
         return Some("the sender is not the channel's counterparty");
     }
-    if !sender_is_active_lsp {
-        return Some("the sender is not this wallet's active provider");
+    if !sender_is_wallets_provider {
+        return Some("the sender is neither this wallet's provider in use nor the provider it is moving to");
     }
     if let Some(r) = refuse_reason_channel(v) {
         return Some(r);
@@ -243,7 +245,7 @@ mod tests {
     #[test]
     fn a_stranger_or_another_provider_is_refused() {
         assert_eq!(refuse_reason(false, true, &clean()), Some("the sender is not the channel's counterparty"));
-        assert_eq!(refuse_reason(true, false, &clean()), Some("the sender is not this wallet's active provider"));
+        assert_eq!(refuse_reason(true, false, &clean()), Some("the sender is neither this wallet's provider in use nor the provider it is moving to"));
     }
 
     #[test]

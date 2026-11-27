@@ -2528,6 +2528,65 @@ export class LijWalletHandle {
         return ret;
     }
     /**
+     * v394: the move's record for the page — `null` when none, else `{"pubkey","name","payment_hash","min_msat",
+     * "set_at_ms","live","ends_at_ms","arrived_msat","refused_msat"}`. `arrived_msat` is what the engine took on the
+     * move's hash; `refused_msat` is what it sent back as too little.
+     * @returns {string}
+     */
+    move_json() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.lijwallethandle_move_json(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * v394: end the move's record — the move is done, or it was given up. Safe when none is stored. (The engine
+     * clears it by itself when that provider becomes the provider in use, and stops honouring it after a day.)
+     */
+    move_target_clear() {
+        const ret = wasm.lijwallethandle_move_target_clear(this.__wbg_ptr);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * v394 (the balance transfer — docs/design/balance-transfer/balance-transfer-r2.md): name the provider this wallet
+     * is moving to. `lsp_json` is that provider's registry record as the page holds it and has checked it;
+     * `payment_hash` is the move's payment hash (64 hex); `min_msat` is the least this wallet takes on that hash, as
+     * decimal text (a millisat amount can pass what a JS number holds exactly). For the length of the move the engine
+     * takes a channel that provider opens — under the rules of a channel from the provider in use — and takes the
+     * move's payment only when at least `min_msat` arrives. Nothing else changes: no payment is sent, no channel is
+     * touched, the provider in use stays. One move at a time: a second call replaces the record. Synchronous;
+     * WALLET_BUSY when the engine cannot be asked this instant.
+     * @param {string} lsp_json
+     * @param {string} payment_hash
+     * @param {string} min_msat
+     */
+    move_target_set(lsp_json, payment_hash, min_msat) {
+        const ptr0 = passStringToWasm0(lsp_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(payment_hash, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(min_msat, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.lijwallethandle_move_target_set(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * Network-free receive address at `index` (BIP84 m/84'/{coin}'/0'/0/index).
      * Synchronous + offline: derives from the seed only, so receiving never
      * depends on a chain scan. The frontend persists the index and reconciles
@@ -6656,7 +6715,7 @@ function __wbg_get_imports() {
             console.warn(arg0, arg1, arg2, arg3);
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2724, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2725, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed);
             return ret;
         },
@@ -6667,16 +6726,16 @@ function __wbg_get_imports() {
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("ErrorEvent")], shim_idx: 9, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_294);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_297);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 9, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_295);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_298);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 2428, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 2429, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f);
             return ret;
         },
@@ -6719,12 +6778,12 @@ function wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_294(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_294(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_297(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_297(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_295(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_295(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_298(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_298(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed(arg0, arg1, arg2) {

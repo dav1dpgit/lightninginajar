@@ -724,6 +724,28 @@ export class LijWalletHandle {
      */
     mix_tx_status(txid: string): Promise<any>;
     /**
+     * v394: the move's record for the page — `null` when none, else `{"pubkey","name","payment_hash","min_msat",
+     * "set_at_ms","live","ends_at_ms","arrived_msat","refused_msat"}`. `arrived_msat` is what the engine took on the
+     * move's hash; `refused_msat` is what it sent back as too little.
+     */
+    move_json(): string;
+    /**
+     * v394: end the move's record — the move is done, or it was given up. Safe when none is stored. (The engine
+     * clears it by itself when that provider becomes the provider in use, and stops honouring it after a day.)
+     */
+    move_target_clear(): void;
+    /**
+     * v394 (the balance transfer — docs/design/balance-transfer/balance-transfer-r2.md): name the provider this wallet
+     * is moving to. `lsp_json` is that provider's registry record as the page holds it and has checked it;
+     * `payment_hash` is the move's payment hash (64 hex); `min_msat` is the least this wallet takes on that hash, as
+     * decimal text (a millisat amount can pass what a JS number holds exactly). For the length of the move the engine
+     * takes a channel that provider opens — under the rules of a channel from the provider in use — and takes the
+     * move's payment only when at least `min_msat` arrives. Nothing else changes: no payment is sent, no channel is
+     * touched, the provider in use stays. One move at a time: a second call replaces the record. Synchronous;
+     * WALLET_BUSY when the engine cannot be asked this instant.
+     */
+    move_target_set(lsp_json: string, payment_hash: string, min_msat: string): void;
+    /**
      * Network-free receive address at `index` (BIP84 m/84'/{coin}'/0'/0/index).
      * Synchronous + offline: derives from the seed only, so receiving never
      * depends on a chain scan. The frontend persists the index and reconciles
@@ -1899,6 +1921,9 @@ export interface InitOutput {
     readonly lijwallethandle_mix_settle: (a: number) => any;
     readonly lijwallethandle_mix_tatara_pub: (a: number, b: bigint) => [number, number, number, number];
     readonly lijwallethandle_mix_tx_status: (a: number, b: number, c: number) => any;
+    readonly lijwallethandle_move_json: (a: number) => [number, number, number, number];
+    readonly lijwallethandle_move_target_clear: (a: number) => [number, number];
+    readonly lijwallethandle_move_target_set: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly lijwallethandle_next_receive_address: (a: number, b: number) => [number, number, number, number];
     readonly lijwallethandle_node_pubkey: (a: number) => [number, number, number, number];
     readonly lijwallethandle_note_background: (a: number) => void;
@@ -2067,8 +2092,8 @@ export interface InitOutput {
     readonly wasm_bindgen__convert__closures_____invoke__h4e6bce1ec0492195: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd7c589fa23e48fed: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_294: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_295: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_297: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h262c0f6ca36cf3f4_298: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h3ad6878d23cf0c0f: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

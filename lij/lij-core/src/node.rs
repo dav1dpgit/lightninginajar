@@ -2221,6 +2221,12 @@ impl LijNode {
                 return;
             }
         };
+        // v394 (the balance transfer): the record goes to the provider the channel is WITH. During a move that is the
+        // provider this wallet is moving to; its channel's record is not handed to the provider in use.
+        let endpoint = match self.move_target_live() {
+            Some(t) if crate::move_target::is_target(Some(&t), &hex::encode(details.counterparty.node_id.serialize())) => t.info.endpoint.clone(),
+            _ => endpoint,
+        };
 
         // commit_type from negotiated channel_type. Anchors (either flavor) = ANCHORS;
         // else legacy static_remote_key. Mirrors the LSP-side hardcoded "ANCHORS"
@@ -2353,6 +2359,12 @@ impl LijNode {
             Some(lsp) => lsp.info.endpoint.clone(),
             None => return,
         };
+        // v394 (the balance transfer): while a move is named the queue waits. A queued record may belong to the provider
+        // this wallet is moving to, and the provider in use is not handed another provider's channel record. A move's
+        // record ends within a day (move_target::MOVE_LIFE_MS), and at once when that provider becomes the one in use.
+        if self.move_target_live().is_some() {
+            return;
+        }
 
         let keys = match self.storage.list_with_prefix(Self::REGISTRY_PENDING_PREFIX) {
             Ok(k) => k,
@@ -2486,7 +2498,34 @@ impl LijNode {
                             let pool_checked = self.lnurlp_load_pool_checked();
                             let pool_readable = pool_checked.is_some();
                             let mut pool = pool_checked.unwrap_or_default();
-                            if let Some(pre_hex) = pool.remove(&hash_hex) {
+                            // v394 (the balance transfer): the move's own payment is taken only when at least the amount
+                            // agreed before the send arrives. Less goes back — and this wallet's own payment, which is
+                            // the same hash on its way out through the old provider, returns with it.
+                            let move_too_little = match self.move_target_live() {
+                                Some(t) => match crate::move_target::take_rule(&t, &hash_hex, amount_msat) {
+                                    crate::move_target::Take::TooLittle => {
+                                        log::warn!(
+                                            "[move] the move's payment arrived as {} msat, under the {} msat agreed before the send — it is sent back; this wallet's own payment returns with it",
+                                            amount_msat, t.min_msat
+                                        );
+                                        self.move_target_note(None, Some(amount_msat));
+                                        true
+                                    }
+                                    crate::move_target::Take::Take => {
+                                        log::info!(
+                                            "[move] the move's payment arrived: {} msat (at least {} msat was agreed) — taking it",
+                                            amount_msat, t.min_msat
+                                        );
+                                        self.move_target_note(Some(amount_msat), None);
+                                        false
+                                    }
+                                    crate::move_target::Take::NotTheMove => false,
+                                },
+                                None => false,
+                            };
+                            if move_too_little {
+                                hashes_to_fail.lock().unwrap().push(payment_hash);
+                            } else if let Some(pre_hex) = pool.remove(&hash_hex) {
                                 match hex::decode(&pre_hex) {
                                     Ok(bytes) if bytes.len() == 32 => {
                                         let mut arr = [0u8; 32];
@@ -2843,6 +2882,19 @@ impl LijNode {
                         .as_ref()
                         .map(|pk| pk == &counterparty_hex.to_lowercase())
                         .unwrap_or(false);
+                    // v394 (the balance transfer — docs/design/balance-transfer/balance-transfer-r2.md): for the length of a
+                    // move, the provider this wallet is moving to is treated as the provider in use is. Its channel is
+                    // taken or refused by the SAME three rules below; no other peer's channel ever is. From here on
+                    // `is_active_lsp` reads "the provider in use, or the provider this wallet is moving to".
+                    let is_move_target = !is_active_lsp
+                        && crate::move_target::is_target(self.move_target_live().as_ref(), &counterparty_hex);
+                    if is_move_target {
+                        log::info!(
+                            "[move] OpenChannelRequest from {}… — the provider this wallet is moving to (funding={} sat): judged as a channel from the provider in use",
+                            &counterparty_hex[..16], funding_satoshis
+                        );
+                    }
+                    let is_active_lsp = is_active_lsp || is_move_target;
 
                     if is_active_lsp && !channel_type_words_recoverable(&channel_type) {
                         // v312 (S57, DP 2026-10-07 17:55, ruling (a)): LiJ takes only channels its 12 words can recover.
@@ -4308,6 +4360,12 @@ impl LijNode {
                 // v364 (the review, finding 6): the active provider is asked about ITS channels only — its answer rules
                 // over no other provider's channel
                 let active_lsp_hex = self.active_lsp.as_ref().map(|l| l.info.pubkey.to_lowercase());
+                // v394 (the balance transfer): a channel opened by the provider this wallet is moving to is asked about AT
+                // THAT PROVIDER — each provider is still asked about its own channels only
+                let move_provider = self.move_target_live().and_then(|t| match (&t.info.route_endpoint, &t.info.route_macaroon) {
+                    (Some(e), Some(m)) => Some((t.info.pubkey.to_lowercase(), e.trim_end_matches('/').to_string(), m.clone())),
+                    _ => None,
+                });
                 let our_pubkey_hex = hex::encode(cm.get_our_node_id().serialize());
                 crate::perf::spawn("background_tick#7", async move {
                     use crate::cancelled_open::{load_dead_map, save_dead_map, verdict, Verdict, ABANDON_MESSAGE};
@@ -4323,9 +4381,11 @@ impl LijNode {
                     for (chan_id, peer, ftx, vout, view) in inbound {
                         let short = &ftx[..16.min(ftx.len())];
                         let op_key = crate::jit_funding::outpoint_key(&ftx, vout);
-                        let peer_is_active_lsp = active_lsp_hex.as_deref() == Some(hex::encode(peer.serialize()).to_lowercase().as_str());
-                        let status = match (&provider, peer_is_active_lsp) {
-                            (Some((endpoint, mac)), true) => crate::jit_funding::fetch_funding_status(endpoint, mac, &our_pubkey_hex, &op_key).await,
+                        let peer_hex = hex::encode(peer.serialize()).to_lowercase();
+                        let peer_is_active_lsp = active_lsp_hex.as_deref() == Some(peer_hex.as_str());
+                        let status = match (&provider, peer_is_active_lsp, &move_provider) {
+                            (Some((endpoint, mac)), true, _) => crate::jit_funding::fetch_funding_status(endpoint, mac, &our_pubkey_hex, &op_key).await,
+                            (_, false, Some((mpk, endpoint, mac))) if *mpk == peer_hex => crate::jit_funding::fetch_funding_status(endpoint, mac, &our_pubkey_hex, &op_key).await,   // v394
                             _ => None,
                         };
                         let nothing_owned = crate::jit_funding::refuse_reason_channel(&view).is_none();
@@ -4855,6 +4915,12 @@ impl LijNode {
             .map_err(|e| LijError::Lsp(format!("LSP pubkey hex decode: {e}")))?;
         let lsp_pubkey = bitcoin::secp256k1::PublicKey::from_slice(&lsp_pubkey_bytes)
             .map_err(|e| LijError::Lsp(format!("LSP pubkey parse: {e}")))?;
+        // v394 (the balance transfer): the provider this wallet was moving to becomes the provider in use — the move's
+        // record has done its work and goes
+        if crate::move_target::is_target(crate::move_target::load(&*self.storage).as_ref(), &lsp.pubkey) {
+            let _ = crate::move_target::clear(&*self.storage);
+            log::info!("[move] {} is now the provider in use — the move's record is cleared", lsp.name);
+        }
         self.active_lsp = Some(ActiveLsp { info: lsp, channel_ids: vec![] });
         let json = serde_json::to_vec(self.active_lsp.as_ref().unwrap())
             .map_err(|e| LijError::Storage(format!("LSP serialize: {e}")))?;
@@ -4869,6 +4935,59 @@ impl LijNode {
 
     pub async fn switch_lsp(&mut self, new_lsp: LspInfo) -> LijResult<()> {
         self.connect_lsp(new_lsp).await
+    }
+
+    // ── v394: the provider this wallet is moving to (crate::move_target) ─────────────────────────────────────────────
+
+    /// The move record, when one is named and still live.
+    pub fn move_target_live(&self) -> Option<crate::move_target::MoveTarget> {
+        crate::move_target::load_live(&*self.storage, crate::tier2_wallet::now_ms())
+    }
+
+    /// Name the provider this wallet is moving to, with the move's payment hash and the least this wallet takes on
+    /// it. Replaces a record already there (one move at a time). Nothing else changes: the provider in use stays,
+    /// no payment is sent, no channel is touched.
+    pub fn move_target_set(&self, info: LspInfo, payment_hash: &str, min_msat: u64) -> LijResult<()> {
+        let active = self.active_lsp.as_ref().map(|a| a.info.pubkey.clone());
+        crate::move_target::validate(&info, payment_hash, min_msat, active.as_deref())?;
+        let t = crate::move_target::MoveTarget {
+            info,
+            payment_hash: payment_hash.to_lowercase(),
+            min_msat,
+            set_at_ms: crate::tier2_wallet::now_ms(),
+            arrived_msat: None,
+            refused_msat: None,
+        };
+        crate::move_target::save(&*self.storage, &t)?;
+        log::info!(
+            "[move] named: moving to {} ({}…), hash {}…, at least {} msat",
+            t.info.name, &t.info.pubkey[..16], &t.payment_hash[..16], t.min_msat
+        );
+        Ok(())
+    }
+
+    /// End the move's record (the move is done, or it was given up). Safe when none is stored.
+    pub fn move_target_clear(&self) -> LijResult<()> {
+        if crate::move_target::load(&*self.storage).is_some() {
+            log::info!("[move] the move's record is cleared");
+        }
+        crate::move_target::clear(&*self.storage)
+    }
+
+    /// The move's record for the page (`null` when none) — see move_target::status_json.
+    pub fn move_json(&self) -> String {
+        crate::move_target::status_json(crate::move_target::load(&*self.storage).as_ref(), crate::tier2_wallet::now_ms())
+    }
+
+    /// Write down what arrived on the move's hash: taken (`arrived`) or sent back as too little (`refused`).
+    fn move_target_note(&self, arrived: Option<u64>, refused: Option<u64>) {
+        if let Some(mut t) = crate::move_target::load(&*self.storage) {
+            if arrived.is_some() { t.arrived_msat = arrived; }
+            if refused.is_some() { t.refused_msat = refused; }
+            if let Err(e) = crate::move_target::save(&*self.storage, &t) {
+                log::warn!("[move] the note of what arrived could not be written: {e}");
+            }
+        }
     }
 
     /// v349 (S61, Step A): move the active provider to another of ITS OWN doors — the one whose `endpoint` is given
@@ -10290,6 +10409,8 @@ impl LijNode {
         if queued.is_empty() && audit.is_empty() { return; }
         let cm = match self.channel_manager.as_ref() { Some(c) => c.clone(), None => return };
         let active_lsp = self.active_lsp.as_ref().map(|l| l.info.pubkey.to_lowercase());
+        // v394 (the balance transfer): the provider this wallet is moving to counts as its provider for this rule too
+        let move_hex = self.move_target_live().map(|t| t.info.pubkey.to_lowercase());
         let (pending, history) = self.jit_books();
         // v364: the audit's decisions, judged AGAIN here on the channel as it stands now (the async block's view was
         // taken before the provider answered — sats could have landed in between); the provider must be this wallet's
@@ -10302,7 +10423,7 @@ impl LijNode {
             let peer_hex = hex::encode(peer.serialize()).to_lowercase();
             let counterparty_hex = hex::encode(c.counterparty.node_id.serialize()).to_lowercase();
             let view = self.jit_channel_view(&c, &pending, &history);
-            match crate::jit_funding::refuse_reason(peer_hex == counterparty_hex, active_lsp.as_deref() == Some(peer_hex.as_str()), &view) {
+            match crate::jit_funding::refuse_reason(peer_hex == counterparty_hex, active_lsp.as_deref() == Some(peer_hex.as_str()) || move_hex.as_deref() == Some(peer_hex.as_str()), &view) {
                 Some(why) => log::warn!("[jit-trust] AUDIT: the drop of channel {} (funding {op_key}) is REFUSED on the fresh view — {why}; the channel stays (owned {} sats, {} in / {} out HTLC)", hex::encode(c.channel_id.0), view.our_claimable_sats, view.pending_inbound_htlcs, view.pending_outbound_htlcs),
                 None => self.jit_drop_never_funded(&c.channel_id, &c.counterparty.node_id, &op_key, "audit"),
             }
@@ -10323,7 +10444,7 @@ impl LijNode {
             let counterparty_hex = hex::encode(c.counterparty.node_id.serialize()).to_lowercase();
             let view = self.jit_channel_view(&c, &pending, &history);
             let sender_is_counterparty = sender_hex == counterparty_hex;
-            let sender_is_active_lsp = active_lsp.as_deref() == Some(sender_hex.as_str());
+            let sender_is_active_lsp = active_lsp.as_deref() == Some(sender_hex.as_str()) || move_hex.as_deref() == Some(sender_hex.as_str());   // v394
             match crate::jit_funding::refuse_reason(sender_is_counterparty, sender_is_active_lsp, &view) {
                 Some(why) => {
                     log::warn!(

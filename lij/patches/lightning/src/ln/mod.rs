@@ -93,6 +93,11 @@ mod monitor_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod lij_own_send_tests;
+// LiJ (S73): the tests of the balance transfer between providers — one payment hash out through the old
+// provider and in through the new one. Tests only; no line of the library is changed for them.
+#[cfg(test)]
+#[allow(unused_mut)]
+mod lij_move_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod offers_tests;
