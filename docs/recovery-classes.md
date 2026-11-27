@@ -291,3 +291,50 @@ Electrum: wallet.change_gap_limit(500)). The wallet's Waterfall copy
 carries the caveat on both surfaces as of frontend v345 (gate page +
 the v283 recovery guide). Allocator-density / recovery-hints-export
 design conversation remains queued (handoff §7.4.5b).
+
+## S73 AMENDMENT (2026-11-27) — the closing address is chosen at the close (engine v395)
+Nothing above is edited. What changes, on DP's word of 2026-11-26 13:50 and 2026-11-27 15:38
+(docs/design/balance-transfer/balance-transfer-r3.md §7):
+- UNTIL ENGINE v394 a channel took its closing address from the signer at its OPENING and kept it for
+  life (LDK's `commit_upfront_shutdown_pubkey`, on by default). FROM ENGINE v395 the wallet sets that off
+  in the four places it makes a channel's settings (the restore path, the first start, the open a pool pays
+  for, the open the wallet's own coins pay for). LDK then asks the signer when a cooperative close begins —
+  whichever side begins it.
+- WHAT THE SIGNER HANDS OUT IS UNCHANGED: the next address of the 12 words on the same shared m/84 counter
+  (`LijSignerProvider::get_shutdown_scriptpubkey`). So every recovery class above reads as before: the coin
+  of a cooperative close lies at an address of the words; LiJ finds it from the counter, and a wallet
+  restored from the words alone derives the same address at the same number (the S26 caveat about a
+  third-party wallet's gap limit stands as written). The engine has no call that takes a closing address
+  from outside; a close into a new channel's funding (way 2) is NOT in v395 and gets its own round.
+- CHANNELS OPEN BEFORE v395 keep the address fixed at their opening. Nothing can change that, and nothing
+  needs to.
+- A CLOSE BY FORCE NEVER USED THE CLOSING ADDRESS and does not now: the wallet's balance is the delayed
+  output of its own commitment transaction (the Black start kit's CLOSE), collected after the delay to an
+  address of the words (the kit's COLLECT). A close by force made by the provider pays the wallet's static
+  key, as before.
+- THE TESTS, written before the release: in the LDK copy, `lij_close_script_tests.rs` — the address is asked
+  for at the close and not at the opening (the wallet begins; the provider begins), a channel opened the old
+  way pays the address fixed at its opening and the signer is not asked again, a close by force never asks;
+  in lij-core, `signer.rs` `v395_a_close_takes_the_next_address_of_the_words_and_a_restore_derives_it`.
+  NOT RUN AT THE TIME OF WRITING: a close on a real provider's LND, and the open a pool pays for (Mix,
+  From → Channel) on a real pool.
+
+## S73 AMENDMENT 2 (2026-11-27) — the address counter follows the chain (engine v396)
+
+Nothing above is edited. This records one repair to how address numbers are handed out.
+
+- ONE COUNTER hands out every address number on the receive branch of the 12 words: a new channel's keys, a
+  destination, a sweep, and since v395 the closing address at a close. It rides in every backup, beside the
+  wallet's record of its coins.
+- WHAT WAS FOUND: after a restore from an older backup, or from the 12 words alone (the counter starts at 0),
+  nothing raised the counter to what the chain had already shown — except the on-chain Receive sheet, when it
+  was opened. A close or a new channel soon after such a restore could be given an address the wallet had used
+  before. No coin was lost by that (the address is the wallet's and its scan finds the coin); it was a privacy
+  cost.
+- THE REPAIR: after every on-chain scan the counter is raised to one past the highest receive-branch number at
+  which the scan's record holds a coin, spent or not. It is never lowered.
+- NOT COVERED, AND IT CANNOT BE: an address that was shown to someone and never paid. The chain does not know
+  it, so a restored wallet does not either.
+- THE TEST: in lij-core, `signer.rs`
+  `v396_after_a_restore_the_counter_follows_the_chain_and_a_close_reuses_no_address` — an older backup, the 12
+  words alone, a counter already past the chain (left where it is), a record with no coin on the receive branch.

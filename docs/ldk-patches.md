@@ -1,4 +1,4 @@
-# LDK patches — the full diff against upstream `lightning` 0.2.7 (refreshed 2026-11-26, engine v394: one new TEST file, `src/ln/lij_move_tests.rs`, and the lines that register it in `src/ln/mod.rs` — no line of the library is changed; see that section below; before that, the same day, engine v393: one read-only accessor, `lij_holder_csv()`, in `chain/channelmonitor.rs` — see (9) there, 8 lines; before that refreshed 2026-11-18, engine v376: the hunk LIJ PATCH v376 in `chain/channelmonitor.rs`, its test file and the one line that registers it — see `src/chain/channelmonitor.rs` (8) and `src/ln/lij_own_send_tests.rs` below; before that refreshed 2026-11-17, engine v375, the move from 0.2.6 to 0.2.7; the previous refresh 2026-10-15 at v347 lacked v360's `LijHtlcLeg` / `lij_htlc_legs` hunks — 88 lines)
+# LDK patches — the full diff against upstream `lightning` 0.2.7 (refreshed 2026-11-27, engine v395: one new TEST file, `src/ln/lij_close_script_tests.rs`, and the lines that register it in `src/ln/mod.rs` — no line of the library is changed; see that section below; before that, 2026-11-26, engine v394: one new TEST file, `src/ln/lij_move_tests.rs`, and the lines that register it in `src/ln/mod.rs` — no line of the library is changed; see that section below; before that, the same day, engine v393: one read-only accessor, `lij_holder_csv()`, in `chain/channelmonitor.rs` — see (9) there, 8 lines; before that refreshed 2026-11-18, engine v376: the hunk LIJ PATCH v376 in `chain/channelmonitor.rs`, its test file and the one line that registers it — see `src/chain/channelmonitor.rs` (8) and `src/ln/lij_own_send_tests.rs` below; before that refreshed 2026-11-17, engine v375, the move from 0.2.6 to 0.2.7; the previous refresh 2026-10-15 at v347 lacked v360's `LijHtlcLeg` / `lij_htlc_legs` hunks — 88 lines)
 
 The engine (`lij/lij-core`, `lij/lij-wasm`) builds against `lij/patches/lightning`, a copy of the `lightning` crate at 0.2.7 with local changes (`lij/Cargo.toml`: `lightning = { path = "patches/lightning" }`). This document is the complete diff, hunk by hunk, with the purpose of each. It supersedes the 0.0.123 edition of this file (engine ≤ v240); the engine moved to 0.2.6 at v241 (2026-09-12) and to 0.2.7 at v375 (2026-11-17: the same hunks, applied to the 0.2.7 source unchanged — no hunk rejected, the sorted change lines identical), and every hunk below is the re-port of a 0.0.123 hunk except one, the re-exposed `force_close_without_broadcasting_txn` (removed upstream in 0.1). To reproduce the diff yourself:
 
@@ -19,9 +19,10 @@ diff -u  lightning-0.2.7/Cargo.toml lij/patches/lightning/Cargo.toml
 | `src/ln/channel.rs` | 11 | 4 |
 | `src/ln/channel_state.rs` | 10 | 0 |
 | `src/ln/channelmanager.rs` | 32 | 6 |
+| `src/ln/lij_close_script_tests.rs` (new file, tests only — v395) | 185 | 0 |
 | `src/ln/lij_move_tests.rs` (new file, tests only — v394) | 227 | 0 |
 | `src/ln/lij_own_send_tests.rs` (new file, tests only — v376) | 207 | 0 |
-| `src/ln/mod.rs` (v376 and v394: registers the two test files under `cfg(test)`) | 9 | 0 |
+| `src/ln/mod.rs` (v376, v394 and v395: registers the three test files under `cfg(test)`) | 14 | 0 |
 | `src/ln/outbound_payment.rs` | 2 | 2 |
 | `src/ln/peer_handler.rs` | 1 | 1 |
 | `src/offers/flow.rs` | 2 | 2 |
@@ -34,7 +35,7 @@ diff -u  lightning-0.2.7/Cargo.toml lij/patches/lightning/Cargo.toml
 | `src/util/sweep.rs` | 11 | 0 |
 | `src/util/time.rs` | 50 | 1 |
 | `Cargo.toml` | 4 | 0 |
-| **total, 20 files** | **833** | **38** |
+| **total, 21 files** | **1023** | **38** |
 
 Two kinds of change. (a) **Behavioural** — five files: `chain/chaininterface.rs`, `chain/channelmonitor.rs`, `ln/channel.rs`, `ln/channelmanager.rs`, `util/sweep.rs`; plus one **read-only field** (engine v269, 2026-09-21): `ln/channel_state.rs` adds `ChannelDetails::lij_value_to_self_msat`, LDK's own `value_to_self_msat` carried out unchanged (TLV 49, odd, default 0), and `routing/router.rs` sets it to 0 in two test/bench constructors. Each is read-only or narrows LDK's behaviour toward not broadcasting; none touches signing, key derivation, routing or gossip. One of them, since engine v376, is about HTLC handling: `chain/channelmonitor.rs` (8) changes WHEN the wallet goes on-chain over an HTLC it sent itself (3 blocks past its expiry → 4,032) — it delays a broadcast and adds none; the two v376 files under `ln/` are tests and compile into no build of the engine. (b) **Wall-clock substitutions** — `SystemTime` / `Instant` do not exist on `wasm32-unknown-unknown`, so every wall-clock call in the crate goes through `util/time.rs` (`lij_now`, `lij_since_epoch`, a browser-clock `Instant`), which reads `js_sys::Date` on wasm32 and the standard clock on every other target. Ten files carry only these substitutions; native builds are unchanged in behaviour. (The 0.0.123 edition had the same two kinds; 0.2.6 calls the clock in more places, which is why the file list grew.)
 
@@ -574,6 +575,25 @@ fn lij_forwarded_htlc_keeps_the_three_block_rule() {
 	check_closed_event!(nodes[1], 1, reason, [node_c_id], 100000);
 	assert_eq!(nodes[1].node.list_channels().len(), 1);
 }
+```
+
+## `src/ln/lij_close_script_tests.rs` and `src/ln/mod.rs` (engine v395 — tests only)
+
+A new file, compiled only under `cfg(test)`; NO line of the library is changed for it. From engine v395 the wallet opens and accepts channels with `commit_upfront_shutdown_pubkey = false` (lij-core `node.rs`, four places): no closing address is fixed in a channel at its opening, and LDK asks the signer for one when a cooperative close begins. The file shows, with the library's own test tools, what the engine now relies on. The test signer hands out the addresses a test lists, in order, and panics when asked for one no test listed, so "asked at the opening" and "asked at the close" cannot be mistaken:
+
+- `lij_close_address_is_asked_for_at_the_close_wallet_starts` / `…_provider_starts` — a channel the provider opened: nothing is asked of the wallet's signer at the opening; the cooperative close pays the address handed out when the close begins, and that address is written into the wallet's record of the channel in exactly one write.
+- `lij_close_address_of_a_channel_the_wallet_opened_is_asked_for_at_the_close` — the same for a channel the wallet opens (the open a pool pays for, and the open its own coins pay for).
+- `lij_close_address_fixed_at_the_opening_stays` — a channel opened the old way (every channel open before v395): asked once, at the opening; the close pays that address and the signer is not asked again.
+- `lij_close_by_force_does_not_ask_for_a_close_address` — the wallet's own commitment transaction published: its balance is the delayed output, and the signer is never asked for a close address.
+
+Run on a copy of this crate outside the engine's workspace: `cargo test --features unsafe_revoked_tx_signing --lib lij_close` (5 passed, 2026-11-27). Shown able to fail the same day: with the test wallet made to fix its address at the opening again, the three tests that say "not at the opening" stop at the opening with "Unexpected get_shutdown_scriptpubkey". The engine's CI does not run this crate's tests; they are run by hand before a release that leans on them.
+
+```diff
++// LIJ PATCH v395 (2026-11-27): the closing address of a cooperative close, asked of the signer when the close begins
++// (the wallet no longer fixes it at the opening). Tests only; no line of the library is changed for them.
++#[cfg(test)]
++#[allow(unused_mut)]
++mod lij_close_script_tests;
 ```
 
 ## `src/ln/lij_move_tests.rs` and `src/ln/mod.rs` (engine v394 — tests only)

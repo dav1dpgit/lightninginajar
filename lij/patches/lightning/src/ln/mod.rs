@@ -98,6 +98,11 @@ mod lij_own_send_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod lij_move_tests;
+// LIJ PATCH v395 (2026-11-27): the closing address of a cooperative close, asked of the signer when the close begins
+// (the wallet no longer fixes it at the opening). Tests only; no line of the library is changed for them.
+#[cfg(test)]
+#[allow(unused_mut)]
+mod lij_close_script_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod offers_tests;

@@ -1718,6 +1718,18 @@ pub fn load_view(storage: &dyn LijStorage) -> LijResult<Tier2View> {
 /// How far back to roll the view on a detected reorg before re-syncing.
 const REORG_WINDOW: u32 = 6;
 
+/// v396: one past the highest number on the receive branch at which the wallet's record of the chain holds a coin —
+/// spent or not; 0 when it holds none. The page's next receive address starts here, and after every on-chain scan the
+/// signer's address counter is raised to it (`LijSignerProvider::raise_index_floor_to_chain`).
+pub fn next_receive_index(view: &Tier2View) -> u32 {
+    view.utxos
+        .iter()
+        .filter(|u| u.chain == CHAIN_RECEIVE)
+        .map(|u| u.index)
+        .max()
+        .map_or(0, |m| m.saturating_add(1))
+}
+
 /// A snapshot for the UI: balances, scan progress, unspent UTXOs, history, and
 /// locally-originated pending txs.
 #[derive(Clone, Debug, Serialize)]
@@ -1820,13 +1832,7 @@ pub fn summary(view: &Tier2View, pending: &[PendingTx], tip_height: u32, marks: 
     let unconfirmed_change_sats: u64 = unconfirmed_change.iter().map(|u| u.value_sats).sum();
     spendable_sats = spendable_sats.saturating_add(unconfirmed_change_sats);
 
-    let next_receive_index = view
-        .utxos
-        .iter()
-        .filter(|u| u.chain == CHAIN_RECEIVE)
-        .map(|u| u.index)
-        .max()
-        .map_or(0, |m| m + 1);
+    let next_receive_index = next_receive_index(view);   // v396: the one function (the address counter is raised by it too)
     let mut utxos: Vec<CoinRow> = view
         .utxos
         .iter()

@@ -124,6 +124,22 @@ impl LijSignerProvider {
         self.counter.raise_floor(n)
     }
 
+    /// v396 (DP 2026-11-27 22:51 "Yes. Do this."): THE ADDRESS COUNTER FOLLOWS THE CHAIN. Raises the counter to one past
+    /// the highest receive-branch number at which the wallet's record of the chain (`view`, as a scan just left it)
+    /// holds a coin. A wallet restored from an older backup, or from the 12 words alone (the counter starts at 0),
+    /// would otherwise hand out — for a close, a new channel, a sweep — an address the chain has already seen; until
+    /// now only the on-chain Receive sheet raised the counter, and only when it was opened. Never lowers. Answers the
+    /// new value when it raised, `None` when the counter was already there or past it. An address that was shown to
+    /// someone and never paid is not on the chain and cannot be known here.
+    pub fn raise_index_floor_to_chain(&self, view: &crate::tier2_wallet::Tier2View) -> crate::error::LijResult<Option<u32>> {
+        let n = crate::tier2_wallet::next_receive_index(view);
+        if n <= self.counter.peek()? {
+            return Ok(None);
+        }
+        self.counter.raise_floor(n)?;
+        Ok(Some(n))
+    }
+
     pub fn new(
         inner: Arc<KeysManager>,
         shutdown_xpriv: Xpriv,
@@ -712,6 +728,116 @@ mod tests {
         let inner = [0xffu8; 32];
         let encoded = encode_channel_index(u32::MAX, inner);
         assert_eq!(decode_channel_index(encoded), u32::MAX);
+    }
+
+    // v395 (DP 2026-11-26 13:50 "Agreed on 1, 2 & 3" — the restore test asked for before the release): THE CLOSING ADDRESS
+    // CHOSEN AT THE CLOSE IS FOUND BY A RESTORE FROM THE 12 WORDS. From v395 no address is fixed at a channel's
+    // opening; LDK asks this signer when a cooperative close begins. What it hands out then is the next address of
+    // the words on the same counter as before — so a wallet restored from the words alone derives it at the same
+    // number, inside the receive branch its scan covers.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn v395_a_close_takes_the_next_address_of_the_words_and_a_restore_derives_it() {
+        use bip39::Mnemonic;
+        use crate::key::RootKey;
+        use lightning::sign::SignerProvider as _;
+
+        let mnemonic: Mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+            .parse()
+            .unwrap();
+        let make = |storage: Arc<MemoryStorage>| {
+            let root = RootKey::from_mnemonic(&mnemonic, Network::Bitcoin).unwrap();
+            let seed = root.lightning_node_key().unwrap().private_key.secret_bytes();
+            let inner = Arc::new(KeysManager::new(&seed, 0, 0, false));
+            let counter = PersistedCounter::new(storage).unwrap();
+            LijSignerProvider::new(inner, root.shutdown_xpriv().unwrap(), counter, Network::Bitcoin)
+        };
+        // the phone: addresses were handed out before (earlier channels, sweeps) — the counter stands at 37
+        let phone = make(Arc::new(MemoryStorage::new()));
+        for _ in 0..37 { let _ = phone.get_destination_script([0u8; 32]).unwrap(); }
+        // a cooperative close begins: the signer is asked NOW
+        let at_the_close = phone.get_shutdown_scriptpubkey().unwrap().into_inner();
+        assert_eq!(at_the_close, phone.derive_shutdown_script_at(37).unwrap(), "the close pays the next address of the same counter");
+        let the_one_after = phone.get_shutdown_scriptpubkey().unwrap().into_inner();
+        assert_eq!(the_one_after, phone.derive_shutdown_script_at(38).unwrap(), "the counter moved on: no address is handed out twice");
+        assert_ne!(at_the_close, the_one_after);
+        // a restore from the 12 words alone: a new store, nothing counted yet
+        let restored = make(Arc::new(MemoryStorage::new()));
+        assert_eq!(restored.derive_shutdown_script_at(37).unwrap(), at_the_close, "the same words derive the same address at the same number");
+        // … and that number is inside the receive branch the restored wallet's widest scan covers
+        assert!(37 < crate::tier2::branch_width(crate::tier2::CHAIN_RECEIVE, 2500), "inside the 2,500 addresses of the words a deep scan watches");
+        assert_eq!(Address::from_script(&at_the_close, Network::Bitcoin).unwrap().to_string().starts_with("bc1q"), true, "an ordinary address of the words (m/84)");
+    }
+
+    /// v396 (DP 2026-11-27 22:51 "Yes. Do this." — round 2 §8 item 3: "a restore from an older backup followed by a
+    /// cooperative close reuses no address"): after a scan, the counter stands past every receive-branch number the
+    /// chain has shown, so the address of the next close is a new one — from an older backup and from the 12 words alone.
+    #[test]
+    fn v396_after_a_restore_the_counter_follows_the_chain_and_a_close_reuses_no_address() {
+        use bip39::Mnemonic;
+        use crate::key::RootKey;
+        use crate::tier2_wallet::{OnchainUtxo, Tier2View};
+        use lightning::sign::SignerProvider as _;
+
+        let mnemonic: Mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+            .parse()
+            .unwrap();
+        let make = |storage: Arc<MemoryStorage>| {
+            let root = RootKey::from_mnemonic(&mnemonic, Network::Bitcoin).unwrap();
+            let seed = root.lightning_node_key().unwrap().private_key.secret_bytes();
+            let inner = Arc::new(KeysManager::new(&seed, 0, 0, false));
+            let counter = PersistedCounter::new(storage).unwrap();
+            LijSignerProvider::new(inner, root.shutdown_xpriv().unwrap(), counter, Network::Bitcoin)
+        };
+        let coin = |chain: u32, index: u32, spent: Option<u32>| -> OnchainUtxo {
+            serde_json::from_value(serde_json::json!({
+                "chain": chain, "index": index, "txid": format!("{:064x}", (chain as u64) * 100_000 + index as u64), "vout": 0,
+                "value_sats": 10_000, "height": 900_000, "spent_height": spent
+            })).unwrap()
+        };
+        // what a scan found: coins on the receive branch up to number 40 (the highest one already spent), and one on
+        // the change branch at 90, which is another branch and must not count
+        let mut view = Tier2View::default();
+        view.utxos = vec![coin(crate::tier2::CHAIN_RECEIVE, 3, None), coin(crate::tier2::CHAIN_RECEIVE, 40, Some(900_100)), coin(crate::tier2::CHAIN_CHANGE, 90, None)];
+        assert_eq!(crate::tier2_wallet::next_receive_index(&view), 41);
+
+        // (1) AN OLDER BACKUP: its counter stands at 5; the chain has since shown coins up to 40
+        let restored = make(Arc::new(MemoryStorage::new()));
+        for _ in 0..5 { restored.get_destination_script([0u8; 32]).unwrap(); }
+        assert_eq!(restored.peek_counter().unwrap(), 5);
+        // without the repair the next close would be given number 5 — an address the chain has seen coins beyond
+        assert_eq!(restored.raise_index_floor_to_chain(&view).unwrap(), Some(41), "the counter is raised to one past the chain's highest");
+        let close = restored.get_shutdown_scriptpubkey().unwrap();
+        assert_eq!(close.into_inner(), restored.derive_shutdown_script_at(41).unwrap(), "the close takes number 41");
+        for used in 0..=40u32 {
+            assert_ne!(restored.derive_shutdown_script_at(41).unwrap(), restored.derive_shutdown_script_at(used).unwrap(), "number {used} is not given again");
+        }
+        assert_eq!(restored.peek_counter().unwrap(), 42);
+        assert_eq!(restored.peek_ratchet().unwrap(), 42, "the ratchet moved with it (a restart does not refuse the counter)");
+
+        // (2) THE 12 WORDS ALONE: the counter starts at 0
+        let words_only = make(Arc::new(MemoryStorage::new()));
+        assert_eq!(words_only.peek_counter().unwrap(), 0);
+        assert_eq!(words_only.raise_index_floor_to_chain(&view).unwrap(), Some(41));
+        assert_eq!(words_only.get_shutdown_scriptpubkey().unwrap().into_inner(), words_only.derive_shutdown_script_at(41).unwrap());
+
+        // (3) NEVER LOWERED: a counter already past the chain stays; nothing is burned
+        let ahead = make(Arc::new(MemoryStorage::new()));
+        for _ in 0..50 { ahead.get_destination_script([0u8; 32]).unwrap(); }
+        assert_eq!(ahead.raise_index_floor_to_chain(&view).unwrap(), None);
+        assert_eq!(ahead.peek_counter().unwrap(), 50);
+        // exactly at the chain's next number: nothing to do either
+        let level = make(Arc::new(MemoryStorage::new()));
+        for _ in 0..41 { level.get_destination_script([0u8; 32]).unwrap(); }
+        assert_eq!(level.raise_index_floor_to_chain(&view).unwrap(), None);
+
+        // (4) A RECORD WITH NO COIN ON THE RECEIVE BRANCH: nothing is raised
+        let empty = make(Arc::new(MemoryStorage::new()));
+        let mut only_change = Tier2View::default();
+        only_change.utxos = vec![coin(crate::tier2::CHAIN_CHANGE, 90, None)];
+        assert_eq!(empty.raise_index_floor_to_chain(&Tier2View::default()).unwrap(), None);
+        assert_eq!(empty.raise_index_floor_to_chain(&only_change).unwrap(), None);
+        assert_eq!(empty.peek_counter().unwrap(), 0);
     }
 
     #[cfg(not(target_arch = "wasm32"))]

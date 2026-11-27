@@ -1413,6 +1413,7 @@ impl LijNode {
             // the channelpolicy daemon on UM890 which sets min_accept_depth=1
             // for wallet-class peers. Both directions now converge at 1 conf.
             c.channel_handshake_config.minimum_depth = 1;
+            c.channel_handshake_config.commit_upfront_shutdown_pubkey = false;   // v395 (DP 2026-11-26 13:50, 2026-11-27 15:38): THE CLOSING ADDRESS IS CHOSEN AT THE CLOSE — no address is fixed in a new channel at its opening; when a cooperative close begins LDK asks the signer (signer.rs get_shutdown_scriptpubkey: the next address of the 12 words, the same counter). Channels open before v395 keep the address fixed at their opening. Tests: the LDK copy's lij_close_script_tests.rs; signer.rs v395_…
             c.channel_handshake_config.their_channel_reserve_proportional_millionths = LSP_RESERVE_PPM.load(std::sync::atomic::Ordering::Relaxed); // v213 evil-LSP reserve dial
             // JIT receive: the LSP forwards the full net amount as a SINGLE
             // inbound HTLC. LDK's default inbound in-flight cap is 10% of
@@ -1752,6 +1753,7 @@ impl LijNode {
                 // delete the synthetic-tip block in background_tick now that
                 // depth=1 makes it provably unnecessary.
                 config.channel_handshake_config.minimum_depth = 1;
+                config.channel_handshake_config.commit_upfront_shutdown_pubkey = false;   // v395: as in the restore path — the closing address is chosen at the close
                 config.channel_handshake_config.their_channel_reserve_proportional_millionths = LSP_RESERVE_PPM.load(std::sync::atomic::Ordering::Relaxed); // v213 evil-LSP reserve dial
                 // JIT receive single-HTLC fix — see restore-path comment.
                 // Raise inbound in-flight cap from LDK default 10% to 100% so a
@@ -4701,6 +4703,7 @@ impl LijNode {
         let user_channel_id: u128 = crate::signer::UCID_TERMINUS_PIN_BIT | UCID_POOL_FUNDED_BIT | ((nonce as u128) << 32);
         let mut config = UserConfig::default();
         config.channel_handshake_config.minimum_depth = 1;
+        config.channel_handshake_config.commit_upfront_shutdown_pubkey = false;   // v395: as in the restore path (this is the open a pool pays for — Mix, From → Channel)
         config.channel_config.force_close_avoidance_max_fee_satoshis = COOP_CLOSE_MAX_FEE_OVERAGE_SAT;
         config.channel_config.max_dust_htlc_exposure = lightning::util::config::MaxDustHTLCExposure::FeeRateMultiplier(DUST_EXPOSURE_FEERATE_MULTIPLIER);   // v391: the cap on small payments in flight (new channels; open ones in apply_dust_cap_to_open_channels)
         config.channel_handshake_config.their_channel_reserve_proportional_millionths = LSP_RESERVE_PPM.load(std::sync::atomic::Ordering::Relaxed);
@@ -4849,6 +4852,7 @@ impl LijNode {
 
         let mut config = UserConfig::default();
         config.channel_handshake_config.minimum_depth = 1;
+        config.channel_handshake_config.commit_upfront_shutdown_pubkey = false;   // v395: as in the restore path (this is the open the wallet's own coins pay for)
         config.channel_config.force_close_avoidance_max_fee_satoshis = COOP_CLOSE_MAX_FEE_OVERAGE_SAT; // v41 coop-close fee ceiling
         config.channel_config.max_dust_htlc_exposure = lightning::util::config::MaxDustHTLCExposure::FeeRateMultiplier(DUST_EXPOSURE_FEERATE_MULTIPLIER);   // v391: the cap on small payments in flight (new channels; open ones in apply_dust_cap_to_open_channels)
         config.channel_handshake_config.their_channel_reserve_proportional_millionths = LSP_RESERVE_PPM.load(std::sync::atomic::Ordering::Relaxed); // v213 evil-LSP reserve dial
@@ -7599,6 +7603,9 @@ impl LijNode {
     /// Uses the upfront shutdown_script that was committed at channel
     /// open time (BIP84 path m/84'/0'/0'/0/n). The destination is locked
     /// in the channel's permanent state — neither party can redirect.
+    /// v395: that holds for a channel opened BEFORE v395. A channel opened from v395 on fixes no address at its opening;
+    /// when a cooperative close begins LDK asks the signer for the next address of the 12 words (the same path, the
+    /// same counter), and from that moment the address is kept with the channel. No call hands in an address from outside.
     /// v165 (#29-4a): fee-rate tiers for the UI speed picker, from the live
     /// estimator (cooperative-first). Tiering mirrors
     /// FeeQuote::from_fast_sat_per_vb's philosophy: normal = fast/2,
@@ -10173,7 +10180,9 @@ mod tests {
         let addr = crate::onchain_pay::handover_address(&script, Network::Regtest).to_string();
         let lock_txid = "ab".repeat(32);
         let report = |a: &str, t: u32| serde_json::json!({ "state": "locked", "T": t, "handover_address": a, "lock_txids": [lock_txid], "lock_vout": 1, "lock_block": 1_000 }).to_string();
-        assert!(node.onchain_pay_lock_report(&hash, &report(&format!("{}x", &addr[..addr.len() - 1]), t)).is_err(), "another address: refused");
+        // v395: the "other" address must BE another — the real one ends in "x" about one run in 32 (its keys are made at random here), and this assertion then failed
+        let other_last = if addr.ends_with('x') { 'q' } else { 'x' };
+        assert!(node.onchain_pay_lock_report(&hash, &report(&format!("{}{}", &addr[..addr.len() - 1], other_last), t)).is_err(), "another address: refused");
         assert!(node.onchain_pay_lock_report(&hash, &report(&addr, t + 30)).is_err(), "T outside the bounds (the address would differ anyway)");
         let locked: serde_json::Value = serde_json::from_str(&node.onchain_pay_lock_report(&hash, &report(&addr, t)).unwrap()).unwrap();
         assert_eq!(locked["state"], "locked"); assert_eq!(locked["t"], t); assert_eq!(locked["walk_from"], 1_000);
